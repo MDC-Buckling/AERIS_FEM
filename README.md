@@ -15,7 +15,9 @@ aeris/
     smoke_test.py           Proves a gsKLShell exe links + runs (--help)
     cylinder_lba.py         Linear buckling of a clamped axially-compressed
                             cylinder vs the classical Lorenz/Timoshenko 1908
-                            formula; mesh-convergence study
+                            formula; mesh-convergence study; ParaView export
+  output/                   (gitignored) ParaView .pvd / .vts dropped here
+                            when /aeris-output is mounted from this folder
   .dockerignore  .gitignore  README.md
 ```
 
@@ -113,6 +115,54 @@ What it does:
    interesting band).
 5. **Sweeps mesh refinement** at `-r 3, 4, 5` and prints a convergence table.
 
+### Viewing the mesh and eigenmodes in ParaView
+
+Mount a host directory at `/aeris-output` and `cylinder_lba.py` will
+automatically re-run the finest mesh with `--plot` and drop ParaView files
+into it (default behaviour — pass `--no-plot` to skip).
+
+```powershell
+mkdir output -Force | Out-Null
+docker run --rm `
+    -v ${PWD}/scripts:/aeris-scripts `
+    -v ${PWD}/output:/aeris-output `
+    aeris/gismo:v25.07.0 `
+    python3 /aeris-scripts/cylinder_lba.py
+```
+
+After the run, `output/` contains (28 `.vts` + 7 `.pvd` for the default
+5-mode case):
+
+| File                      | What it is                                                            |
+| ------------------------- | --------------------------------------------------------------------- |
+| `output/mp.pvd`           | **Undeformed cylinder geometry** — open this to see the bare mesh     |
+| `output/linearSolution.pvd` | Pre-buckling linear-elastic displacement field (reference state)    |
+| `output/modes/modes0.pvd` | **1st buckling eigenmode** — open this to see the lowest mode shape   |
+| `output/modes/modes1.pvd` | 2nd eigenmode (same cluster, slightly higher critical load)           |
+| `output/modes/modes2.pvd` | 3rd eigenmode                                                         |
+| `output/modes/modes.pvd`  | ⚠ top-level collection — buggy in the shipped exe, only includes patch 0 of each mode. Use the per-mode `modesN.pvd` files instead. |
+
+**Install ParaView** (free, separate download) from
+[paraview.org/download](https://www.paraview.org/download/). The Windows
+binary works out of the box.
+
+**What to click in ParaView** for a mode shape (e.g. `modes0.pvd`):
+
+1. `File → Open → modes0.pvd`, then click **Apply** in the *Properties*
+   panel. You see the cylinder, slightly squished into the first buckling
+   pattern.
+2. The deformation is small by default — the modes are normalised so
+   `|u_z|_max = 1` inside the exe, then added to the original geometry.
+   To exaggerate for visibility: `Filters → Alphabetical → Warp By Vector`,
+   pick **`SolutionField`** as the *Vectors* field, raise *Scale Factor*
+   (try 0.05 then bump up), click Apply.
+3. Same recipe for `modes1.pvd`, `modes2.pvd`, … — open each, Apply.
+4. To overlay the undeformed shape, also open `mp.pvd` and Apply; set its
+   *Representation* to *Wireframe* and a contrasting colour.
+
+The eigenmode field name `SolutionField` is the only vector array in the
+`.vts` files, so picking it in *Warp by Vector* is unambiguous.
+
 ### Latest result (R=1, L=1, t=0.01, E=1, ν=0.3, gcc-11 build, 4 patches)
 
 | `-r` | dofs (basis size 0 dir × 1 dir) | σ_cr_computed | % vs classical |
@@ -165,6 +215,10 @@ SHA file printed "bundled-with-v25.07.0" for everything).
   Lorenz–Timoshenko critical axial buckling stress to **0.16 %** at r=5, with
   monotonic mesh convergence — proves the buckling pipeline (geometry, BCs,
   Saint-Venant Kirchhoff material, eigensolver, XML I/O) is wired correctly.
+- **ParaView export** — same script writes the cylinder mesh + linear-elastic
+  reference state + first N (default 5) eigenmodes to a `/aeris-output` mount
+  for visualisation. Uses the shipped exe's `--plot` flag — no custom VTK
+  writing on our side. Field name for mode shapes: `SolutionField` (3-vector).
 
 ### Known gaps — next-session candidates (ordered)
 

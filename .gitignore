@@ -45,3 +45,6 @@ Thumbs.db
 .env
 .docker-cache/
 scratch/
+
+# Per-run ParaView output dropped by cylinder_lba.py via -v mount
+output/
