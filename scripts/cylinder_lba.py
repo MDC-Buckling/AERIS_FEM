@@ -310,14 +310,30 @@ EIG_LINE = re.compile(r"^\s+([-+0-9.eE]+)\s*$")
 
 
 def run_buckling(xml_path: Path, r: int, e: int = 0, nmodes: int = 5,
-                 timeout: int = 600) -> list[float]:
-    """Invoke buckling_shell_multipatch_XML and parse eigenvalues."""
+                 timeout: int = 600,
+                 plot_dir: Path | None = None) -> list[float]:
+    """Invoke buckling_shell_XML and parse eigenvalues.
+
+    If ``plot_dir`` is provided, the exe is run with --plot and -o pointing
+    at a subdirectory of plot_dir, AND its working directory is set to
+    plot_dir so the hard-coded "mp.pvd" geometry and "linearSolution.pvd"
+    files land there too. Returns the parsed eigenvalues exactly as before
+    regardless of plotting.
+    """
     cmd = [str(EXE),
            "-i", str(xml_path),
            "-r", str(r),
            "-e", str(e),
            "-N", str(nmodes)]
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    cwd = None
+    if plot_dir is not None:
+        plot_dir.mkdir(parents=True, exist_ok=True)
+        modes_dir = plot_dir / "modes"
+        modes_dir.mkdir(exist_ok=True)
+        cmd += ["--plot", "-o", str(modes_dir)]
+        cwd = str(plot_dir)
+    res = subprocess.run(cmd, capture_output=True, text=True,
+                         timeout=timeout, cwd=cwd)
     if res.returncode != 0:
         sys.stderr.write(res.stdout)
         sys.stderr.write(res.stderr)
@@ -376,6 +392,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--nmodes", type=int, default=5)
     p.add_argument("--keep-xml", action="store_true",
                    help="Don't delete the generated XML")
+    p.add_argument("--plot-dir", type=Path, default=None,
+                   help="If set (and writable), run an extra pass at the finest "
+                        "refinement with --plot to dump ParaView files there. "
+                        "Defaults to /aeris-output if it exists, else skipped.")
+    p.add_argument("--plot-modes", type=int, default=3,
+                   help="Number of buckling eigenmodes to write to ParaView")
+    p.add_argument("--no-plot", action="store_true",
+                   help="Skip the ParaView export pass even if --plot-dir is set")
     args = p.parse_args(argv)
 
     case = Case(R=args.R, L=args.L, t=args.t, E=args.E, nu=args.nu)
@@ -431,6 +455,52 @@ def main(argv: list[str] | None = None) -> int:
                  if math.isfinite(e) and abs(e) > 1e-10]
         print(f"        raw physical eigs: {clean}")
         table.append((r, lam1, sigma_computed, pct))
+
+    # ----- ParaView export pass (one extra solve at the FINEST refinement) ----
+    # Defaults to /aeris-output if it exists (standard host-mount target) so
+    # the user gets visuals without extra flags. Skipped if --no-plot.
+    if args.plot_dir is None:
+        default = Path("/aeris-output")
+        plot_dir = default if default.exists() else None
+    else:
+        plot_dir = args.plot_dir
+
+    if plot_dir is not None and not args.no_plot and table:
+        r_finest = args.refines[-1]
+        print()
+        print("=" * 70)
+        print(f"ParaView export — re-running at r={r_finest} with --plot")
+        print("=" * 70)
+        print(f"Writing to {plot_dir}/ (host-mounted)")
+        try:
+            run_buckling(
+                xml_path,
+                r=r_finest,
+                e=args.elevate,
+                nmodes=max(args.nmodes, args.plot_modes),
+                plot_dir=plot_dir,
+            )
+            written = sorted(p.name for p in plot_dir.iterdir() if p.is_file())
+            modes_dir = plot_dir / "modes"
+            mode_files = sorted(p.name for p in modes_dir.iterdir()
+                                if p.is_file()) if modes_dir.exists() else []
+            print(f"Top-level files in {plot_dir}/:")
+            for n in written:
+                print(f"  {n}")
+            print(f"Mode files in {plot_dir}/modes/:")
+            for n in mode_files[:20]:
+                print(f"  {n}")
+            if len(mode_files) > 20:
+                print(f"  ... ({len(mode_files) - 20} more)")
+            print()
+            print("To view: open ParaView, File -> Open the .pvd files listed")
+            print("above. Eigenmode shapes are stored as the vector field")
+            print("'SolutionField' (3-component). Use Filters -> 'Warp by")
+            print("Vector' with that field to amplify the deformation; the")
+            print("modes are normalised so |u_z|_max = 1 in the exe.")
+        except Exception as e:
+            print(f"Plot export failed: {e}")
+            print("(Numerical results above are unaffected.)")
 
     if not args.keep_xml:
         try:
