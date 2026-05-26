@@ -1,0 +1,44 @@
+# Aeris — headless render image (PyVista + VTK + Xvfb)
+#
+# Tiny companion to aeris/gismo:v25.07.0. Reads the .pvd / .vts files that
+# cylinder_lba.py drops into the host's output/ directory (mounted at
+# /aeris-output) and writes PNG renders of the buckling eigenmodes into
+# /aeris-output/renders/.
+#
+# Built deliberately as a SEPARATE image so the main G+Smo image stays
+# free of VTK / OpenGL / Xvfb baggage (~600 MB of headless graphics deps
+# would otherwise tag along for a tool that just solves PDEs).
+#
+# Headless approach: install Xvfb + Mesa software OpenGL, call
+# `pyvista.start_xvfb()` at script start so VTK has a display to draw into.
+
+FROM python:3.11-slim
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update -q && \
+    apt-get install --no-install-recommends -yq \
+        xvfb \
+        libgl1 \
+        libglx-mesa0 \
+        libxrender1 \
+        libxext6 \
+        libxt6 \
+        libxkbcommon0 \
+        libsm6 \
+        libice6 \
+        libglib2.0-0 \
+        ca-certificates && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Pinning pyvista + vtk so future rebuilds stay reproducible.
+RUN pip install --no-cache-dir \
+        "pyvista==0.44.1" \
+        "vtk==9.3.1" \
+        "numpy<2"
+
+WORKDIR /aeris
+COPY scripts /aeris/scripts
+
+CMD ["python3", "/aeris/scripts/render_modes.py"]
