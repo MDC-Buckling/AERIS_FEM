@@ -1,0 +1,3 @@
+[submodule "external/gismo"]
+	path = external/gismo
+	url = https://github.com/gismo/gismo
