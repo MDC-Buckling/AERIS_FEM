@@ -31,7 +31,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 # ----- Build-time config (overridable with --build-arg) -----------------------
 ARG CMAKE_BUILD_TYPE=Release
 ARG CMAKE_CXX_STANDARD=17
-ARG GISMO_OPTIONAL="gsKLShell;gsStructuralAnalysis;gsUnstructuredSplines;gsOptim"
+ARG GISMO_OPTIONAL="gsKLShell;gsStructuralAnalysis;gsUnstructuredSplines;gsOptim;gsSpectra"
 ARG GISMO_WITH_PYBIND11=OFF
 ARG GISMO_WITH_OPENMP=ON
 ARG GISMO_BUILD_EXAMPLES=ON
@@ -70,11 +70,19 @@ ENV CC=gcc CXX=g++
 WORKDIR /opt
 COPY external/gismo /opt/gismo
 
+# G+Smo's cmake/gismoUse.cmake::get_repo_info() inspects ${gismo_SOURCE_DIR}/.git
+# to decide between `git clone --depth 1` (preserves .git → SHAs recoverable)
+# and a zip-tarball URL fallback (strips .git → SHAs lost). Our COPY drops no
+# .git, so without this `git init` we silently get the zip fallback and the
+# SHA-capture step below records "bundled-with-v25.07.0" for everything.
+RUN cd /opt/gismo && git init -q && \
+    git config user.email build@aeris && git config user.name "Aeris build"
+
 # ----- Layer 3: configure + build --------------------------------------------
 # G+Smo will git-clone the optional modules listed in GISMO_OPTIONAL into
 # /opt/gismo/optional/<name> during the CMake configure step (needs network
 # at build time — Docker buildx provides that by default).
-RUN mkdir /opt/gismo/build && cd /opt/gismo/build && \
+RUN mkdir -p /aeris && mkdir /opt/gismo/build && cd /opt/gismo/build && \
     cmake .. \
         -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
         -DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD} \
@@ -84,22 +92,29 @@ RUN mkdir /opt/gismo/build && cd /opt/gismo/build && \
         -DGISMO_WITH_PYBIND11=${GISMO_WITH_PYBIND11} \
         -DGISMO_OPTIONAL="${GISMO_OPTIONAL}" \
         -DCMAKE_INSTALL_PREFIX=/opt/gismo/install \
+    && echo "===== Capturing optional-module SHAs right after CMake configure (clones fresh) =====" \
+    && { \
+        echo "# Aeris G+Smo build SHAs — captured immediately post-CMake-configure"; \
+        echo "# Outer G+Smo: pinned to v25.07.0 via our submodule (see Aeris .gitmodules)"; \
+        echo "# Optional modules: fetched at HEAD by gsFetch.cmake — these are the SHAs at build time"; \
+        echo ""; \
+        for d in /opt/gismo/optional/*/; do \
+            name=$(basename "$d"); \
+            if [ -e "$d/.git" ]; then \
+                h=$(git -C "$d" rev-parse HEAD 2>/dev/null || echo "git-error"); \
+            else \
+                h="bundled-with-v25.07.0"; \
+            fi; \
+            printf '%-30s %s\n' "$name" "$h"; \
+        done; \
+    } | tee /aeris/BUILD_SHAS.txt \
+    && echo "===== Now building =====" \
     && cmake --build . --parallel ${BUILD_PARALLEL} \
     && echo "--- Build artefacts under /opt/gismo/build ---" \
     && ls -la /opt/gismo/build/lib | head -40 \
-    && ls /opt/gismo/build/bin | wc -l
-
-# Capture the actual commit hashes of the fetched optional modules so we can
-# pin them next session (printed during build, also written to /opt/gismo/.pins).
-RUN set -eu; \
-    : > /opt/gismo/.pins; \
-    for d in /opt/gismo/optional/*/; do \
-        name=$(basename "$d"); \
-        if [ -d "$d/.git" ]; then \
-            hash=$(cd "$d" && git rev-parse HEAD 2>/dev/null || echo "no-git"); \
-            echo "$name $hash" | tee -a /opt/gismo/.pins; \
-        fi; \
-    done
+    && ls /opt/gismo/build/bin | wc -l \
+    && echo "--- BUILD_SHAS.txt after build (verify still present) ---" \
+    && cat /aeris/BUILD_SHAS.txt
 
 # ----- Layer 4: convenience env --------------------------------------------
 # (pygismo is OFF for now — PYTHONPATH will become relevant once it builds.)
