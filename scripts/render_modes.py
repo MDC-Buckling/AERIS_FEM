@@ -48,14 +48,14 @@ CYL_CENTER = (0.0, 0.0, 0.5)
 CYL_R = 1.0
 CYL_L = 1.0
 
-# Warp scale. Mode shapes are normalised so |u_z|_max = 1 inside the exe,
-# but for cylinder buckling the RADIAL component is 10-50x larger than
-# the axial, so |SolutionField| reaches O(10-50). We want the visible
-# deformation to be O(5%) of the cylinder radius (=0.05 here). 0.015 sits
-# in the middle — clearly bumpy but not exploded. Same scale for every
-# mode so cross-mode relative amplitudes stay honest (mod the exe's
-# per-mode |u_z|_max=1 normalisation, which we can't escape).
-WARP_SCALE = 0.015
+# Warp scale. With the SMOOTH-COUPLED multipatch driver (Session 2.7),
+# eigenmodes come back with |u| ~ 0.01-0.05 (different normalisation than
+# the old weak-coupled driver where |u| reached O(10-50)). We want the
+# visible deformation to be ~5% of the cylinder radius (R=1 → 0.05), so
+# warp = 0.05 / typical_|u| ≈ 1.5. Same scale across modes so relative
+# amplitudes stay honest.
+# For old weak-coupled outputs, knock this down to ~0.015.
+WARP_SCALE = 1.5
 
 # Per-image colour scale (auto-fit each render's own range). Cross-image
 # colour comparisons are meaningless anyway because of the exe's
@@ -214,13 +214,22 @@ def main() -> int:
     else:
         print(f"[render_modes] WARN: {ls_pvd} not found; skipping linear state")
 
-    # Eigenmodes 0..4 (per-mode .pvd has all 4 patches; the buggy top-level
-    # modes.pvd only has patch 0, so we read the per-mode files directly).
+    # Eigenmodes 0..4. Per-mode .pvd has all 4 patches; the buggy top-level
+    # modes.pvd only has patch 0 and is ignored.
+    # Naming:
+    #   single-patch driver (buckling_shell_XML):     modes{N}.pvd
+    #   multipatch driver   (..._multipatch_XML):     modes{N}_.pvd
+    # We accept either so re-rendering an old output dir still works.
     modes_dir = OUT_ROOT / "modes"
     for m in range(5):
-        per_mode_pvd = modes_dir / f"modes{m}.pvd"
-        if not per_mode_pvd.exists():
-            print(f"[render_modes] WARN: {per_mode_pvd} not found; skip mode {m}")
+        per_mode_pvd = None
+        for name in (f"modes{m}_.pvd", f"modes{m}.pvd"):
+            candidate = modes_dir / name
+            if candidate.exists():
+                per_mode_pvd = candidate
+                break
+        if per_mode_pvd is None:
+            print(f"[render_modes] WARN: modes{m}(_).pvd not found; skip mode {m}")
             continue
         print(f"[render_modes] loading mode {m} from {per_mode_pvd}")
         merged = load_multipatch_pvd(per_mode_pvd)
