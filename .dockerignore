@@ -1,0 +1,26 @@
+# Keep build context minimal and reproducible
+.git
+.gitignore
+.gitmodules
+external/gismo/.git
+external/gismo/.github
+external/gismo/.gitlab-ci.yml
+external/gismo/.appveyor.yml
+external/gismo/.circleci
+external/gismo/.cdash
+external/gismo/doc/html
+external/gismo/build*
+external/gismo/cmake-build-*
+
+# Editors / OS
+.vscode
+.idea
+*.swp
+.DS_Store
+Thumbs.db
+
+# Top-level build / scratch (we COPY scripts explicitly)
+build/
+out/
+.docker-cache/
+scratch/
