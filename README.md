@@ -219,19 +219,27 @@ coupling artefacts) sit well above the bulk. The clamp acts only on the
 warp + colour bar; reported eigenvalues are unaffected (those come from
 `cylinder_lba.py`, not from this script).
 
-### Latest result (R=1, L=1, t=0.01, E=1, ν=0.3, gcc-11 build, 4 patches)
+### Latest result (R=1, L=1, t=0.01, E=1, ν=0.3, gcc-11, 4 patches, smooth G¹ coupling)
 
-| `-r` | dofs (basis size 0 dir × 1 dir) | σ_cr_computed | % vs classical |
-| ---: | -------------------------------: | ------------: | -------------: |
-|    3 | 9 × 9 per patch                  | 5.900 × 10⁻³  |       −2.51 %  |
-|    4 | 17 × 17 per patch                | 6.015 × 10⁻³  |       −0.62 %  |
-|    5 | 33 × 33 per patch                | 6.043 × 10⁻³  |       −0.16 %  |
+| `-r` | per-patch basis | σ_cr_computed | % vs classical |
+| ---: | --------------: | ------------: | -------------: |
+|    3 | 9 × 9           | 6.083 × 10⁻³  | **+0.51 %**    |
+|    4 | 17 × 17         | 5.991 × 10⁻³  | **−1.02 %**    |
+|    5 | 33 × 33         | 6.022 × 10⁻³  | **−0.49 %**    |
 
-Classical reference: σ_cr = **6.052 × 10⁻³**. The FE result converges
-monotonically from below, with a sub-1 % residual at r=5 — well inside the
-"finite-length / clamped vs classical-infinite-cylinder" envelope. The
-convergence direction (below ↑ to classical) is consistent with classical
-being an upper bound for the finite isotropic case.
+Classical reference: σ_cr = **6.052 × 10⁻³**. With the smooth-coupled multipatch
+driver (Session 2.7 fix — see STATUS), the FE result brackets classical within
+±1 % and the eigenvalues come back in clean **doublet pairs** (sin/cos partners
+at nearly-identical eigenvalues, the textbook signature of cylinder buckling).
+
+Earlier numbers (Session 2 / before Session 2.7) printed −2.51 % / −0.62 % /
+−0.16 % at r=3/4/5 using `buckling_shell_XML` with weak C0/C1 penalty coupling.
+That driver appeared to converge slightly closer to classical at r=5, but the
+seam penalty was *artificially stiffening* the cylinder along its 4 vertical
+patch seams, splitting the eigenvalue doublets and surfacing spurious local
+modes (visible as exploded localised "spikes" in mode-2 / mode-4 renders).
+The current numbers are physically correct; the old numbers were a happy
+accident in which the seam stiffening canceled some finite-length softening.
 
 ## Pinned versions
 
@@ -267,10 +275,14 @@ SHA file printed "bundled-with-v25.07.0" for everything).
   + `gsOptim` + `gsSpectra` (all via `GISMO_OPTIONAL`; the externally fetched
   ones are recorded with their actual SHAs in `/aeris/BUILD_SHAS.txt`).
 - Smoke test (`scripts/smoke_test.py`) proves the shell module links and runs.
-- **Cylinder LBA validation (`scripts/cylinder_lba.py`)** matches the classical
-  Lorenz–Timoshenko critical axial buckling stress to **0.16 %** at r=5, with
-  monotonic mesh convergence — proves the buckling pipeline (geometry, BCs,
-  Saint-Venant Kirchhoff material, eigensolver, XML I/O) is wired correctly.
+- **Cylinder LBA validation (`scripts/cylinder_lba.py`)** brackets the classical
+  Lorenz–Timoshenko critical axial buckling stress within **±1 %** at r=3..5
+  on a 4-patch closed cylinder using G+Smo's `buckling_shell_multipatch_XML`
+  with smooth (G¹) inter-patch coupling via `gsSmoothInterfaces` — proves the
+  buckling pipeline (geometry, BCs, Saint-Venant Kirchhoff material, smooth
+  multipatch basis, eigensolver, XML I/O) is wired correctly. Eigenvalues
+  return in clean doublet pairs (sin/cos partners), the textbook signature
+  of cylinder buckling.
 - **ParaView export** — same script writes the cylinder mesh + linear-elastic
   reference state + first N (default 5) eigenmodes to a `/aeris-output` mount
   for visualisation. Uses the shipped exe's `--plot` flag — no custom VTK
@@ -332,6 +344,24 @@ SHA file printed "bundled-with-v25.07.0" for everything).
   (constrains the shell normal rotation, not just displacement). Pure
   Dirichlet displacement BCs without `Clamped` give "simply supported, with
   zero displacement" which is a different physical problem.
+- **Multipatch KL shells need TRUE G¹ coupling, not weak C⁰/C¹ penalty**
+  (Session 2.7). The single-patch driver `buckling_shell_XML.cpp` falls back
+  to `addWeakC0` + `addWeakC1` penalty for multipatch input; this gives
+  correct first-eigenvalue magnitude but artificially stiffens patch seams
+  and surfaces spurious localised modes (visible as exploded one-sided
+  spikes in renders). Use `buckling_shell_multipatch_XML.cpp` with
+  `-m 0` (`gsSmoothInterfaces`) for regular topology like our closed
+  cylinder, or `-m 1` (`gsAlmostC1`) when the topology has extraordinary
+  vertices (T-junctions, cone-cylinder junctions, etc.). The exe builds
+  a `gsMappedBasis` from the smooth construction and calls
+  `assembler.setSpaceBasis(bb2)` so the shell assembly sees one globally
+  smooth basis instead of patch-wise tensor products glued by penalty.
+- **Cluster picker for buckling eigenvalues** — Spectra in shift-invert /
+  Buckling mode happily returns isolated near-zero or near-infinite slots
+  when it runs out of converged eigenpairs. `first_physical_positive` in
+  `cylinder_lba.py` only accepts eigenvalues that have at least one
+  neighbour within 3× of them — drops both denormals and rogue 1e+246
+  entries without per-problem tuning.
 
 ## License notes
 
