@@ -2,22 +2,21 @@
 
 Internal FEM toolkit for thin-shell buckling research. Built around the
 open-source **G+Smo** (Geometry + Simulation Modules, MPL-2.0) C++ isogeometric
-analysis library with its Kirchhoff–Love shell + structural-analysis modules
-and the `pygismo` Python binding.
-
-This first session bootstraps a reproducible Docker build only — there is no
-Aeris application code yet.
+analysis library, driven via its shipped C++ executables (we parse their
+stdout from Python — `pygismo` is deferred, see STATUS).
 
 ## Repo layout
 
 ```
 aeris/
-  docker/Dockerfile      G+Smo + pygismo build image (Ubuntu 22.04, gcc-11)
-  external/gismo         G+Smo source, git submodule pinned to v25.07.0
-  scripts/smoke_test.py  Proves pygismo imports AND a gsKLShell exe runs
-  .dockerignore
-  .gitignore
-  README.md              (this file)
+  docker/Dockerfile         G+Smo + shell stack build image (Ubuntu 22.04, gcc-11)
+  external/gismo            G+Smo source, git submodule pinned to v25.07.0
+  scripts/
+    smoke_test.py           Proves a gsKLShell exe links + runs (--help)
+    cylinder_lba.py         Linear buckling of a clamped axially-compressed
+                            cylinder vs the classical Lorenz/Timoshenko 1908
+                            formula; mesh-convergence study
+  .dockerignore  .gitignore  README.md
 ```
 
 ## Prerequisites
@@ -25,7 +24,7 @@ aeris/
 - Docker Desktop (Windows / macOS) or Docker Engine (Linux). Docker Desktop
   ships WSL2 + the Linux kernel needed by the daemon.
 - Git, with submodule support (any modern version).
-- ~5 GB free disk for the image (G+Smo + boost + openblas + build artefacts).
+- ~5 GB free disk for the image.
 - Network access during build — CMake fetches `gsKLShell`,
   `gsStructuralAnalysis`, and `gsUnstructuredSplines` from
   `github.com/gismo/<name>.git` at configure time.
@@ -38,31 +37,30 @@ cd Aeris
 git submodule update --init --recursive
 ```
 
-If you already cloned without submodules, run only the last line.
-
 ## Build the image
 
 ```powershell
 docker build -t aeris/gismo:v25.07.0 -f docker/Dockerfile .
 ```
 
-Expect 30–60 min on a 4–8-core laptop the first time. Subsequent rebuilds
-reuse the apt-deps layer (~1 min if nothing changed) or the source layer
-(~30–60 min if `external/gismo` content changed).
+Expect 30–60 min on first build, ~5 min on cmake-only rebuilds (apt + source
+layers cached). The bundled optional modules (`gsSpectra`, `gsOptim`, …)
+compile fast; only the externally fetched ones (`gsKLShell`,
+`gsStructuralAnalysis`, `gsUnstructuredSplines`) take real time.
 
 Build-time overrides (all optional):
 
-| `--build-arg`            | default                                            |
-| ------------------------ | -------------------------------------------------- |
-| `CMAKE_BUILD_TYPE`       | `Release`                                          |
-| `CMAKE_CXX_STANDARD`     | `17`                                               |
-| `GISMO_OPTIONAL`         | `gsKLShell;gsStructuralAnalysis;gsUnstructuredSplines;gsOptim` |
-| `GISMO_WITH_PYBIND11`    | `OFF` (see STATUS — blocked on gsEigen/pybind11)   |
-| `GISMO_WITH_OPENMP`      | `ON`                                               |
-| `GISMO_BUILD_EXAMPLES`   | `ON`                                               |
-| `BUILD_PARALLEL`         | `4` (raise on bigger machines)                     |
+| `--build-arg`            | default                                                                  |
+| ------------------------ | ------------------------------------------------------------------------ |
+| `CMAKE_BUILD_TYPE`       | `Release`                                                                |
+| `CMAKE_CXX_STANDARD`     | `17`                                                                     |
+| `GISMO_OPTIONAL`         | `gsKLShell;gsStructuralAnalysis;gsUnstructuredSplines;gsOptim;gsSpectra` |
+| `GISMO_WITH_PYBIND11`    | `OFF` (see STATUS — blocked on gsEigen/pybind11)                         |
+| `GISMO_WITH_OPENMP`      | `ON`                                                                     |
+| `GISMO_BUILD_EXAMPLES`   | `ON`                                                                     |
+| `BUILD_PARALLEL`         | `4` (raise on bigger machines)                                           |
 
-## Run the smoke test
+## Run the smoke test (proves the shell module is compiled + callable)
 
 ```powershell
 docker run --rm aeris/gismo:v25.07.0 python3 /aeris/scripts/smoke_test.py
@@ -74,95 +72,155 @@ Expected tail of output:
 SMOKE TEST PASSED — gsKLShell example '<name>' linked + ran (exit 0).
 ```
 
-The script locates a shipped `gsKLShell` example executable in
-`/opt/gismo/build/bin` (preferring `linear_shell` / `example_shellNN` over
-arc-length / DWR / APALM variants) and invokes `--help` on it. Success means
-the binary linked against `libgismo`, loaded the shell module, and ran
-initialisation code without crashing — i.e. the shell module is compiled and
-callable.
+The script locates a shipped `gsKLShell` example executable (preferring
+`linear_shell`) and invokes `--help`; passing means the binary linked against
+`libgismo.so.25.7.0` and ran initialisation.
 
-If no shell example is found, the script prints what *did* land in `bin/`
-so you can pick one manually.
-
-> **Why not `import pygismo`?** Pygismo currently fails to compile against
-> G+Smo's renamed `gsEigen` namespace with both apt pybind11-dev 2.9.1 and
-> pip pybind11 2.13.6. The session brief explicitly allows wrapping a shipped
-> C++ example as the fallback; that's what `smoke_test.py` does. See STATUS
-> below for the next-session plan.
-
-## Interactive shell in the image
+## Run the cylinder linear-buckling analysis (LBA validation)
 
 ```powershell
-docker run --rm -it aeris/gismo:v25.07.0
-# inside:
-ls /opt/gismo/build/bin | grep -i shell
-python3 -c "import pygismo as gs; print(dir(gs))"
+docker run --rm -v ${PWD}/scripts:/aeris-scripts aeris/gismo:v25.07.0 `
+    python3 /aeris-scripts/cylinder_lba.py
 ```
+
+(Mounting `scripts/` from the host lets you iterate on the Python without a
+rebuild; for a fully self-contained run with the script baked into the image,
+just `python3 /aeris/scripts/cylinder_lba.py`.)
+
+What it does:
+
+1. **Computes the analytical reference** — classical critical axial buckling
+   stress for an isotropic perfect cylinder (Lorenz 1908, Timoshenko 1910):
+
+       σ_cr = E·t / (R · √(3·(1 − ν²)))
+
+2. **Builds a 4-patch closed NURBS cylinder** (R=1.0, L=1.0, t=0.01, E=1.0,
+   ν=0.3 ⇒ R/t = 100, L/R = 1) as an in-memory XML config consumed by
+   `buckling_shell_XML`.
+3. **Boundary conditions**:
+   - Bottom edge: Dirichlet (u_x = u_y = u_z = 0) + Kirchhoff–Love `Clamped`
+     (zero normal rotation) — a true engineering clamp, not just zero
+     displacement.
+   - Top edge: Neumann line force `(0, 0, +t)` (tensile axial line load
+     scaled so that the implied uniform membrane axial stress σ_ref = 1).
+   - We load in *tension* so K_geom is positive-definite and the
+     `gsBucklingSolver` eigenvalues come back positive; the smallest
+     positive eigenvalue is the load factor that would drive the
+     corresponding compressive buckling.
+4. **Solves the generalised eigenvalue problem** K_L v = λ K_geom v with the
+   `gsBucklingSolver` (Spectra `GEigsMode::Buckling`, shift placed near the
+   analytical estimate to focus Krylov iterations on the physically
+   interesting band).
+5. **Sweeps mesh refinement** at `-r 3, 4, 5` and prints a convergence table.
+
+### Latest result (R=1, L=1, t=0.01, E=1, ν=0.3, gcc-11 build, 4 patches)
+
+| `-r` | dofs (basis size 0 dir × 1 dir) | σ_cr_computed | % vs classical |
+| ---: | -------------------------------: | ------------: | -------------: |
+|    3 | 9 × 9 per patch                  | 5.900 × 10⁻³  |       −2.51 %  |
+|    4 | 17 × 17 per patch                | 6.015 × 10⁻³  |       −0.62 %  |
+|    5 | 33 × 33 per patch                | 6.043 × 10⁻³  |       −0.16 %  |
+
+Classical reference: σ_cr = **6.052 × 10⁻³**. The FE result converges
+monotonically from below, with a sub-1 % residual at r=5 — well inside the
+"finite-length / clamped vs classical-infinite-cylinder" envelope. The
+convergence direction (below ↑ to classical) is consistent with classical
+being an upper bound for the finite isotropic case.
 
 ## Pinned versions
 
-| Component                | Pin                                        |
-| ------------------------ | ------------------------------------------ |
-| G+Smo                    | tag `v25.07.0` (commit `3cd33adc2`)        |
-| `gsKLShell`              | HEAD at build time (see STATUS — TODO)     |
-| `gsStructuralAnalysis`   | HEAD at build time (see STATUS — TODO)     |
-| `gsUnstructuredSplines`  | HEAD at build time (see STATUS — TODO)     |
-| Ubuntu base              | `ubuntu:22.04`                             |
-| GCC                      | `gcc-11` / `g++-11`                        |
-| pybind11                 | Ubuntu 22.04 `pybind11-dev`                |
+| Component                | Pin                                                |
+| ------------------------ | -------------------------------------------------- |
+| G+Smo                    | tag `v25.07.0` (commit `3cd33adc2`)                |
+| `gsKLShell`              | fetched at HEAD — SHA recorded in `/aeris/BUILD_SHAS.txt` inside the image |
+| `gsStructuralAnalysis`   | fetched at HEAD — SHA recorded in `/aeris/BUILD_SHAS.txt`                  |
+| `gsUnstructuredSplines`  | fetched at HEAD — SHA recorded in `/aeris/BUILD_SHAS.txt`                  |
+| `gsOptim`, `gsSpectra`   | bundled inside v25.07.0                            |
+| Ubuntu base              | `ubuntu:22.04`                                     |
+| GCC                      | `gcc-11` / `g++-11`                                |
 
-The actual hashes of the fetched optional modules are written to
-`/opt/gismo/.pins` inside the image — `docker run --rm aeris/gismo:v25.07.0 cat /opt/gismo/.pins`.
+To read the actual fetched SHAs from a built image:
+
+```powershell
+docker run --rm aeris/gismo:v25.07.0 cat /aeris/BUILD_SHAS.txt
+```
+
+The capture is done inside the build RUN itself, immediately after `cmake ..`
+(which is when `gsFetch.cmake` does its `git clone --depth 1`); the
+Dockerfile's `git init` against `/opt/gismo/` is the trick that makes
+`get_repo_info()` pick the `git clone` code path instead of the `URL
+.../master.zip` fallback (the latter strips `.git/` and was why Session 1's
+SHA file printed "bundled-with-v25.07.0" for everything).
 
 ## STATUS
 
 ### Works
 - G+Smo v25.07.0 built as a shared library inside a reproducible Ubuntu 22.04
   image (`aeris/gismo:v25.07.0`).
-- `gsKLShell`, `gsStructuralAnalysis`, `gsUnstructuredSplines` enabled via
-  `GISMO_OPTIONAL` and fetched automatically by CMake at configure time.
-- ~30 shell-related example executables in `/opt/gismo/build/bin/` —
-  smoke test invokes one and confirms it links + runs.
-- Build is reproducible: same Dockerfile + same submodule SHA = same image.
+- Shell stack enabled: `gsKLShell` + `gsStructuralAnalysis` + `gsUnstructuredSplines`
+  + `gsOptim` + `gsSpectra` (all via `GISMO_OPTIONAL`; the externally fetched
+  ones are recorded with their actual SHAs in `/aeris/BUILD_SHAS.txt`).
+- Smoke test (`scripts/smoke_test.py`) proves the shell module links and runs.
+- **Cylinder LBA validation (`scripts/cylinder_lba.py`)** matches the classical
+  Lorenz–Timoshenko critical axial buckling stress to **0.16 %** at r=5, with
+  monotonic mesh convergence — proves the buckling pipeline (geometry, BCs,
+  Saint-Venant Kirchhoff material, eigensolver, XML I/O) is wired correctly.
 
-### Known gaps — next-session candidates (ordered by priority)
+### Known gaps — next-session candidates (ordered)
 
-1. **Fix pygismo.** Currently `GISMO_WITH_PYBIND11=OFF`. Both Ubuntu apt
-   `pybind11-dev` 2.9.1 and pip `pybind11==2.13.6` fail to compile
+1. **Fix pygismo.** Still `GISMO_WITH_PYBIND11=OFF`. Both Ubuntu apt
+   `pybind11-dev 2.9.1` and pip `pybind11==2.13.6` fail to compile
    `src/misc/gsPyBind11.cpp` against G+Smo's renamed `gsEigen` namespace
    (`src/gsCore/gsLinearAlgebra.h:21` does `#define Eigen gsEigen`).
    First failed call site is `src/gsMatrix/gsVector.h:340-341` where
    `pybind11_init_gsVector` tries to bind `EigenBase<>` member functions.
-   Two paths to investigate:
-   - (a) G+Smo's own wheel CI (`pyproject.toml` + `setup.py`) builds pygismo
-     with `GISMO_BUILD_EXAMPLES=OFF` and **no** `GISMO_OPTIONAL` — try
-     replicating exactly that, then add the shell modules back one at a time
-     to isolate which one (if any) breaks the binding.
-   - (b) Try an older pybind11 (e.g. `pybind11==2.10.4`) that matches the
-     period when G+Smo last shipped wheels successfully.
-2. **Pin the optional submodule hashes.** They currently float at HEAD on
-   build day. After a successful build, run
-   `docker run --rm aeris/gismo:v25.07.0 cat /opt/gismo/.pins`
-   and bake the hashes into `external/gismo/submodules.txt` (via the
-   `gs<Module>_HASH` mechanism — see `external/gismo/cmake/gsFetch.cmake:125`)
-   — or carry our own fork of each module.
-3. **Real shell computation in the smoke test.** Today's test only runs
-   `--help`. Upgrade to actually solve a small linear plate / cylinder
-   buckling case via `linear_shell` or similar, parse and assert on a
-   numerical result.
-4. **Drop the per-rebuild source layer.** If we expect to iterate on shell
-   examples without touching G+Smo internals, separate "G+Smo install layer"
-   from "user code layer" in the Dockerfile so script changes don't trigger
-   a 40-minute recompile.
-5. **Decide on solver extensions.** No Spectra / SuperLU / MPI yet — fine for
-   the smoke test, but buckling eigenproblems will want at least Spectra.
-6. **CI.** Wire the build to GitHub Actions (or wherever) so the image is
-   rebuilt on every G+Smo bump.
+   Paths to investigate:
+   - (a) Replicate G+Smo's own wheel CI exactly (`pyproject.toml` + `setup.py`,
+     i.e. `GISMO_BUILD_EXAMPLES=OFF` and **no** `GISMO_OPTIONAL`), then add
+     shell modules back one at a time to isolate which one breaks the binding.
+   - (b) Try `pybind11==2.10.4` (older, contemporary with last successful
+     pygismo wheels on PyPI).
+2. **Pin the optional submodule hashes for truly bit-reproducible builds.**
+   The Dockerfile now captures them at build time (`/aeris/BUILD_SHAS.txt`),
+   but they still float to HEAD on every fresh build. Lift the SHAs into
+   `external/gismo/submodules.txt` via the `gs<Module>_HASH` mechanism — see
+   `external/gismo/cmake/gsFetch.cmake:125`. Or carry our own forks.
+3. **Imperfection sensitivity sweep.** The validation cylinder is *perfect*;
+   real-world knock-down factors come from imperfections. Next session: add a
+   single eigenmode-shaped imperfection of amplitude δ·t, sweep δ over
+   `[0, 0.5, 1, 2]`, plot σ_cr(δ) / σ_cr(0). This is the entry point for the
+   Monte-Carlo programme the toolkit is being built for.
+4. **Split the Dockerfile** so Python-script iteration doesn't trigger a
+   ~5-min recompile. Right now the COPY of `scripts/` is downstream of the
+   COPY of `external/gismo`, so source changes there still rebuild gismo.
+   Reorder + a `--target` argument would let us do iterative dev cleanly.
+5. **Real shell computation in the smoke test** is partially obsolete now
+   that `cylinder_lba.py` exists; consider promoting `cylinder_lba.py` to
+   the canonical smoke test and dropping the `--help` wrapper.
+6. **Solver extension audit.** We have Spectra and Optim. Skipping SuperLU,
+   Trilinos, MPI for now; revisit when scaling to multi-million-DOF cases.
+7. **CI.** Wire to GitHub Actions (or similar) once we settle on a hosting
+   choice for Aeris.
+
+## Working notes for next-session-you
+
+- **OptionList XML quirk** — in `gsOptionListXml.cpp:40`, the XML reader
+  recognises tag names `int`, `real`, `bool`, and falls through to *string*
+  for everything else. A G+Smo switch option must be written as `<bool ...>`,
+  **not** `<switch ...>`; the silent-string fallback otherwise causes
+  `setOptions()` to throw "X is not a string; it is a switch" at runtime.
+  Session 2 burned ~20 min on this before finding the comment in the reader.
+- **Spectra `GEigsMode::Buckling` requires `shift ≠ 0`** and finds eigenvalues
+  *nearest* the shift; for unknown problems put the shift roughly where you
+  expect the lowest eigenvalue (a classical-formula estimate works well).
+- **For shell buckling validation, use a NEUMANN load + the KL `Clamped` BC**
+  (constrains the shell normal rotation, not just displacement). Pure
+  Dirichlet displacement BCs without `Clamped` give "simply supported, with
+  zero displacement" which is a different physical problem.
 
 ## License notes
 
 - G+Smo and its optional modules are MPL-2.0. Any local patches we apply to
   `external/gismo` must remain MPL-2.0 and be upstreamable file-by-file —
   keep our changes minimal and isolated.
-- Aeris code we write *outside* `external/` is ours to license as we wish
-  (decide later).
+- Aeris code we write *outside* `external/` is ours to license as we wish.
