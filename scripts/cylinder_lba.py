@@ -295,12 +295,23 @@ def build_cylinder_xml(case: Case) -> str:
 
 EXE = Path(os.environ.get(
     "AERIS_BUCKLING_EXE",
-    # The single-patch driver also handles multi-patch (via weak C0/C1
-    # interface coupling in gsThinShellAssembler); using it avoids the
-    # unstructured-splines machinery (gsAlmostC1 / gsDPatch) that the
-    # _multipatch_ driver pipes through.
-    "/opt/gismo/build/bin/buckling_shell_XML",
+    # The MULTIPATCH driver builds a globally C1 basis via gsUnstructuredSplines
+    # (method=0 / gsSmoothInterfaces for our regular 4-patch cylinder topology),
+    # then `assembler.setSpaceBasis(bb2)` so the KL shell assembly sees a truly
+    # smooth basis. The single-patch driver only does WEAK C0/C1 PENALTY coupling
+    # via addWeakC0/addWeakC1 — sufficient for membrane-dominated modes but it
+    # leaks spurious seam modes into the cluster (mode-pair splitting visible
+    # as exploded localised renders at the 4 vertical seams). See Session 2.7.
+    "/opt/gismo/build/bin/buckling_shell_multipatch_XML",
 ))
+
+# Method picked for the multipatch coupling. 0 = gsSmoothInterfaces is the
+# simplest construction; it gives identical eigenvalues to AlmostC1 (method=1)
+# for our regular cylinder topology and runs much faster.
+SMOOTH_METHOD = 0
+# Smooth-basis degree/smoothness handed to the unstructured-splines builder.
+SMOOTH_DEGREE = 3
+SMOOTH_SMOOTHNESS = 2
 
 # Solver prints eigenvalues like:
 #   First 10 eigenvalues:
@@ -324,7 +335,10 @@ def run_buckling(xml_path: Path, r: int, e: int = 0, nmodes: int = 5,
            "-i", str(xml_path),
            "-r", str(r),
            "-e", str(e),
-           "-N", str(nmodes)]
+           "-N", str(nmodes),
+           "-m", str(SMOOTH_METHOD),
+           "-p", str(SMOOTH_DEGREE),
+           "-s", str(SMOOTH_SMOOTHNESS)]
     cwd = None
     if plot_dir is not None:
         plot_dir.mkdir(parents=True, exist_ok=True)
@@ -366,16 +380,37 @@ def run_buckling(xml_path: Path, r: int, e: int = 0, nmodes: int = 5,
 # Convergence study + reporting
 # ---------------------------------------------------------------------------
 
-def first_physical_positive(eigs: list[float], floor: float = 1e-10) -> float | None:
-    """Pick the smallest strictly-positive eigenvalue above the noise floor.
+def first_physical_positive(eigs: list[float], floor: float = 1e-10,
+                             cluster_band: float = 3.0) -> float | None:
+    """Pick the smallest strictly-positive eigenvalue in the dominant cluster.
 
-    Spectra in shift-invert/buckling mode can return denormal (~1e-322),
-    huge (~1e+196), or non-finite garbage in slots where it ran out of
-    converged eigenvalues; filter those.
+    Spectra (in shift-invert / buckling mode) returns denormal (~1e-322),
+    huge (~1e+196), non-finite, or spurious near-zero (~1e-6) values in
+    the slots where it ran out of converged eigenvalues. We want the
+    smallest member of the BUCKLING CLUSTER — the contiguous group of
+    finite positives within a factor of `cluster_band` of each other.
+    Anything that's an isolated singleton (no neighbours within `cluster_band`)
+    is treated as noise and discarded.
     """
-    pos = [e for e in eigs
-           if math.isfinite(e) and abs(e) > floor and e > 0]
-    return min(pos) if pos else None
+    pos = sorted(e for e in eigs
+                 if math.isfinite(e) and abs(e) > floor and e > 0)
+    if not pos:
+        return None
+
+    # Mark each eigenvalue as part of a cluster if it has at least one
+    # neighbour within `cluster_band`x of it.
+    in_cluster = [False] * len(pos)
+    for i, val in enumerate(pos):
+        for j, other in enumerate(pos):
+            if i == j:
+                continue
+            r = max(val, other) / max(min(val, other), 1e-30)
+            if r <= cluster_band:
+                in_cluster[i] = True
+                break
+
+    clustered = [v for v, ok in zip(pos, in_cluster) if ok]
+    return min(clustered) if clustered else min(pos)
 
 
 def main(argv: list[str] | None = None) -> int:
