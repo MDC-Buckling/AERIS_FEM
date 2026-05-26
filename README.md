@@ -9,15 +9,19 @@ stdout from Python — `pygismo` is deferred, see STATUS).
 
 ```
 aeris/
-  docker/Dockerfile         G+Smo + shell stack build image (Ubuntu 22.04, gcc-11)
+  docker/
+    Dockerfile              G+Smo + shell stack build image (Ubuntu 22.04, gcc-11)
+    Dockerfile.render       Slim render image (Python + PyVista + Xvfb)
   external/gismo            G+Smo source, git submodule pinned to v25.07.0
   scripts/
     smoke_test.py           Proves a gsKLShell exe links + runs (--help)
     cylinder_lba.py         Linear buckling of a clamped axially-compressed
                             cylinder vs the classical Lorenz/Timoshenko 1908
                             formula; mesh-convergence study; ParaView export
-  output/                   (gitignored) ParaView .pvd / .vts dropped here
-                            when /aeris-output is mounted from this folder
+    render_modes.py         Reads output/*.pvd, writes per-mode PNGs to
+                            output/renders/ (3 fixed cameras × 7 datasets)
+  output/                   (gitignored) .pvd / .vts dropped by cylinder_lba.py
+                            and renders/*.png dropped by render_modes.py
   .dockerignore  .gitignore  README.md
 ```
 
@@ -163,6 +167,58 @@ binary works out of the box.
 The eigenmode field name `SolutionField` is the only vector array in the
 `.vts` files, so picking it in *Warp by Vector* is unambiguous.
 
+### Automated PNG renders (no ParaView clicking required)
+
+`scripts/render_modes.py` reads the same `.pvd` / `.vts` files and writes
+fixed-camera PNGs of every mode + the linear pre-buckling state, so you
+can flip through the eigenmodes as a contact-sheet of images without
+operating ParaView by hand. Runs in a separate `aeris/render:1` image
+(slim Python + PyVista + Xvfb, ~600 MB) so the main G+Smo image stays
+clean of OpenGL baggage.
+
+**Build the render image** (one-off, ~2 min):
+
+```powershell
+docker build -t aeris/render:1 -f docker/Dockerfile.render .
+```
+
+**Run the renders** (assumes `output/` already contains the `.vts/.pvd`
+from a prior `cylinder_lba.py` run):
+
+```powershell
+docker run --rm `
+    -v ${PWD}/output:/aeris-output `
+    -v ${PWD}/scripts:/aeris/scripts `
+    aeris/render:1
+```
+
+**What you get** in `output/renders/` — 7 datasets × 3 fixed cameras =
+**21 PNGs** at 1200×900:
+
+| Stem            | What it shows                                          |
+| --------------- | ------------------------------------------------------ |
+| `geometry_*`    | undeformed 4-patch cylinder mesh                       |
+| `linear_*`      | pre-buckling linear-elastic state (smooth, axisymmetric — sanity check) |
+| `mode0_*`       | **1st buckling eigenmode** — lowest critical, classic regular lobe pattern |
+| `mode1_*`       | 2nd mode — happens to localise on one side for our case (real physics, not a render bug) |
+| `mode2_*` … `mode4_*` | next three modes in the eigenvalue cluster        |
+
+Each stem has three views:
+
+| Suffix   | View                                                          |
+| -------- | ------------------------------------------------------------- |
+| `_oblique` | 3/4 perspective from above-front                            |
+| `_side`    | profile, cylinder axis horizontal                           |
+| `_end`     | **straight down the cylinder axis** — best for counting circumferential lobes (the key physics diagnostic) |
+
+All modes share `WARP_SCALE = 0.015` (in `render_modes.py`) so cross-mode
+amplitudes stay honest. The script also clamps per-point displacement at
+1.2× the 95th percentile before warping, to keep the *colour* scale
+informative when a handful of nodes at multipatch corners (weak C0/C1
+coupling artefacts) sit well above the bulk. The clamp acts only on the
+warp + colour bar; reported eigenvalues are unaffected (those come from
+`cylinder_lba.py`, not from this script).
+
 ### Latest result (R=1, L=1, t=0.01, E=1, ν=0.3, gcc-11 build, 4 patches)
 
 | `-r` | dofs (basis size 0 dir × 1 dir) | σ_cr_computed | % vs classical |
@@ -219,6 +275,11 @@ SHA file printed "bundled-with-v25.07.0" for everything).
   reference state + first N (default 5) eigenmodes to a `/aeris-output` mount
   for visualisation. Uses the shipped exe's `--plot` flag — no custom VTK
   writing on our side. Field name for mode shapes: `SolutionField` (3-vector).
+- **Headless PNG renders** (`scripts/render_modes.py` + `aeris/render:1`
+  image) — turns those `.pvd/.vts` files into 21 PNGs (7 datasets × 3 fixed
+  cameras) so you can judge mode shapes without opening ParaView. Renders
+  use PyVista + Xvfb in a slim Python image; warp + colour are tuned to
+  show both bulk buckling patterns and patch-corner artefacts honestly.
 
 ### Known gaps — next-session candidates (ordered)
 
