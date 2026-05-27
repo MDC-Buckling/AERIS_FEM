@@ -81,7 +81,7 @@ export const useUI = create((set) => ({
     // build_cylinder_xml comment about the E-scaling fix for large E).
     geometry: {
       shape: "cylinder",
-      cylinder: { R: 33.0, L: 100.0, t: 0.1 },
+      cylinder: { R: 33.0, L: 100.0, t: 0.1, partitions: [] },
     },
     materials: [
       {
@@ -157,6 +157,99 @@ export const useUI = create((set) => ({
       return { model: { ...s.model, materials } };
     }),
 
+  /** -------------------- Partitions + Section Assignments --------------
+   * The wiring matches scripts/aeris_model.py: geometry.cylinder.partitions
+   * carries [{z}] sorted; sections[] is a library; assignments[] maps each
+   * "band_i" region to a section ref. When partitions[] is empty, the
+   * single legacy "shell_full" assignment is used.
+   * --------------------------------------------------------------------*/
+
+  /** Add a partition at the given z (snapped into [0+ε, L-ε], rejected if
+   * within tolerance of an existing partition). Auto-rebuilds the
+   * assignments[] table so every band gets a section reference, creating
+   * extra sections by cloning the first section's material+thickness
+   * when needed. */
+  addPartition: (z) =>
+    set((s) => {
+      const cyl = s.model.geometry.cylinder;
+      const L = cyl.L;
+      const zNum = Number(z);
+      if (!Number.isFinite(zNum) || zNum <= 0 || zNum >= L) return {};
+      const existing = (cyl.partitions || []).map((p) => Number(p.z));
+      if (existing.some((zp) => Math.abs(zp - zNum) < 1e-9)) return {};
+      const partitions = [...existing, zNum]
+        .sort((a, b) => a - b)
+        .map((zv) => ({ z: zv }));
+      return rebuildAssignments({
+        ...s.model,
+        geometry: { ...s.model.geometry, cylinder: { ...cyl, partitions } },
+      });
+    }),
+
+  /** Remove the partition at index `i` (0-based) from the sorted list. */
+  removePartition: (i) =>
+    set((s) => {
+      const partitions = (s.model.geometry.cylinder.partitions || []).slice();
+      if (i < 0 || i >= partitions.length) return {};
+      partitions.splice(i, 1);
+      return rebuildAssignments({
+        ...s.model,
+        geometry: {
+          ...s.model.geometry,
+          cylinder: { ...s.model.geometry.cylinder, partitions },
+        },
+      });
+    }),
+
+  /** Edit one partition's z value; auto-resorts. */
+  setPartitionZ: (i, z) =>
+    set((s) => {
+      const cyl = s.model.geometry.cylinder;
+      const zNum = Number(z);
+      if (!Number.isFinite(zNum) || zNum <= 0 || zNum >= cyl.L) return {};
+      const partitions = (cyl.partitions || []).slice();
+      if (i < 0 || i >= partitions.length) return {};
+      partitions[i] = { z: zNum };
+      partitions.sort((a, b) => a.z - b.z);
+      return {
+        model: {
+          ...s.model,
+          geometry: { ...s.model.geometry, cylinder: { ...cyl, partitions } },
+        },
+      };
+    }),
+
+  /** Edit thickness_source.value on a section's constant-thickness mode.
+   * Implicitly flips kind to "constant" — call site doesn't need to know
+   * about the kind switch, only that "user typed a number → that number
+   * is now the section's thickness". */
+  setSectionThickness: (sectionId, value) =>
+    set((s) => {
+      const v = Number(value);
+      if (!Number.isFinite(v) || v <= 0) return {};
+      const sections = s.model.sections.map((sec) => {
+        if (sec.id !== sectionId) return sec;
+        const ts = sec.thickness_source ?? { kind: "geometry" };
+        return {
+          ...sec,
+          thickness_source: { ...ts, kind: "constant", value: v },
+        };
+      });
+      return { model: { ...s.model, sections } };
+    }),
+
+  /** Revert a section to geometry-driven thickness (kind:"geometry"). Drops
+   * any stored constant value — the canonical scalar t lives in
+   * geometry.cylinder.t, so there's no value to retain on the section. */
+  resetSectionThickness: (sectionId) =>
+    set((s) => {
+      const sections = s.model.sections.map((sec) => {
+        if (sec.id !== sectionId) return sec;
+        return { ...sec, thickness_source: { kind: "geometry" } };
+      });
+      return { model: { ...s.model, sections } };
+    }),
+
   /** Serialise the current model state into the on-disk model.json schema
    * (mirrors scripts/aeris_model.py::ModelConfig.to_dict). JSON.stringify
    * always emits decimal POINTS for numbers regardless of browser locale,
@@ -206,3 +299,86 @@ export const useUI = create((set) => ({
   status: "ready",
   setStatus: (s) => set({ status: s }),
 }));
+
+/** Auto-rebuild the assignments[] (and sections[]) so that every band has a
+ * section, in the right order, with sensible default thickness when a new
+ * band is created. Idempotent: applying twice to the same partition layout
+ * leaves the model unchanged. Returns a {model: ...} patch ready for set().
+ *
+ * Rules:
+ *   - 0 partitions (homogeneous)  → single assignment "shell_full" → first
+ *                                   section. Same as Session 3.3 default.
+ *   - N+1 partitions (stepped)    → assignments [{region:"band_0", ...},
+ *                                   {region:"band_1", ...}, …]; one per
+ *                                   band. Reuses existing band_i sections
+ *                                   when possible, clones the first
+ *                                   section's material+thickness for any
+ *                                   bands that don't have a section yet.
+ *   - Sections orphaned by the rebuild are kept around (no destructive
+ *     deletion — the user can clean them up later from the GUI).
+ */
+function rebuildAssignments(model) {
+  const partitions = (model.geometry?.cylinder?.partitions ?? []).slice();
+  const homogeneous = partitions.length === 0;
+  const sections = (model.sections ?? []).slice();
+  const assignments = (model.assignments ?? []).slice();
+
+  if (homogeneous) {
+    // Need exactly one assignment "shell_full" → first section.
+    if (sections.length === 0) {
+      return { model };
+    }
+    const newAssignments = [
+      { region: "shell_full", section_ref: sections[0].id },
+    ];
+    return { model: { ...model, assignments: newAssignments } };
+  }
+
+  const nBands = partitions.length + 1;
+  // Existing band assignments — keep them, but trim or extend the list.
+  const existing = new Map();
+  for (const a of assignments) {
+    if (typeof a.region === "string" && a.region.startsWith("band_")) {
+      existing.set(a.region, a.section_ref);
+    }
+  }
+  // Source section for cloning new bands' thickness from. Prefer the first
+  // existing band's section; else the very first section.
+  const seedSec = sections[0];
+
+  const newAssignments = [];
+  const newSections = sections.slice();
+
+  for (let i = 0; i < nBands; i++) {
+    const region = `band_${i}`;
+    let secId = existing.get(region);
+    if (!secId || !newSections.find((s) => s.id === secId)) {
+      // Clone the seed section under a band-named id; default to GEOMETRY
+      // thickness for newly-created bands so the user gets a working
+      // value out of the box.
+      secId = `sec-${region}`;
+      if (!newSections.find((s) => s.id === secId)) {
+        newSections.push({
+          id: secId,
+          name: `Band ${i} section`,
+          kind: "shell",
+          material_ref: seedSec?.material_ref ?? "mat-default",
+          thickness_source:
+            seedSec?.thickness_source?.kind === "constant"
+              ? { ...seedSec.thickness_source }
+              : { kind: "geometry" },
+          offset: "midsurface",
+        });
+      }
+    }
+    newAssignments.push({ region, section_ref: secId });
+  }
+
+  return {
+    model: {
+      ...model,
+      sections: newSections,
+      assignments: newAssignments,
+    },
+  };
+}

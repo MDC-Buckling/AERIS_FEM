@@ -431,6 +431,45 @@ now: pick consistent dimensionless units so `E` stays moderate (e.g. GPa
 with mm, or normalise E ≈ 1). Documented in the "Known gaps" list below;
 not a wiring bug.
 
+### Session 3.4 — Stepped wall thickness via axial partitions ✅
+
+`geometry.cylinder.partitions[]` carries an ordered list of axial z-cuts
+that split the cylinder into N+1 bands. Each band gets its own region tag
+(`band_0`, `band_1`, …) bound through `assignments[]` to a section with
+its own `thickness_source` — either `{kind:"geometry"}` (follows the
+canonical `geometry.cylinder.t`) or `{kind:"constant", value:t_band}` for
+a per-band override. Materials stay shared across bands today; per-band
+materials drop in for free when needed (each section already carries its
+own `material_ref`).
+
+Solver side: `build_cylinder_xml` now emits `4·(N+1)` patches with
+band-major ordering (4 quarters × N+1 bands), `8N+4` interfaces (4 θ-seams
+per band + 4 z-seams per partition), and either a single `MaterialMatrix`
+(homogeneous, bit-identical to Session 3.3) or a `MaterialMatrixContainer`
+(stepped, one `MaterialMatrix` per unique thickness, mapped to patches via
+`<group material="i">`). BCs reference band-relative patch indices so the
+clamp + Neumann edge stay on the bottom (`band_0`) and top (`band_N`).
+
+GUI side:
+- **GEOMETRY → Dimensions** gains an "Axial partitions" sub-block with
+  `+ ADD CUT` / per-row `z`-editor / remove buttons. Adding a cut
+  auto-rebuilds `assignments[]` and clones extra sections for any new
+  bands (cloned from the seed section's material+thickness so the user
+  gets a working stepped model out of the box).
+- **SHELL CONSTRUCTION → Section Assignments** shows one editable row per
+  band: region tag, z-range, material, inline thickness input with a
+  `↻` revert-to-geometry button. Typing a number flips that band's
+  section to `{kind:"constant"}`; clicking `↻` flips it back to
+  `{kind:"geometry"}`.
+- **Viewport** draws a bright amber ring at each axial cut so the user
+  sees their stepped-wall layout live as soon as they hit `+ ADD CUT`.
+
+**Regression:** homogeneous default case stays bit-identical to Session
+3.3 (= -0.49% vs classical at r=5). **Stepped audit** (R=33, L=100,
+partition at z=50, t=[0.2, 0.1] mm, E=208000 MPa, ν=0.3): 8 patches, 12
+interfaces, 2 materials in container; r=4 → +0.48 %, r=5 → -0.28 % vs
+the classical formula evaluated at the top-band (loaded-edge) thickness.
+
 ### Known gaps — next-session candidates (ordered)
 
 1. **Mesh / BCs / Loads / Analysis sections** — same wiring pattern as

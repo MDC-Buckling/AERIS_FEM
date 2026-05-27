@@ -170,6 +170,14 @@ export default function Viewport3D() {
       transparent: true,
       opacity: 0.35,
     });
+    // Partition-seam material — punchy amber ring around each axial cut in
+    // pre-mode. Bright enough to stand out from the cyan edge overlay so the
+    // user can tell at a glance "yes, my cut landed where I asked".
+    const seamMaterial = new THREE.LineBasicMaterial({
+      color: 0xffb454,
+      transparent: true,
+      opacity: 0.85,
+    });
 
     // Pre-mode preview material — a Lambertian dark-cyan that stands out
     // against the navy backdrop and shades properly under the lights above,
@@ -214,6 +222,7 @@ export default function Viewport3D() {
       previewMaterial,
       edgeMaterial,
       wireMaterial,
+      seamMaterial,
       grid,
     };
 
@@ -226,6 +235,7 @@ export default function Viewport3D() {
       previewMaterial.dispose();
       edgeMaterial.dispose();
       wireMaterial.dispose();
+      seamMaterial.dispose();
       rampTex.dispose();
       while (meshGroup.children.length) {
         const c = meshGroup.children.pop();
@@ -312,6 +322,13 @@ export default function Viewport3D() {
   // -------------------------------------------------------------------
   // Pre-mode: procedural cylinder driven LIVE by the model dimensions.
   // -------------------------------------------------------------------
+  // Partitions: bright amber rings at each axial cut so the user sees
+  // their stepped-wall layout as soon as they hit "+ ADD CUT". Cheap to
+  // recompute (a handful of rings vs. the cylinder tessellation), so we
+  // just rebuild the whole pre-mode group when partitions change.
+  const partitions = cyl.partitions ?? [];
+  const partitionsKey = partitions.map((p) => p.z).join(",");
+
   useEffect(() => {
     const st = stateRef.current;
     if (!st.meshGroup) return;
@@ -346,13 +363,28 @@ export default function Viewport3D() {
     edges.visible = showEdges;
     st.meshGroup.add(edges);
 
+    // Partition seam rings — one bright ring at each cut z, drawn slightly
+    // outside R so the line sits proud of the surface and doesn't z-fight.
+    const partitionZs = partitions
+      .map((p) => Number(p.z))
+      .filter((z) => Number.isFinite(z) && z > 0 && z < cyl.L);
+    if (partitionZs.length > 0) {
+      const seamGeom = buildPartitionRings(cyl.R * 1.003, partitionZs, 96);
+      const seams = new THREE.LineSegments(seamGeom, st.seamMaterial);
+      seams.userData.kind = "seams";
+      st.meshGroup.add(seams);
+    }
+
+    const seamNote = partitionZs.length
+      ? ` · ${partitionZs.length} cut → ${partitionZs.length + 1} bands`
+      : "";
     setStatus(
-      `live preview · cylinder R=${cyl.R} L=${cyl.L} t=${cyl.t} · R/t=${(cyl.R / cyl.t).toFixed(0)}`
+      `live preview · cylinder R=${cyl.R} L=${cyl.L} t=${cyl.t} · R/t=${(cyl.R / cyl.t).toFixed(0)}${seamNote}`
     );
     return () => {
       // Tear-down handled at next effect run (or on unmount inside init).
     };
-  }, [mode, cyl.R, cyl.L, cyl.t, showEdges, setStatus]);
+  }, [mode, cyl.R, cyl.L, cyl.t, partitionsKey, showEdges, setStatus]);
 
   // -------------------------------------------------------------------
   // Post-mode: load + build result on selection change (existing path).
@@ -512,6 +544,25 @@ function buildCylinderEdges(R, L, segmentsAround = 64, axialRings = 4, meridians
     const a = (m / meridians) * 2 * Math.PI;
     pts.push(R * Math.cos(a), R * Math.sin(a), 0);
     pts.push(R * Math.cos(a), R * Math.sin(a), L);
+  }
+  const arr = new Float32Array(pts);
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+  return geom;
+}
+
+/** Bright ring at each axial cut z — used in pre-mode to flag the partition
+ * layout. Radius bumped slightly outside the cylinder so the line sits proud
+ * of the surface (no z-fighting with the Lambertian preview mesh). */
+function buildPartitionRings(R, zs, segmentsAround = 96) {
+  const pts = [];
+  for (const z of zs) {
+    for (let i = 0; i < segmentsAround; i++) {
+      const a0 = (i / segmentsAround) * 2 * Math.PI;
+      const a1 = ((i + 1) / segmentsAround) * 2 * Math.PI;
+      pts.push(R * Math.cos(a0), R * Math.sin(a0), z);
+      pts.push(R * Math.cos(a1), R * Math.sin(a1), z);
+    }
   }
   const arr = new Float32Array(pts);
   const geom = new THREE.BufferGeometry();
