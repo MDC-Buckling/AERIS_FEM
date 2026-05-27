@@ -4,6 +4,22 @@ import SectionHeader from "../components/ui/SectionHeader.jsx";
 import { MONO } from "../constants.js";
 import { useUI } from "../store.js";
 import { findItem, SECTIONS } from "./modelTree.js";
+import GeometryShape from "./sections/GeometryShape.jsx";
+import GeometryDimensions from "./sections/GeometryDimensions.jsx";
+
+/** Sub-items that have a real, wired inspector this session.
+ * Adding to this set drops the "STUB · NOT WIRED" badge for that item. */
+const WIRED_ITEMS = new Set(["geometry.shape", "geometry.dimensions"]);
+
+/** Per-item real inspector dispatcher. Returns null if not wired (the
+ * caller falls back to the generic StubBody renderer). */
+function WiredInspector({ dottedId }) {
+  switch (dottedId) {
+    case "geometry.shape": return <GeometryShape />;
+    case "geometry.dimensions": return <GeometryDimensions />;
+    default: return null;
+  }
+}
 
 /* ----------------------------------------------------------------------
  * Per-kind stub renderers — non-functional, just the structural sketch
@@ -28,6 +44,43 @@ function StubBadge() {
       }}
     >
       stub · not wired
+    </div>
+  );
+}
+
+/** Live one-liner showing the CURRENT value of a wired item, falling back
+ * to the static default preview. */
+function LivePreviewLine({ dottedId, fallback }) {
+  const cyl = useUI((s) => s.model.geometry.cylinder);
+  const shape = useUI((s) => s.model.geometry.shape);
+
+  let text = fallback;
+  if (dottedId === "geometry.dimensions") {
+    text = `R=${cyl.R}  L=${cyl.L}  t=${cyl.t}  ·  R/t=${(cyl.R / cyl.t).toFixed(0)}`;
+  } else if (dottedId === "geometry.shape") {
+    text = shape;
+  }
+  return <>current value: {text}</>;
+}
+
+function ConfiguredBadge() {
+  return (
+    <div
+      style={{
+        display: "inline-block",
+        padding: "2px 7px",
+        background: "var(--success-soft-bg)",
+        border: "1px solid var(--success-border)",
+        color: "var(--success)",
+        borderRadius: 999,
+        fontSize: 9,
+        fontWeight: 700,
+        fontFamily: MONO,
+        letterSpacing: 0.08,
+        textTransform: "uppercase",
+      }}
+    >
+      configured · live
     </div>
   );
 }
@@ -320,56 +373,62 @@ export default function PreInspectorPanel() {
           <Note>Select an item in the model tree to see its configuration.</Note>
         )}
 
-        {found?.item && (
-          <>
-            <div
-              style={{
-                marginBottom: 6,
-                fontSize: 9.5,
-                color: "var(--text-muted)",
-                fontFamily: MONO,
-                textTransform: "uppercase",
-                letterSpacing: 0.1,
-              }}
-            >
-              {found.section.label}
-            </div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "baseline",
-                justifyContent: "space-between",
-                marginBottom: 6,
-              }}
-            >
-              <span
+        {found?.item && (() => {
+          const wired = WIRED_ITEMS.has(selected);
+          return (
+            <>
+              <div
                 style={{
-                  fontSize: 14,
-                  fontWeight: 700,
-                  color: "var(--text-primary)",
+                  marginBottom: 6,
+                  fontSize: 9.5,
+                  color: "var(--text-muted)",
                   fontFamily: MONO,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.1,
                 }}
               >
-                {found.item.label}
-              </span>
-              <StubBadge />
-            </div>
-            <div
-              style={{
-                fontSize: 11,
-                color: "var(--accent-muted)",
-                fontFamily: MONO,
-                marginBottom: 10,
-              }}
-              className="num"
-            >
-              current preview: {found.item.defaultPreview ?? "—"}
-            </div>
+                {found.section.label}
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  justifyContent: "space-between",
+                  marginBottom: 6,
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 14,
+                    fontWeight: 700,
+                    color: "var(--text-primary)",
+                    fontFamily: MONO,
+                  }}
+                >
+                  {found.item.label}
+                </span>
+                {wired ? <ConfiguredBadge /> : <StubBadge />}
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--accent-muted)",
+                  fontFamily: MONO,
+                  marginBottom: 10,
+                }}
+                className="num"
+              >
+                <LivePreviewLine dottedId={selected} fallback={found.item.defaultPreview} />
+              </div>
 
-            <SectionHeader>configuration</SectionHeader>
-            <StubBody section={found.section} item={found.item} />
-          </>
-        )}
+              <SectionHeader>configuration</SectionHeader>
+              {wired
+                ? <WiredInspector dottedId={selected} />
+                : <StubBody section={found.section} item={found.item} />
+              }
+            </>
+          );
+        })()}
       </div>
 
       <div

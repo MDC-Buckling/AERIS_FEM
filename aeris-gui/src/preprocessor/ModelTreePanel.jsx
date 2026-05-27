@@ -94,7 +94,23 @@ function SectionHeader({ section, expanded, status, sectionIndex, onToggle }) {
   );
 }
 
-function SubItem({ section, item, active, onClick }) {
+/** For wired items, build the small preview line from live store state.
+ * Mirrors LivePreviewLine in PreInspectorPanel.jsx (kept tiny — only fields
+ * that actually drive the run get a live line here; others stay static). */
+function previewFor(dottedId, model) {
+  if (dottedId === "geometry.dimensions") {
+    const c = model.geometry.cylinder;
+    return `R=${c.R}  L=${c.L}  t=${c.t}`;
+  }
+  if (dottedId === "geometry.shape") {
+    return model.geometry.shape;
+  }
+  return null;
+}
+
+function SubItem({ section, item, active, onClick, dottedId }) {
+  const model = useUI((s) => s.model);
+  const live = previewFor(dottedId, model);
   return (
     <button
       type="button"
@@ -139,7 +155,7 @@ function SubItem({ section, item, active, onClick }) {
         }}
         className="num"
       >
-        {item.defaultPreview ?? "—"}
+        {live ?? item.defaultPreview ?? "—"}
         {item.disabled && (
           <span
             style={{
@@ -231,6 +247,7 @@ export default function ModelTreePanel() {
                         key={dotted}
                         section={section}
                         item={item}
+                        dottedId={dotted}
                         active={selected === dotted}
                         onClick={() => selectItem(dotted)}
                       />
