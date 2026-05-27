@@ -310,8 +310,9 @@ function aerisOutputServer() {
             return;
           }
 
-          const scriptsDir = path.resolve(__dirname, "..", "scripts");
-          const outputDir  = path.resolve(__dirname, "..", "output");
+          const scriptsDir   = path.resolve(__dirname, "..", "scripts");
+          const benchmarksDir = path.resolve(__dirname, "..", "benchmarks");
+          const outputDir    = path.resolve(__dirname, "..", "output");
           const jobId = opts.jobId ? slugifyJobName(opts.jobId) : null;
           // Per-job folder if jobId given (the GUI flow always sets it now),
           // else legacy flat output/ for back-compat with older /save-model
@@ -325,6 +326,45 @@ function aerisOutputServer() {
             res.end(JSON.stringify({
               ok: false,
               error: `model.json not found at ${modelPath}; call /save-model first`,
+            }));
+            return;
+          }
+
+          // Dispatch on (geometry.shape, analysis.kind) so the right solver
+          // script runs. cylinder_lba.py owns the closed-cylinder + LBA
+          // pipeline (proven path); scordelis_static.py owns the
+          // cylinder_segment + static linear pipeline (Inc 3 of the
+          // Scordelis-Lo integration). The script file lives in scripts/
+          // for both — same /scripts mount, different entry points.
+          // Unknown combinations get a 400 with a hint, so the user knows
+          // which sections to tweak instead of seeing a cryptic solver
+          // error 600 ms later.
+          let solverScript, solverPaysAttentionToRefines;
+          try {
+            const modelPeek = JSON.parse(fs.readFileSync(modelPath, "utf8"));
+            const shape = modelPeek?.geometry?.shape ?? "cylinder";
+            const akind = modelPeek?.analysis?.kind ?? "lba";
+            if (shape === "cylinder" && akind === "lba") {
+              solverScript = "/scripts/cylinder_lba.py";
+              solverPaysAttentionToRefines = true;
+            } else if (shape === "cylinder_segment" && akind === "static") {
+              solverScript = "/scripts/scordelis_static.py";
+              solverPaysAttentionToRefines = true;
+            } else {
+              res.statusCode = 400;
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({
+                ok: false,
+                error: `no solver wired for (shape=${shape}, analysis.kind=${akind})`,
+                hint: "supported today: (cylinder, lba), (cylinder_segment, static)",
+              }));
+              return;
+            }
+          } catch (e) {
+            res.statusCode = 400;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({
+              ok: false, error: `model.json parse failed: ${e.message}`,
             }));
             return;
           }
@@ -348,18 +388,32 @@ function aerisOutputServer() {
           } else {
             refines = [5];
           }
+          // The two scripts share --model + --refines but cylinder_lba.py
+          // also takes --plot-dir (writes mode shapes there); scordelis_
+          // static.py writes its single solution.pvd into /work directly.
+          const scriptArgs = [
+            "--model", "/work/model.json",
+            "--refines", ...refines.map(String),
+          ];
+          if (solverScript === "/scripts/cylinder_lba.py") {
+            scriptArgs.push("--plot-dir", "/work");
+          } else if (solverScript === "/scripts/scordelis_static.py") {
+            scriptArgs.push("--threads", String(threads));
+          }
           const args = [
             "run", "--rm",
             "-e", `OMP_NUM_THREADS=${threads}`,
             "-v", `${scriptsDir}:/scripts:ro`,
+            // benchmarks/ mounted so scordelis_static.py can import the
+            // shared /benchmarks/common/vts.py StructuredGrid parser
+            // without copy-pasting it into scripts/.
+            "-v", `${benchmarksDir}:/benchmarks:ro`,
             "-v", `${workDir}:/work:rw`,
             SOLVER_IMAGE,
             "python3", "-u",                  // -u: unbuffered, so phase
                                               // markers flush in real time
-            "/scripts/cylinder_lba.py",
-            "--model", "/work/model.json",
-            "--refines", ...refines.map(String),
-            "--plot-dir", "/work",
+            solverScript,
+            ...scriptArgs,
           ];
 
           // Create the record immediately in "queued" state so the GUI
