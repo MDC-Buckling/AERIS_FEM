@@ -69,8 +69,16 @@ SCHEMA_VERSION = 2
 # ---------------------------------------------------------------------------
 
 DEFAULT_GEOMETRY: Dict[str, Any] = {
+    # Default cylinder pinned to a realistic steel-shell case (Session 3.3, on
+    # user request): R=33, L=100, t=0.1 mm — R/t = 330 (very thin), L/R ≈ 3.
+    # Engineering units assumed: mm for lengths, MPa for stresses → forces
+    # naturally come out in N. The whole pipeline is unit-agnostic; the user
+    # picks a consistent system and sticks to it (see the input hint in the
+    # GUI). Old E=1, R=1, L=1, t=0.01 dimensionless defaults are still
+    # mathematically equivalent; the new defaults are just a friendlier
+    # starting point for the engineering audience.
     "shape": "cylinder",
-    "cylinder": {"R": 1.0, "L": 1.0, "t": 0.01},
+    "cylinder": {"R": 33.0, "L": 100.0, "t": 0.1},
 }
 
 # materials[] is a library — any section can reference any material by id.
@@ -79,9 +87,12 @@ DEFAULT_GEOMETRY: Dict[str, Any] = {
 DEFAULT_MATERIALS: list[Dict[str, Any]] = [
     {
         "id": "mat-default",
-        "name": "Linear isotropic (default)",
-        "model": "linear",   # → gsMaterialMatrixLinear<3>  (Saint-Venant Kirchhoff)
-        "E": 1.0,
+        # S235 / mild steel ballpark: E ≈ 208 GPa, ν ≈ 0.3. Stays inside the
+        # large-E-safe regime now that build_cylinder_xml scales the Neumann
+        # load by E to dodge the K_NL-K_L catastrophic cancellation.
+        "name": "Steel (linear isotropic)",
+        "model": "linear",   # → gsMaterialMatrixLinear<3> (Saint-Venant Kirchhoff)
+        "E": 208000.0,       # MPa  ≡ N/mm²
         "nu": 0.3,
         # Reserved schema slots — added when the relevant analysis lands:
         #   "yield":   used by Plasticity Correction (not affecting linear LBA)

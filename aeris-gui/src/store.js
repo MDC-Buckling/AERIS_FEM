@@ -73,16 +73,22 @@ export const useUI = create((set) => ({
   model: {
     schemaVersion: 2,
     name: "Cylinder LBA",
+    // Session-3.3 default: realistic steel-shell case in mm/MPa.
+    // R=33, L=100, t=0.1 mm  (R/t = 330, very thin; L/R ≈ 3).
+    // E=208 GPa, ν=0.3 (S235 mild-steel ballpark).
+    // The whole pipeline is unit-agnostic — pick a consistent system and
+    // stick to it. Old dimensionless E=1/R=1 path still works (see
+    // build_cylinder_xml comment about the E-scaling fix for large E).
     geometry: {
       shape: "cylinder",
-      cylinder: { R: 1.0, L: 1.0, t: 0.01 },
+      cylinder: { R: 33.0, L: 100.0, t: 0.1 },
     },
     materials: [
       {
         id: "mat-default",
-        name: "Linear isotropic (default)",
+        name: "Steel (linear isotropic)",
         model: "linear",
-        E: 1.0,
+        E: 208000.0,   // MPa
         nu: 0.3,
       },
     ],
