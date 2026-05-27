@@ -1,4 +1,5 @@
 import React from "react";
+import NumberField from "../../components/ui/NumberField.jsx";
 import ToggleGroup from "../../components/ui/ToggleGroup.jsx";
 import { MONO } from "../../constants.js";
 import { useUI } from "../../store.js";
@@ -46,8 +47,24 @@ const LOAD_DESCRIPTIONS = {
 export default function LoadCase() {
   const load = useUI((s) => s.model.load);
   const setKind = useUI((s) => s.setLoadKind);
+  const setMagnitude = useUI((s) => s.setLoadMagnitude);
 
   const desc = LOAD_DESCRIPTIONS[load.kind] ?? "?";
+
+  // ABAQUS LBA convention: apply 1 N (axial) or 1 N·mm (bending) as the
+  // reference and read the eigenvalue as the critical load directly. Symbol
+  // and human label flip with load.kind; the unit string stays generic
+  // ("force" / "moment") because the whole model is unit-agnostic — the
+  // user is responsible for keeping mm/MPa/N consistent across geometry,
+  // material and load.
+  const isBending = load.kind === "bending";
+  const magSymbol = isBending ? "M" : "F";
+  const magLabel = isBending
+    ? "Applied bending moment  (M)"
+    : "Applied axial force  (F)";
+  const magHint = isBending
+    ? "in your consistent unit system (e.g. N·mm if you used mm + MPa). Set to 1 to read the eigenvalue as M_cr directly; set to your real applied moment to read the verdict as a safety factor."
+    : "in your consistent unit system (e.g. N if you used mm + MPa). Set to 1 to read the eigenvalue as F_cr directly; set to your real applied force to read the verdict as a safety factor.";
 
   return (
     <>
@@ -69,6 +86,18 @@ export default function LoadCase() {
           fullWidth
         />
       </div>
+
+      <NumberField
+        label={magLabel}
+        symbol={magSymbol}
+        unit="–"
+        value={load.magnitude ?? 1.0}
+        onChange={setMagnitude}
+        min={1e-12}
+        step={isBending ? 1.0 : 0.1}
+        precision={6}
+        hint={magHint}
+      />
 
       <div
         style={{
@@ -108,10 +137,11 @@ export default function LoadCase() {
             lineHeight: 1.45,
           }}
         >
-          Traction magnitude is{" "}
-          <span style={{ color: "var(--accent-muted)" }}>auto</span> — set so
-          the implied |σ_max| = E. Manual override field lands when a use case
-          actually needs it (e.g. matching a specific Brazier number).
+          Internal Neumann magnitude is E-scaled for numerical conditioning
+          (the K_NL − K_L cancellation trick — see Session 3.3 README). Your{" "}
+          <span style={{ color: "var(--accent-muted)" }}>{magSymbol}</span>{" "}
+          above does not change the eigenvalue, only how the verdict reports
+          the critical load.
         </div>
       </div>
 

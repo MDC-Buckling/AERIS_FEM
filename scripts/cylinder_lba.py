@@ -806,6 +806,41 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Finest mesh sigma_cr_computed = {sigma_finest:.6e}")
     print(f"Classical sigma_cr            = {sigma_cr_ref:.6e}")
     print(f"Relative deviation            = {pct_finest:+.2f}%")
+
+    # ABAQUS-style LBA convention: report the buckling LOAD in the user's
+    # units, scaled by load.magnitude. For magnitude=1 the eigenvalue itself
+    # reads as the critical load (F or M); for any other magnitude the load
+    # factor (= F_cr / F_applied) is printed too. The eigenvalue is
+    # invariant under this scaling — magnitude only affects the verdict
+    # output, the XML Neumann is independently E-scaled for conditioning.
+    magnitude = float(model.load.get("magnitude", 1.0))
+    A_axial = 2.0 * math.pi * case.R * case.t
+    I_bend  = math.pi * case.R**3 * case.t
+    if load_kind == "axial":
+        applied_label, applied_symbol, applied_unit = "axial force", "F", ""
+        F_cr_computed = sigma_finest * A_axial
+        F_cr_classical = sigma_cr_ref * A_axial
+        critical = F_cr_computed
+        critical_classical = F_cr_classical
+    elif load_kind == "bending":
+        applied_label, applied_symbol, applied_unit = "bending moment", "M", ""
+        # sigma_max = M·R/I  →  M = sigma_max · I / R = sigma_max · π·R²·t
+        M_cr_computed = sigma_finest * I_bend / case.R
+        M_cr_classical = sigma_cr_ref * I_bend / case.R
+        critical = M_cr_computed
+        critical_classical = M_cr_classical
+    else:
+        critical = critical_classical = None
+
+    if critical is not None:
+        print()
+        print(f"Applied {applied_label:<14}: {applied_symbol} = {magnitude:.6g}{applied_unit}")
+        print(f"Critical (computed)  : {applied_symbol}_cr = {critical:.6e}{applied_unit}")
+        print(f"Critical (classical) : {applied_symbol}_cr = {critical_classical:.6e}{applied_unit}")
+        if magnitude != 1.0 and magnitude != 0.0:
+            print(f"Load factor          : {applied_symbol}_cr / {applied_symbol}_applied = "
+                  f"{critical / magnitude:.6e}")
+
     if abs(pct_finest) < 25.0:
         print("\nORDER OF MAGNITUDE OK — gap within expected finite-length /")
         print("clamped vs classical-infinite-cylinder envelope (~ +/- 25%).")

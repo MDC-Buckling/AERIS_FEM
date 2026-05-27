@@ -110,7 +110,12 @@ export const useUI = create((set) => ({
       coupling: "gsSmoothInterfaces",
     },
     bcs: { kind: "clamped_neumann" },
-    load: { kind: "axial", neumann_traction_axial: "auto" },
+    // ABAQUS-LBA convention: magnitude is the applied F (axial) or M (bending)
+    // in the user's consistent unit system. Default 1 means the eigenvalue
+    // reads as the critical load directly (multiply by your real applied
+    // load to get the safety factor). The solver's internal Neumann is
+    // independently E-scaled for numerical conditioning.
+    load: { kind: "axial", magnitude: 1.0 },
     analysis: {
       kind: "lba", nmodes: 5,
       solver: "spectra-buckling", shift: "auto",
@@ -273,6 +278,17 @@ export const useUI = create((set) => ({
    * land. */
   setLoadKind: (kind) =>
     set((s) => ({ model: { ...s.model, load: { ...s.model.load, kind } } })),
+
+  /** Set the applied-load magnitude (model.load.magnitude). Cosmetic for
+   * LBA — the eigenvalue is invariant under this scaling — but it lets
+   * the user read the verdict's critical-load number in their own units
+   * (ABAQUS-style: apply 1, get F_cr; apply 1000, get safety factor). */
+  setLoadMagnitude: (value) =>
+    set((s) => {
+      const v = Number(value);
+      if (!Number.isFinite(v) || v <= 0) return {};
+      return { model: { ...s.model, load: { ...s.model.load, magnitude: v } } };
+    }),
 
   /** Serialise the current model state into the on-disk model.json schema
    * (mirrors scripts/aeris_model.py::ModelConfig.to_dict). JSON.stringify

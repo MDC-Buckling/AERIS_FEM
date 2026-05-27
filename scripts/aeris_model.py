@@ -155,8 +155,28 @@ DEFAULT_BCS: Dict[str, Any] = {
 
 DEFAULT_LOAD: Dict[str, Any] = {
     "kind": "axial",
-    "neumann_traction_axial": "auto",   # → resolves to shell thickness `t`
+    # User-facing applied-load magnitude, ABAQUS-LBA convention: F (force) for
+    # axial, M (moment) for bending — interpreted in whatever consistent unit
+    # system the rest of the model uses (N + mm + MPa, or N + m + Pa, etc.).
+    # The eigenvalue is multiplied by this to report critical load (F_cr or
+    # M_cr) in the user's units; default 1.0 means λ_1 itself reads as the
+    # buckling load. The XML Neumann magnitude is independently E-scaled for
+    # numerical conditioning (see build_cylinder_xml) — magnitude here is
+    # purely a verdict-side scaling, the eigenvalue is invariant.
+    "magnitude": 1.0,
 }
+
+
+def _migrate_load(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Reconcile incoming load dict with the current DEFAULT_LOAD shape.
+
+    Backward-compat: the pre-3.7 field name was `neumann_traction_axial`
+    (always set to "auto" in practice). If present, drop it — the new
+    `magnitude` field replaces it with a real number defaulting to 1.0.
+    Saved files don't need to be re-written; from_dict is idempotent."""
+    out = {**DEFAULT_LOAD, **(raw or {})}
+    out.pop("neumann_traction_axial", None)
+    return out
 
 DEFAULT_ANALYSIS: Dict[str, Any] = {
     "kind": "lba",
@@ -267,7 +287,7 @@ class ModelConfig:
             assignments=list(d.get("assignments") or [dict(a) for a in DEFAULT_ASSIGNMENTS]),
             mesh={**DEFAULT_MESH, **d.get("mesh", {})},
             bcs={**DEFAULT_BCS, **d.get("bcs", {})},
-            load={**DEFAULT_LOAD, **d.get("load", {})},
+            load=_migrate_load(d.get("load", {})),
             analysis={**DEFAULT_ANALYSIS, **d.get("analysis", {})},
             schemaVersion=SCHEMA_VERSION,
         )
