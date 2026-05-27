@@ -190,9 +190,29 @@ export default function Viewport3D() {
       flatShading: false,
     });
 
+    // -----------------------------------------------------------------
+    // Coordinate-system gizmo — small XYZ axis triad in the bottom-left
+    // corner, kept rotation-locked to the main camera so the user always
+    // knows which way is up. Lives in its own scene + perspective camera,
+    // drawn in a second render pass via setViewport/setScissor so it
+    // doesn't need its own canvas. Red = X, green = Y, blue = Z, matching
+    // the three.js convention (and ABAQUS / ParaView / most CAD).
+    // -----------------------------------------------------------------
+    const gizmo = buildAxesGizmo();
+    const gizmoSize = 120;       // CSS px square in the corner
+    const gizmoMarginX = 14;     // CSS px gap to the left edge
+    const gizmoMarginY = 36;     // CSS px gap to the bottom edge — extra
+                                 // headroom so the triad isn't kissing the
+                                 // canvas bottom (also dodges any future
+                                 // status-bar overlay).
+
+    let canvasW = 1;
+    let canvasH = 1;
     function resize() {
       const w = container.clientWidth;
       const h = container.clientHeight;
+      canvasW = w;
+      canvasH = h;
       renderer.setSize(w, h, false);
       camera.aspect = w / Math.max(h, 1);
       camera.updateProjectionMatrix();
@@ -205,7 +225,31 @@ export default function Viewport3D() {
     function tick() {
       raf = requestAnimationFrame(tick);
       controls.update();
+
+      // Main scene fills the canvas. setViewport takes CSS pixels (three
+      // r155+), so we pass the container size — NOT domElement.width,
+      // which is already DPR-scaled and would push everything off-screen.
+      renderer.setViewport(0, 0, canvasW, canvasH);
+      renderer.setScissor(0, 0, canvasW, canvasH);
+      renderer.setScissorTest(false);
       renderer.render(scene, camera);
+
+      // Gizmo: sync rotation to the main camera, then draw into the
+      // bottom-left corner. setScissorTest gates clearDepth so we get
+      // the gizmo drawn over the previous frame without wiping the
+      // surrounding pixels. Distance is arbitrary for the ortho camera
+      // — only direction + up matter — but kept finite and >> arrow
+      // length so nothing sits behind the camera.
+      const dir = camera.position.clone().sub(controls.target).normalize();
+      gizmo.camera.position.copy(dir).multiplyScalar(4);
+      gizmo.camera.up.copy(camera.up);
+      gizmo.camera.lookAt(0, 0, 0);
+      renderer.setViewport(gizmoMarginX, gizmoMarginY, gizmoSize, gizmoSize);
+      renderer.setScissor(gizmoMarginX, gizmoMarginY, gizmoSize, gizmoSize);
+      renderer.setScissorTest(true);
+      renderer.clearDepth();
+      renderer.render(gizmo.scene, gizmo.camera);
+      renderer.setScissorTest(false);
     }
     tick();
 
@@ -237,6 +281,7 @@ export default function Viewport3D() {
       wireMaterial.dispose();
       seamMaterial.dispose();
       rampTex.dispose();
+      gizmo.dispose();
       while (meshGroup.children.length) {
         const c = meshGroup.children.pop();
         c.geometry?.dispose();
@@ -549,6 +594,95 @@ function buildCylinderEdges(R, L, segmentsAround = 64, axialRings = 4, meridians
   const geom = new THREE.BufferGeometry();
   geom.setAttribute("position", new THREE.BufferAttribute(arr, 3));
   return geom;
+}
+
+/** Build the corner XYZ axis triad. Red = X, green = Y, blue = Z arrows
+ * from origin out to length 1, with sprite labels just past each tip. Owns
+ * its own scene + camera; the render loop syncs the camera rotation to the
+ * main view each frame and draws the triad into a fixed-size corner viewport
+ * via setScissor. Returns {scene, camera, dispose} so the caller can render
+ * + tear down without knowing the internals. */
+function buildAxesGizmo() {
+  const scene = new THREE.Scene();
+  // Orthographic camera so the triad doesn't get perspective-foreshortened
+  // (axes from a CAD gizmo should read as equal lengths regardless of view
+  // angle). Bounds are sized to leave headroom for the labels at +1.32
+  // along each axis no matter how the camera is rotated — diagonal worst
+  // case is sqrt(3)·1.32 ≈ 2.29, so [-1.7, 1.7] keeps the worst-axis tip
+  // inside the box with a small margin.
+  const camera = new THREE.OrthographicCamera(-1.7, 1.7, 1.7, -1.7, 0.1, 20);
+  camera.position.set(0, 0, 4);
+  camera.lookAt(0, 0, 0);
+
+  const origin = new THREE.Vector3(0, 0, 0);
+  const len = 1.0;
+  const headLen = 0.28;
+  const headWidth = 0.16;
+
+  const xArr = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), origin, len, 0xff4040, headLen, headWidth);
+  const yArr = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), origin, len, 0x40dd60, headLen, headWidth);
+  const zArr = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), origin, len, 0x4090ff, headLen, headWidth);
+  scene.add(xArr, yArr, zArr);
+
+  // Tiny origin dot so the arrow tails read as anchored to a point, not
+  // floating in space.
+  const dot = new THREE.Mesh(
+    new THREE.SphereGeometry(0.06, 12, 12),
+    new THREE.MeshBasicMaterial({ color: 0xaad6e8 }),
+  );
+  scene.add(dot);
+
+  const xLbl = makeAxisLabel("x", "#ff6060");
+  const yLbl = makeAxisLabel("y", "#60e080");
+  const zLbl = makeAxisLabel("z", "#60a8ff");
+  xLbl.position.set(len + 0.32, 0, 0);
+  yLbl.position.set(0, len + 0.32, 0);
+  zLbl.position.set(0, 0, len + 0.32);
+  scene.add(xLbl, yLbl, zLbl);
+
+  function dispose() {
+    [xArr, yArr, zArr].forEach((a) => {
+      a.line.geometry.dispose();
+      a.line.material.dispose();
+      a.cone.geometry.dispose();
+      a.cone.material.dispose();
+    });
+    dot.geometry.dispose();
+    dot.material.dispose();
+    [xLbl, yLbl, zLbl].forEach((l) => {
+      l.material.map?.dispose();
+      l.material.dispose();
+    });
+  }
+
+  return { scene, camera, dispose };
+}
+
+/** Canvas-textured sprite for the axis tip labels (x/y/z). Drawn into a
+ * small power-of-two canvas at high contrast so the letter stays readable
+ * against either the dark or light viewport backdrop. */
+function makeAxisLabel(letter, color) {
+  const size = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, size, size);
+  ctx.fillStyle = color;
+  ctx.font = "bold 44px JetBrains Mono, Menlo, monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.shadowColor = "rgba(0,0,0,0.85)";
+  ctx.shadowBlur = 6;
+  ctx.fillText(letter, size / 2, size / 2 + 2);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(0.55, 0.55, 1);
+  return sprite;
 }
 
 /** Bright ring at each axial cut z — used in pre-mode to flag the partition
