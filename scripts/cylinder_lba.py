@@ -708,6 +708,14 @@ def main(argv: list[str] | None = None) -> int:
 
     load_kind = model.load.get("kind", "axial")
 
+    # Phase markers — picked up by the aeris-gui dev server's /run-status
+    # endpoint to drive the live solver-monitor. Format is a single line
+    # `[AERIS-PHASE] <name>`, flushed immediately. Names are stable; the
+    # GUI's phase list is keyed off them.
+    def _phase(name: str) -> None:
+        print(f"[AERIS-PHASE] {name}", flush=True)
+
+    _phase("setup")
     print("=" * 70)
     print("Aeris cylinder LBA — classical vs gsKLShell")
     print("=" * 70)
@@ -752,6 +760,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Solver exe: {EXE}")
     print()
 
+    _phase("solving")
     print("Convergence sweep:")
     print(f"  {'-r':>4}  {'#modes':>6}  {'lambda_1':>16}  "
           f"{'sigma_cr_computed':>20}  {'% vs classical':>16}")
@@ -759,6 +768,7 @@ def main(argv: list[str] | None = None) -> int:
 
     table: list[tuple[int, float, float, float]] = []
     for r in args.refines:
+        _phase(f"solving_r{r}")
         eigs = run_buckling(xml_path, r=r, e=args.elevate, nmodes=nmodes,
                             method=method, degree=degree, smoothness=smoothness)
         lam1 = first_physical_positive(eigs)
@@ -782,6 +792,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"        raw physical eigs: {clean}")
         table.append((r, lam1, sigma_computed, pct))
 
+    _phase("verdict")
     # ----- ParaView export pass (one extra solve at the FINEST refinement) ----
     # Defaults to /aeris-output if it exists (standard host-mount target) so
     # the user gets visuals without extra flags. Skipped if --no-plot.
@@ -792,6 +803,7 @@ def main(argv: list[str] | None = None) -> int:
         plot_dir = args.plot_dir
 
     if plot_dir is not None and not args.no_plot and table:
+        _phase("plot_export")
         r_finest = args.refines[-1]
         print()
         print("=" * 70)
@@ -886,8 +898,10 @@ def main(argv: list[str] | None = None) -> int:
     if abs(pct_finest) < 25.0:
         print("\nORDER OF MAGNITUDE OK — gap within expected finite-length /")
         print("clamped vs classical-infinite-cylinder envelope (~ +/- 25%).")
+        _phase("done")
         return 0
     print("\nDEVIATION TOO LARGE — check BCs / units / sign / refinement.")
+    _phase("done")
     return 2
 
 

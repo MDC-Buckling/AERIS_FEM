@@ -351,22 +351,27 @@ export const useUI = create((set) => ({
   lastRun: { status: "idle" },
   setLastRun: (next) => set({ lastRun: next }),
 
-  /** End-to-end Solve: serialise the model, POST to /save-model so the
-   * server writes model.json to ../output/, then POST to /run-solver
-   * which spawns the docker container. Blocking — awaits the full
-   * docker run before returning. Sets lastRun through its state
-   * machine so the UI can spin a "running" indicator. Never throws:
-   * caller doesn't need a try/catch, errors surface via lastRun.status
-   * = "failed" with the message in .error.
+  /** End-to-end Solve: serialise the model, POST to /save-model, then POST
+   * to /run-solver to async-start the docker container. The solver returns
+   * a runId immediately; we then poll /run-status every POLL_INTERVAL_MS
+   * until the run terminates (success / failed), updating lastRun on every
+   * tick so the GUI's live monitor can show current phase + elapsed time
+   * + tail of stdout while the docker container is running.
    *
-   * Picks the refinement from model.mesh.refinement so the single Solve
-   * matches what the inspector is showing — the script's default
-   * --refines [3,4,5] sweep is for benchmarking convergence, not a
-   * one-click Solve. */
+   * Never throws — errors surface via lastRun.status = "failed". Picks the
+   * refinement from model.mesh.refinement so the Solve matches what the
+   * inspector shows (not the script's default [3,4,5] sweep). */
   runSolver: async () => {
+    const POLL_INTERVAL_MS = 500;
     const state = useUI.getState();
-    state.setLastRun({ status: "running", startedAt: Date.now() });
+    state.setLastRun({
+      status: "running",
+      phase: "starting",
+      startedAt: Date.now(),
+      elapsedMs: 0,
+    });
     try {
+      // 1) Save model
       const saveRes = await fetch("/save-model", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -375,22 +380,30 @@ export const useUI = create((set) => ({
       const saveData = await saveRes.json();
       if (!saveData.ok) throw new Error(`save failed: ${saveData.error}`);
 
-      const runRes = await fetch("/run-solver", {
+      // 2) Async-start solver — returns immediately with runId
+      const startRes = await fetch("/run-solver", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ refinement: state.model.mesh.refinement }),
       });
-      const runData = await runRes.json();
+      const startData = await startRes.json();
+      if (!startData.ok) throw new Error(`start failed: ${startData.error}`);
+      const { runId } = startData;
 
-      state.setLastRun({
-        status: runData.ok ? "success" : "failed",
-        ...runData,
-        finishedAt: Date.now(),
-      });
-      return runData;
+      // 3) Poll loop — patches lastRun on each tick until terminal status
+      while (true) {
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+        const statusRes = await fetch(`/run-status?id=${encodeURIComponent(runId)}`);
+        const statusData = await statusRes.json();
+        if (!statusData.ok) throw new Error(`poll failed: ${statusData.error}`);
+        useUI.getState().setLastRun({ ...statusData, runId });
+        if (statusData.status === "success" || statusData.status === "failed") {
+          return statusData;
+        }
+      }
     } catch (err) {
       const errorMsg = err?.message ?? String(err);
-      state.setLastRun({
+      useUI.getState().setLastRun({
         status: "failed",
         error: errorMsg,
         finishedAt: Date.now(),
