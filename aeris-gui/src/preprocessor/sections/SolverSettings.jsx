@@ -27,6 +27,34 @@ const SOLVER_OPTIONS = [
   ["spectra-cayley",       "Cayley"],
 ];
 
+/** Per-mode descriptive block — title + one-liner + when to pick + caveat
+ * + how the shift behaves. Shown under the toggle so the user sees what's
+ * actually different about the currently selected mode, not all three at
+ * once. */
+const SOLVER_INFO = {
+  "spectra-buckling": {
+    title: "Spectra GEigsMode::Buckling  (mode 3)",
+    line: "Specialised for K_L · v = λ · K_geom · v with K_L SPD and K_geom indefinite — exactly our LBA shape.",
+    bestWhen: "default for every load case we wire (axial, bending, …). Fastest convergence on the lowest physical buckling mode.",
+    caveat: "demands a strictly positive shift below the smallest expected eigenvalue. The auto-shift handles this; with EXPLICIT, pick a number between 0 and your expected λ_1 (in normalised units, i.e. ≈ σ_cr / E).",
+    shiftHint: "shift acts as a lower bound on the spectrum being hunted — eigenvalues nearest from above come back first.",
+  },
+  "spectra-shift-invert": {
+    title: "Spectra GEigsMode::ShiftInvert  (mode 2)",
+    line: "Generic shift-invert. Solves (K − σ·M)⁻¹ M v = θ v with θ = 1/(λ − σ); transforms the spectrum so eigenvalues closest to σ map to the largest |θ|.",
+    bestWhen: "fallback when Buckling mode reports non-convergence or returns garbage at extreme parameters (very large E, very thin shell, bad conditioning).",
+    caveat: "no positivity guarantee — may return spurious eigenvalues if the shift sits inside a cluster. Use the same auto-shift as Buckling; deviate only with a specific cluster target in mind.",
+    shiftHint: "shift is a CENTER point. The N nearest eigenvalues (above OR below σ) come back first.",
+  },
+  "spectra-cayley": {
+    title: "Spectra GEigsMode::Cayley  (mode 4)",
+    line: "Cayley-transform shift-invert: maps the spectrum via (λ − σ) / (λ + σ), then shift-inverts. Often better separates clustered eigenvalues than mode 2.",
+    bestWhen: "ablation / cross-check during validation, or when Shift-Invert gets stuck on a degenerate doublet pair. Rare in practice for cylinder LBA — keep around as a sanity-check tool.",
+    caveat: "shift must NOT lie at zero or at any eigenvalue (Cayley transform singular there). Auto-shift = σ_cr/E is safely off both.",
+    shiftHint: "shift is a pivot for the (λ−σ)/(λ+σ) transform. Picking close to an eigenvalue speeds convergence but risks numerical breakdown if exact.",
+  },
+};
+
 export default function SolverSettings() {
   const analysis = useUI((s) => s.model.analysis);
   const setField = useUI((s) => s.setAnalysisField);
@@ -37,6 +65,8 @@ export default function SolverSettings() {
   // toggle so the user sees both options without us hiding the value.
   const shiftAuto = analysis.shift === "auto" || analysis.shift == null;
   const shiftValue = typeof analysis.shift === "number" ? analysis.shift : 0;
+
+  const info = SOLVER_INFO[analysis.solver] ?? SOLVER_INFO["spectra-buckling"];
 
   return (
     <>
@@ -57,21 +87,43 @@ export default function SolverSettings() {
           onChange={(v) => setField("solver", v)}
           fullWidth
         />
+        {/* Per-mode info panel — content swaps every time the user clicks a
+            different mode. */}
         <div
           style={{
-            marginTop: 4,
-            fontSize: 9.5,
-            color: "var(--text-muted)",
+            marginTop: 6,
+            padding: "8px 10px",
+            background: "var(--panel-bg-soft)",
+            border: "1px solid var(--line-soft)",
+            borderRadius: 4,
             fontFamily: MONO,
-            lineHeight: 1.45,
+            fontSize: 10.5,
+            lineHeight: 1.5,
           }}
         >
-          <b>Buckling</b> (mode 3) is the right tool for K_L SPD + K_geom
-          indefinite — fastest convergence for our case.{" "}
-          <b>Shift-Invert</b> (mode 2) is the generic fallback if Buckling
-          mode misbehaves at extreme parameters.{" "}
-          <b>Cayley</b> (mode 4) is rarely needed but kept as ablation /
-          cross-check during validation.
+          <div
+            style={{
+              color: "var(--accent)",
+              fontWeight: 700,
+              fontSize: 11,
+              marginBottom: 4,
+              textShadow: "var(--shadow-accent)",
+            }}
+          >
+            {info.title}
+          </div>
+          <div style={{ color: "var(--text-primary)", marginBottom: 6 }}>
+            {info.line}
+          </div>
+          <InfoLine label="Best when" color="var(--accent-muted)">
+            {info.bestWhen}
+          </InfoLine>
+          <InfoLine label="Watch out" color="var(--warning)">
+            {info.caveat}
+          </InfoLine>
+          <InfoLine label="Shift means" color="var(--text-secondary)">
+            {info.shiftHint}
+          </InfoLine>
         </div>
       </div>
 
@@ -170,6 +222,7 @@ export default function SolverSettings() {
         </button>
       </div>
 
+      {/* InfoLine helper rendered inline so this file stays self-contained. */}
       {showAdvanced && (
         <div style={{ marginTop: 8 }}>
           <NumberField
@@ -214,5 +267,31 @@ export default function SolverSettings() {
         </div>
       )}
     </>
+  );
+}
+
+/** One labelled line inside the per-mode info panel. Label fixed-width on
+ * the left, body wraps on the right. Color of the label communicates the
+ * line's intent (accent = positive guidance, warning = caveat). */
+function InfoLine({ label, color, children }) {
+  return (
+    <div style={{ display: "flex", gap: 8, marginBottom: 3 }}>
+      <span
+        style={{
+          color,
+          fontSize: 10,
+          fontWeight: 700,
+          minWidth: 78,
+          flexShrink: 0,
+          textTransform: "uppercase",
+          letterSpacing: 0.06,
+        }}
+      >
+        {label}
+      </span>
+      <span style={{ color: "var(--text-secondary)", fontSize: 10.5 }}>
+        {children}
+      </span>
+    </div>
   );
 }
