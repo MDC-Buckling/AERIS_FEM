@@ -5,7 +5,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { useUI } from "../store.js";
 import { KNOWN_RESULTS, VIEW_PRESETS, viewPresets } from "../constants.js";
 import { loadResult } from "../vtk/loadResult.js";
-import { RAMP_DARK, RAMP_LIGHT } from "./colormap.js";
+import { RAMP_DARK, RAMP_LIGHT, resolveColormap } from "./colormap.js";
 
 /** Vertex shader: warp position by displacement * uWarp, pass magnitude
  * (normalised 0..1 against uMagMax) to the fragment shader. */
@@ -88,6 +88,10 @@ export default function Viewport3D() {
   // is "auto" today, so once that becomes editable we'll need to also
   // subscribe to .neumann_traction_axial.
   const loadKind = useUI((s) => s.model.load.kind);
+  // Active colormap name. "aeris-auto" tracks theme; others are explicit
+  // scientific maps (jet/viridis/plasma/etc.). Drives a DataTexture swap
+  // in the theme/colormap effect below.
+  const colormapName = useUI((s) => s.colormapName);
   // Post-mode result lookup: prefer the live run.json sidecar's modes[]
   // (carries the actual pvd paths the script just wrote), fall back to
   // the shipped KNOWN_RESULTS list if no run has landed yet.
@@ -320,7 +324,7 @@ export default function Viewport3D() {
   useEffect(() => {
     const st = stateRef.current;
     if (!st.uniforms) return;
-    const bytes = theme === "light" ? RAMP_LIGHT : RAMP_DARK;
+    const bytes = resolveColormap(colormapName, theme);
     const newTex = makeRampTexture(bytes);
     st.uniforms.uRamp.value.dispose?.();
     st.uniforms.uRamp.value = newTex;
@@ -329,7 +333,7 @@ export default function Viewport3D() {
       st.grid.material.opacity = theme === "light" ? 0.10 : 0.18;
       st.grid.material.color.set(theme === "light" ? 0x788090 : 0x00a0c8);
     }
-  }, [theme]);
+  }, [theme, colormapName]);
 
   useEffect(() => {
     const st = stateRef.current;

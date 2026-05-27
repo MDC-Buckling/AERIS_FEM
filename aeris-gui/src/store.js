@@ -473,6 +473,15 @@ export const useUI = create((set) => ({
   showUndeformed: false,
   setShowUndeformed: (b) => set({ showUndeformed: b }),
 
+  /** Colormap for the post-mode result shader. "aeris-auto" tracks the
+   * theme (dark/light) and keeps the on-brand look; otherwise it's one
+   * of the named scientific colormaps (jet / viridis / plasma /
+   * inferno / coolwarm / grayscale) from viewport/colormap.js. The
+   * viewport rebuilds the DataTexture on change without recomputing
+   * any geometry. */
+  colormapName: "aeris-auto",
+  setColormap: (name) => set({ colormapName: name }),
+
   /** Current view preset name, set when user clicks oblique/side/end. */
   viewPreset: "oblique",
   setViewPreset: (name) => set({ viewPreset: name }),

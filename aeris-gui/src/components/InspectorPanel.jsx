@@ -7,6 +7,7 @@ import ToggleGroup from "./ui/ToggleGroup.jsx";
 import Slider from "./ui/Slider.jsx";
 import { useUI } from "../store.js";
 import { MONO } from "../constants.js";
+import { COLORMAPS, COLORMAP_OPTIONS, resolveColormap } from "../viewport/colormap.js";
 
 /** Fallback LBA metadata used when no run.json is available yet (fresh
  * dev session, no Solve clicked). Mirrors the Session-2.7 validated case
@@ -69,6 +70,9 @@ export default function InspectorPanel() {
   const status = useUI((s) => s.status);
   const resultCache = useUI((s) => s.resultCache);
   const currentResults = useUI((s) => s.currentResults);
+  const colormapName = useUI((s) => s.colormapName);
+  const setColormap = useUI((s) => s.setColormap);
+  const theme = useUI((s) => s.theme);
 
   const LBA_META = metaFromResults(currentResults);
   const cached = resultCache[selectedId];
@@ -165,6 +169,64 @@ export default function InspectorPanel() {
           >
             {showUndeformed ? "UNDEF OVERLAY ON" : "UNDEF OVERLAY OFF"}
           </button>
+        </div>
+
+        {/* Colormap picker — one row per option with a real gradient swatch
+            so the user picks by EYE, not by name. The active row is
+            highlighted in accent so the current choice is obvious. */}
+        <div style={{ marginTop: 10 }}>
+          <div
+            style={{
+              color: "var(--text-secondary)",
+              fontSize: 10,
+              fontFamily: MONO,
+              textTransform: "uppercase",
+              letterSpacing: 0.08,
+              marginBottom: 4,
+            }}
+          >
+            colormap
+          </div>
+          <div
+            style={{
+              border: "1px solid var(--control-border)",
+              borderRadius: 4,
+              background: "var(--control-bg)",
+              overflow: "hidden",
+            }}
+          >
+            {COLORMAP_OPTIONS.map(([key, label]) => {
+              const active = colormapName === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setColormap(key)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    width: "100%",
+                    padding: "5px 8px",
+                    background: active ? "var(--control-active-bg)" : "transparent",
+                    border: "none",
+                    borderBottom: "1px solid var(--line-faint)",
+                    color: active ? "var(--accent)" : "var(--text-secondary)",
+                    fontFamily: MONO,
+                    fontSize: 10.5,
+                    fontWeight: active ? 700 : 500,
+                    cursor: "pointer",
+                    textAlign: "left",
+                    textShadow: active ? "var(--shadow-accent)" : "none",
+                  }}
+                >
+                  <ColormapSwatch name={key} theme={theme} />
+                  <span style={{ flex: 1 }}>{label}</span>
+                  {active && <span style={{ color: "var(--accent)", fontSize: 9 }}>●</span>}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {/* ----- Result metadata ----- */}
@@ -278,5 +340,51 @@ export default function InspectorPanel() {
         <span style={{ color: "var(--accent-muted)" }}>status:</span> {status}
       </div>
     </GlassPanel>
+  );
+}
+
+/** Small horizontal gradient strip rendered from the actual 256-entry
+ * ramp bytes. Drawn into a canvas once per (name, theme) and memoised
+ * as a data URL so the option list doesn't recompute the gradient on
+ * every render. */
+function ColormapSwatch({ name, theme }) {
+  const dataUrl = React.useMemo(() => {
+    const bytes = resolveColormap(name, theme);
+    const w = 64, h = 8;
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    const imgData = ctx.createImageData(w, h);
+    for (let x = 0; x < w; x++) {
+      const i = Math.round((x / (w - 1)) * 255);
+      const r = bytes[i * 3 + 0];
+      const g = bytes[i * 3 + 1];
+      const b = bytes[i * 3 + 2];
+      for (let y = 0; y < h; y++) {
+        const off = (y * w + x) * 4;
+        imgData.data[off + 0] = r;
+        imgData.data[off + 1] = g;
+        imgData.data[off + 2] = b;
+        imgData.data[off + 3] = 255;
+      }
+    }
+    ctx.putImageData(imgData, 0, 0);
+    return canvas.toDataURL("image/png");
+  }, [name, theme]);
+
+  return (
+    <img
+      src={dataUrl}
+      alt=""
+      width={56}
+      height={8}
+      style={{
+        display: "block",
+        flexShrink: 0,
+        borderRadius: 2,
+        border: "1px solid var(--line-faint)",
+      }}
+    />
   );
 }
