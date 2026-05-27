@@ -365,6 +365,17 @@ export const useUI = create((set) => ({
     }
   },
 
+  /** Cancel the in-flight run on the server. If it's queued, just marks
+   * it as cancelled and the queue drain skips it; if it's running, the
+   * docker child gets SIGKILL'd. The poll loop in runSolver picks up
+   * the status transition on its next tick — no other client action
+   * needed. */
+  cancelRun: async (runId) => {
+    if (!runId) return { ok: false, error: "no runId" };
+    const res = await fetch(`/run-cancel?id=${encodeURIComponent(runId)}`, { method: "POST" });
+    return res.json();
+  },
+
   /** Delete a job from disk + index. If it was the active job, clears
    * activeJobId so the panel falls back to "(auto-create on SOLVE)". */
   deleteJob: async (id) => {
@@ -522,7 +533,8 @@ export const useUI = create((set) => ({
           jobId: effectiveJobId,
           threads,
         });
-        if (statusData.status === "success" || statusData.status === "failed") {
+        const terminal = ["success", "failed", "cancelled"].includes(statusData.status);
+        if (terminal) {
           if (statusData.status === "success") {
             const manifest = await useUI.getState().loadResultsManifest(effectiveJobId);
             const firstMode = manifest?.modes?.[0]?.id;

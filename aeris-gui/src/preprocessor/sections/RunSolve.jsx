@@ -49,9 +49,11 @@ function phaseLabel(phase) {
 }
 
 function statusColor(s) {
-  if (s === "success") return "var(--success)";
-  if (s === "failed")  return "var(--error)";
-  if (s === "running") return "var(--accent)";
+  if (s === "success")    return "var(--success)";
+  if (s === "failed")     return "var(--error)";
+  if (s === "cancelled")  return "var(--warning)";
+  if (s === "running")    return "var(--accent)";
+  if (s === "queued")     return "var(--accent-muted)";
   return "var(--text-muted)";
 }
 
@@ -437,10 +439,14 @@ function SmallLabel({ children }) {
 }
 
 function RunStatusPanel({ lastRun }) {
+  const cancelRun = useUI((s) => s.cancelRun);
   const { status } = lastRun;
-  const running = status === "running";
-  const success = status === "success";
-  const failed  = status === "failed";
+  const running   = status === "running";
+  const queued    = status === "queued";
+  const success   = status === "success";
+  const failed    = status === "failed";
+  const cancelled = status === "cancelled";
+  const inFlight  = running || queued;
 
   const stdout = lastRun.stdout ?? lastRun.stdoutTail ?? "";
   const stderr = lastRun.stderr ?? "";
@@ -449,11 +455,11 @@ function RunStatusPanel({ lastRun }) {
 
   const [, tick] = React.useState(0);
   React.useEffect(() => {
-    if (!running) return;
+    if (!inFlight) return;
     const id = setInterval(() => tick((n) => n + 1), 100);
     return () => clearInterval(id);
-  }, [running]);
-  const elapsedMs = running && lastRun.startedAt
+  }, [inFlight]);
+  const elapsedMs = inFlight && lastRun.startedAt
     ? Date.now() - lastRun.startedAt
     : (lastRun.durationMs ?? lastRun.elapsedMs ?? 0);
 
@@ -462,7 +468,11 @@ function RunStatusPanel({ lastRun }) {
   const pMax = PHASE_SEQUENCE.length - 1;
   const pPct = Math.max(0, Math.min(100, Math.round(100 * pIndex / pMax)));
 
-  const accentColor = success ? "var(--success)" : failed ? "var(--error)" : "var(--accent)";
+  const accentColor = success ? "var(--success)"
+                    : failed ? "var(--error)"
+                    : cancelled ? "var(--warning)"
+                    : queued ? "var(--accent-muted)"
+                    : "var(--accent)";
 
   return (
     <div
@@ -492,17 +502,64 @@ function RunStatusPanel({ lastRun }) {
             letterSpacing: 0.08,
           }}
         >
-          {running ? `● ${phase}` : success ? "✓ success" : "✕ failed"}
+          {queued ? "⏸ queued"
+            : running ? `● ${phase}`
+            : success ? "✓ success"
+            : cancelled ? "⊘ cancelled"
+            : "✕ failed"}
         </span>
-        <span style={{ color: "var(--text-muted)", fontSize: 10 }}>
-          {(elapsedMs / 1000).toFixed(1)} s
-          {lastRun.threads != null && lastRun.threads > 1 && (
-            <span style={{ marginLeft: 6, color: "var(--accent-muted)" }}>
-              · {lastRun.threads}×
-            </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ color: "var(--text-muted)", fontSize: 10 }}>
+            {(elapsedMs / 1000).toFixed(1)} s
+            {lastRun.threads != null && lastRun.threads > 1 && (
+              <span style={{ marginLeft: 6, color: "var(--accent-muted)" }}>
+                · {lastRun.threads}×
+              </span>
+            )}
+          </span>
+          {inFlight && (
+            <button
+              type="button"
+              onClick={() => cancelRun(lastRun.runId)}
+              title={queued ? "Skip this queued run" : "SIGKILL the docker child"}
+              style={{
+                background: "transparent",
+                border: "1px solid var(--warning-border)",
+                borderRadius: 3,
+                color: "var(--warning)",
+                fontFamily: MONO,
+                fontSize: 9.5,
+                padding: "2px 8px",
+                cursor: "pointer",
+                letterSpacing: 0.06,
+                textTransform: "uppercase",
+              }}
+            >
+              ⊘ Cancel
+            </button>
           )}
-        </span>
+        </div>
       </div>
+
+      {queued && (
+        <div
+          style={{
+            marginBottom: 8,
+            padding: "6px 10px",
+            background: "rgba(0,200,255,0.06)",
+            border: "1px dashed var(--accent-muted)",
+            borderRadius: 4,
+            fontSize: 10.5,
+            color: "var(--text-secondary)",
+            lineHeight: 1.45,
+          }}
+        >
+          Waiting for the current run to finish
+          {lastRun.queuePosition != null && lastRun.queuePosition > 0
+            ? ` — position ${lastRun.queuePosition} in queue.`
+            : " — first in queue, starts as soon as the slot is free."}
+        </div>
+      )}
 
       {running && (
         <div style={{ marginBottom: 8 }}>

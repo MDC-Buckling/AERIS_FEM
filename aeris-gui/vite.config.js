@@ -20,6 +20,30 @@ const SOLVE_TIMEOUT_MS = 5 * 60 * 1000;   // 5 min hard cap per run
 const RUNS = new Map();   // runId → { status, phase, jobId, ... }
 let RUN_COUNTER = 0;
 
+// Session 4.3: FIFO job queue. Only one docker run executes at a time
+// (single dev machine, no real point in oversubscribing); subsequent
+// requests get a "queued" record and start when the head completes.
+// Items: { runId, jobId, kickoff } where kickoff is a 0-arg fn that
+// flips the record to "running" + spawns the child.
+const QUEUE = [];
+let QUEUE_DRAINING = false;
+function enqueueRun(kickoff) {
+  QUEUE.push(kickoff);
+  drainQueue();
+}
+function drainQueue() {
+  if (QUEUE_DRAINING) return;
+  const next = QUEUE.shift();
+  if (!next) return;
+  QUEUE_DRAINING = true;
+  // The kickoff fn must invoke onDone when its child exits so the next
+  // queued run gets picked up — wired in /run-solver below.
+  next(() => {
+    QUEUE_DRAINING = false;
+    drainQueue();
+  });
+}
+
 // Slug an arbitrary user-supplied job name into a path-safe folder name.
 // Accepts letters / digits / dash / underscore; everything else collapses
 // to a single dash. Empty input → "job-<timestamp>" so the dialog can
@@ -324,75 +348,145 @@ function aerisOutputServer() {
             "--plot-dir", "/work",
           ];
 
+          // Create the record immediately in "queued" state so the GUI
+          // can show queue position while waiting. The actual spawn
+          // happens inside kickoff() when the queue drains to this run.
           const runId = `run-${Date.now()}-${++RUN_COUNTER}`;
-          const started = Date.now();
-          const child = spawn("docker", args, { windowsHide: true });
+          const queuedAt = Date.now();
           const record = {
             runId,
             jobId,
             threads,
-            status: "running",
-            phase: "starting",
-            started,
+            status: "queued",
+            phase: "queued",
+            queuedAt,
+            started: null,
             stdout: "",
             stderr: "",
             exitCode: null,
             signal: null,
             killedByTimeout: false,
+            cancelled: false,
             durationMs: 0,
             command: ["docker", ...args].join(" "),
-            child,
+            child: null,
           };
           RUNS.set(runId, record);
+          // Persist queued status on the job too so the row shows it.
+          if (jobId) {
+            try {
+              const idx = readJobsIndex(outputDir);
+              const j = idx.jobs.find((e) => e.id === jobId);
+              if (j) { j.lastRunStatus = "queued"; writeJobsIndex(outputDir, idx); }
+            } catch {}
+          }
 
-          child.stdout.on("data", (c) => {
-            record.stdout += c.toString("utf8");
-            record.phase = parsePhase(record.stdout);
-          });
-          child.stderr.on("data", (c) => {
-            record.stderr += c.toString("utf8");
-          });
-
-          const timer = setTimeout(() => {
-            record.killedByTimeout = true;
-            try { child.kill("SIGKILL"); } catch {}
-          }, SOLVE_TIMEOUT_MS);
-
-          child.on("error", (err) => {
-            clearTimeout(timer);
-            record.status = "failed";
-            record.error = `failed to spawn docker: ${err.message} — is Docker Desktop running and is the aeris/gismo image built?`;
-            record.durationMs = Date.now() - started;
-            record.child = null;
-          });
-          child.on("close", (code, signal) => {
-            clearTimeout(timer);
-            record.exitCode = code;
-            record.signal = signal;
-            record.durationMs = Date.now() - started;
-            record.status = code === 0 ? "success" : "failed";
-            if (record.status === "success") record.phase = "done";
-            record.child = null;
-            // Persist last-run status onto the job index so the GUI's
-            // jobs list reflects "success / failed" without polling
-            // /run-status for every past job.
-            if (jobId) {
-              try {
-                const idx = readJobsIndex(outputDir);
-                const j = idx.jobs.find((e) => e.id === jobId);
-                if (j) {
-                  j.lastRunStatus = record.status;
-                  j.lastRunAt = new Date().toISOString();
-                  j.lastDurationMs = record.durationMs;
-                  writeJobsIndex(outputDir, idx);
-                }
-              } catch { /* index race — non-fatal */ }
+          enqueueRun((onDone) => {
+            // Cancelled while in queue? Skip the spawn entirely.
+            if (record.cancelled) {
+              record.status = "cancelled";
+              record.durationMs = 0;
+              if (jobId) {
+                try {
+                  const idx = readJobsIndex(outputDir);
+                  const j = idx.jobs.find((e) => e.id === jobId);
+                  if (j) { j.lastRunStatus = "cancelled"; writeJobsIndex(outputDir, idx); }
+                } catch {}
+              }
+              onDone();
+              return;
             }
+
+            record.status = "running";
+            record.phase = "starting";
+            record.started = Date.now();
+            const child = spawn("docker", args, { windowsHide: true });
+            record.child = child;
+
+            child.stdout.on("data", (c) => {
+              record.stdout += c.toString("utf8");
+              record.phase = parsePhase(record.stdout);
+            });
+            child.stderr.on("data", (c) => {
+              record.stderr += c.toString("utf8");
+            });
+
+            const timer = setTimeout(() => {
+              record.killedByTimeout = true;
+              try { child.kill("SIGKILL"); } catch {}
+            }, SOLVE_TIMEOUT_MS);
+
+            child.on("error", (err) => {
+              clearTimeout(timer);
+              record.status = "failed";
+              record.error = `failed to spawn docker: ${err.message} — is Docker Desktop running and is the aeris/gismo image built?`;
+              record.durationMs = Date.now() - record.started;
+              record.child = null;
+              onDone();
+            });
+            child.on("close", (code, signal) => {
+              clearTimeout(timer);
+              record.exitCode = code;
+              record.signal = signal;
+              record.durationMs = Date.now() - record.started;
+              if (record.cancelled) record.status = "cancelled";
+              else record.status = code === 0 ? "success" : "failed";
+              if (record.status === "success") record.phase = "done";
+              record.child = null;
+              if (jobId) {
+                try {
+                  const idx = readJobsIndex(outputDir);
+                  const j = idx.jobs.find((e) => e.id === jobId);
+                  if (j) {
+                    j.lastRunStatus = record.status;
+                    j.lastRunAt = new Date().toISOString();
+                    j.lastDurationMs = record.durationMs;
+                    writeJobsIndex(outputDir, idx);
+                  }
+                } catch {}
+              }
+              onDone();
+            });
           });
 
           res.setHeader("Content-Type", "application/json");
-          res.end(JSON.stringify({ ok: true, runId }));
+          res.end(JSON.stringify({
+            ok: true,
+            runId,
+            queuePosition: QUEUE.length,    // 0 = will start immediately
+          }));
         });
+      });
+
+      // POST /run-cancel?id=<runId> — SIGKILL the docker child if it's
+      // running, or just mark queued runs as "cancelled" so the queue
+      // drain step skips them. Idempotent (calling on a done run is a
+      // no-op + 200). The GUI polling /run-status will pick up the
+      // status transition on the next tick.
+      server.middlewares.use("/run-cancel", (req, res) => {
+        if (req.method !== "POST") {
+          res.statusCode = 405;
+          res.end("POST only");
+          return;
+        }
+        const url = new URL(req.url, "http://x");
+        const runId = url.searchParams.get("id");
+        const r = RUNS.get(runId);
+        res.setHeader("Content-Type", "application/json");
+        if (!r) {
+          res.statusCode = 404;
+          res.end(JSON.stringify({ ok: false, error: `unknown runId ${runId}` }));
+          return;
+        }
+        if (r.status === "success" || r.status === "failed" || r.status === "cancelled") {
+          res.end(JSON.stringify({ ok: true, alreadyDone: true, status: r.status }));
+          return;
+        }
+        r.cancelled = true;
+        if (r.child) {
+          try { r.child.kill("SIGKILL"); } catch {}
+        }
+        res.end(JSON.stringify({ ok: true, runId, status: "cancelling" }));
       });
 
       // GET /run-status?id=<runId>&tail=<bytes> — poll endpoint for the
@@ -412,20 +506,34 @@ function aerisOutputServer() {
         }
         const elapsed = r.status === "running"
           ? Date.now() - r.started
-          : r.durationMs;
+          : r.status === "queued"
+            ? Date.now() - r.queuedAt
+            : r.durationMs;
         const tailStdout = r.stdout.length > tail
           ? r.stdout.slice(-tail)
           : r.stdout;
+        // Queue position: count of other queued runs whose queuedAt
+        // timestamp is earlier than this one. 0 = head of queue (next to
+        // start when the current run finishes). null when this run is
+        // not queued (running / terminal).
+        const queuePosition = r.status === "queued"
+          ? [...RUNS.values()]
+              .filter((o) => o.status === "queued" && o.queuedAt < r.queuedAt)
+              .length
+          : null;
         res.end(JSON.stringify({
           ok: true,
           runId: r.runId,
+          jobId: r.jobId,
           status: r.status,
           phase: r.phase,
           elapsedMs: elapsed,
           durationMs: r.durationMs,
+          queuePosition,
           exitCode: r.exitCode,
           signal: r.signal,
           killedByTimeout: r.killedByTimeout,
+          cancelled: r.cancelled,
           stdoutLength: r.stdout.length,
           stdoutTail: tailStdout,
           stderr: r.stderr,
@@ -433,7 +541,7 @@ function aerisOutputServer() {
           command: r.command,
           // Full stdout only on terminal status, so the client can grab
           // it once for archival / sidecar parsing in Session 4.0.
-          stdout: (r.status === "success" || r.status === "failed") ? r.stdout : undefined,
+          stdout: (r.status === "success" || r.status === "failed" || r.status === "cancelled") ? r.stdout : undefined,
         }));
       });
 
