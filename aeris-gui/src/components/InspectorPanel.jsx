@@ -106,6 +106,8 @@ export default function InspectorPanel() {
   const colormapName = useUI((s) => s.colormapName);
   const setColormap = useUI((s) => s.setColormap);
   const theme = useUI((s) => s.theme);
+  const displayField = useUI((s) => s.displayField);
+  const setDisplayField = useUI((s) => s.setDisplayField);
 
   const LBA_META = metaFromResults(currentResults);
   const cached = resultCache[selectedId];
@@ -202,6 +204,37 @@ export default function InspectorPanel() {
           >
             {showUndeformed ? "UNDEF OVERLAY ON" : "UNDEF OVERLAY OFF"}
           </button>
+        </div>
+
+        {/* Field selector — pick the scalar projection of the displacement
+            vector to colour by. magnitude (= |u|, always positive) works
+            with every colormap; the components (u_x / u_y / u_z) are
+            signed but rendered as |component| with the signed range
+            surfaced separately in the viewport legend. */}
+        <div style={{ marginTop: 10 }}>
+          <div
+            style={{
+              color: "var(--text-secondary)",
+              fontSize: 10,
+              fontFamily: MONO,
+              textTransform: "uppercase",
+              letterSpacing: 0.08,
+              marginBottom: 4,
+            }}
+          >
+            field
+          </div>
+          <ToggleGroup
+            fullWidth
+            value={displayField}
+            onChange={setDisplayField}
+            options={[
+              ["magnitude", "|u|"],
+              ["ux", "u_x"],
+              ["uy", "u_y"],
+              ["uz", "u_z"],
+            ]}
+          />
         </div>
 
         {/* Colormap picker — one row per option with a real gradient swatch

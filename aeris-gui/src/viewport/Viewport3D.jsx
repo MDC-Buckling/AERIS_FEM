@@ -75,6 +75,7 @@ export default function Viewport3D() {
   const resultCache = useUI((s) => s.resultCache);
   const cacheResult = useUI((s) => s.cacheResult);
   const setStatus = useUI((s) => s.setStatus);
+  const setDisplayFieldStats = useUI((s) => s.setDisplayFieldStats);
   // In pre-mode the viewport renders a procedural shell driven LIVE
   // by the model's geometry — no .vts/.pvd round-trip, no solver
   // involvement. We subscribe to the geometry block as a whole and
@@ -101,6 +102,10 @@ export default function Viewport3D() {
   // scientific maps (jet/viridis/plasma/etc.). Drives a DataTexture swap
   // in the theme/colormap effect below.
   const colormapName = useUI((s) => s.colormapName);
+  // Which scalar to color by — magnitude (default) or one of the signed
+  // Cartesian components of the displacement field. Drives a small
+  // CPU projection inside apply() + a fresh magMax computation.
+  const displayField = useUI((s) => s.displayField);
   // Post-mode result lookup: prefer the live run.json sidecar's modes[]
   // (carries the actual pvd paths the script just wrote), fall back to
   // the shipped KNOWN_RESULTS list if no run has landed yet.
@@ -645,9 +650,25 @@ export default function Viewport3D() {
         c.geometry?.dispose();
       }
 
-      st.uniforms.uMagMax.value = Math.max(data.magMax, 1e-9);
+      // Project the 3-component displacement to whichever scalar the
+      // user picked in the inspector (|u| / u_x / u_y / u_z). For
+      // signed components we use abs() for the color lookup because
+      // the shipped colormaps are sequential 0..1; cool-warm diverging
+      // around 0 is a follow-up.
+      const proj = projectField(data.patches, displayField);
+      st.uniforms.uMagMax.value = Math.max(proj.fieldMaxAbs, 1e-9);
+      // Push stats to the store so ViewportLegend can draw min / max /
+      // mid ticks against whatever's actually being rendered. Signed
+      // min/max preserved separately from the abs-based shader cap.
+      setDisplayFieldStats({
+        field: displayField,
+        min: proj.fieldMin,
+        max: proj.fieldMax,
+        maxAbs: proj.fieldMaxAbs,
+      });
 
-      for (const p of data.patches) {
+      for (let i = 0; i < data.patches.length; i++) {
+        const p = data.patches[i];
         const geom = new THREE.BufferGeometry();
         geom.setAttribute("position", new THREE.BufferAttribute(p.positions, 3));
         geom.setAttribute(
@@ -659,10 +680,7 @@ export default function Viewport3D() {
         );
         geom.setAttribute(
           "aMag",
-          new THREE.BufferAttribute(
-            p.magnitude || new Float32Array(p.positions.length / 3),
-            1
-          )
+          new THREE.BufferAttribute(proj.perPatch[i], 1),
         );
         geom.setIndex(new THREE.BufferAttribute(p.indices, 1));
 
@@ -730,7 +748,7 @@ export default function Viewport3D() {
     return () => {
       cancelled = true;
     };
-  }, [selectedId, resultCache, cacheResult, setStatus, showEdges, currentResults]);
+  }, [selectedId, resultCache, cacheResult, setStatus, showEdges, currentResults, displayField]);
 
   return (
     <div
@@ -844,6 +862,66 @@ function buildRoofSegmentEdges(R, L, phi_deg, uSegs = 16, vSegs = 16) {
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.BufferAttribute(arr, 3));
   return g;
+}
+
+/** Project the 3-component displacement field of every patch onto a
+ * single scalar (chosen by displayField) and return:
+ *   - perPatch:    Float32Array per patch, one scalar per vertex
+ *   - fieldMin / fieldMax: signed range across ALL patches
+ *   - fieldMaxAbs: max(|min|, |max|) — what the shader uses as uMagMax
+ *                 since the color lookup is currently abs-based.
+ *
+ * Components return signed values; only the lookup-time abs() drops the
+ * sign. We keep the signed numbers around so the legend can show the
+ * real min/max ticks (which matter for a u_z that goes from -0.30 to
+ * +0.05 in Scordelis-Lo — you want to read both endpoints, not just
+ * 0.30 either way). */
+function projectField(patches, field) {
+  let fieldMin = Infinity;
+  let fieldMax = -Infinity;
+  let fieldMaxAbs = 0;
+  const perPatch = patches.map((p) => {
+    const n = p.positions.length / 3;
+    const out = new Float32Array(n);
+    const disp = p.displacement;
+    if (!disp) return out; // all zeros — no displacement field on this patch
+    if (field === "ux" || field === "uy" || field === "uz") {
+      const offset = field === "ux" ? 0 : field === "uy" ? 1 : 2;
+      for (let i = 0; i < n; i++) {
+        const v = disp[i * 3 + offset];
+        out[i] = Math.abs(v);            // sequential colormaps use 0..1
+        if (v < fieldMin) fieldMin = v;
+        if (v > fieldMax) fieldMax = v;
+        const a = Math.abs(v);
+        if (a > fieldMaxAbs) fieldMaxAbs = a;
+      }
+    } else {
+      // "magnitude" / default — L2 norm of the 3-vector, already
+      // precomputed by loadResult.
+      const mag = p.magnitude;
+      if (mag) {
+        for (let i = 0; i < n; i++) {
+          out[i] = mag[i];
+          if (mag[i] < fieldMin) fieldMin = mag[i];
+          if (mag[i] > fieldMax) fieldMax = mag[i];
+          if (mag[i] > fieldMaxAbs) fieldMaxAbs = mag[i];
+        }
+      } else {
+        for (let i = 0; i < n; i++) {
+          const x = disp[i * 3], y = disp[i * 3 + 1], z = disp[i * 3 + 2];
+          const m = Math.sqrt(x * x + y * y + z * z);
+          out[i] = m;
+          if (m < fieldMin) fieldMin = m;
+          if (m > fieldMax) fieldMax = m;
+          if (m > fieldMaxAbs) fieldMaxAbs = m;
+        }
+      }
+    }
+    return out;
+  });
+  if (!Number.isFinite(fieldMin)) fieldMin = 0;
+  if (!Number.isFinite(fieldMax)) fieldMax = 0;
+  return { perPatch, fieldMin, fieldMax, fieldMaxAbs };
 }
 
 /** BC edge highlights for the roof segment — returns {diaphragm, free}

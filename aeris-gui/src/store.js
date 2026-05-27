@@ -769,6 +769,26 @@ export const useUI = create((set) => ({
   colormapName: "aeris-auto",
   setColormap: (name) => set({ colormapName: name }),
 
+  /** Which scalar field the post-mode shader colors by. The .vts files
+   * ship a 3-component displacement vector per node; we project it to
+   * a scalar at render time. "magnitude" = |u| (always positive,
+   * default — works with every colormap). "ux"/"uy"/"uz" = signed
+   * Cartesian components, useful for diagnosing where deformation is
+   * concentrated in a given direction (e.g. u_z for vertical
+   * deflection in Scordelis-Lo). We use abs(component) for the color
+   * lookup since most colormaps are sequential 0..1 — a future
+   * cool-warm symmetric mapping for signed values is a follow-up. */
+  displayField: "magnitude",
+  setDisplayField: (name) => set({ displayField: name }),
+
+  /** Stats of the currently-rendered scalar field — used by the
+   * viewport legend to draw min / max / mid ticks. Populated by
+   * Viewport3D inside apply() after the per-patch projection so the
+   * legend always reflects what's actually being shown (changes
+   * automatically when the user switches displayField). */
+  displayFieldStats: null,
+  setDisplayFieldStats: (s) => set({ displayFieldStats: s }),
+
   /** Current view preset name, set when user clicks oblique/side/end. */
   viewPreset: "oblique",
   setViewPreset: (name) => set({ viewPreset: name }),
