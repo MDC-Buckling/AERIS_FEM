@@ -104,7 +104,7 @@ export default function TopChrome() {
         </span>
       </div>
 
-      {/* Pre / Post mode switch */}
+      {/* Pre / Post / Hub mode switch */}
       <div
         style={{
           display: "flex",
@@ -127,6 +127,13 @@ export default function TopChrome() {
           active={mode === "post"}
           onClick={() => setMode("post")}
           hint="Results — load .pvd files, view modes interactively"
+        />
+        <ModeButton
+          value="hub"
+          label="Benchmark Hub"
+          active={mode === "hub"}
+          onClick={() => setMode("hub")}
+          hint="Validation suite — browse and run standard shell benchmarks with auto-interpretation"
         />
       </div>
 

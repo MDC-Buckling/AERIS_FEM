@@ -22,7 +22,8 @@ export const useUI = create((set) => ({
       return { theme: next };
     }),
 
-  /** Top-level mode: pre-processor (model tree) vs post-processor (results). */
+  /** Top-level mode: pre-processor (model tree) | post-processor (results) |
+   * hub (benchmark catalog + run + verdict). */
   mode: "pre",
   setMode: (m) => set({ mode: m }),
 
@@ -306,6 +307,152 @@ export const useUI = create((set) => ({
       if (!Number.isFinite(v) || v <= 0) return {};
       return { model: { ...s.model, load: { ...s.model.load, magnitude: v } } };
     }),
+
+  /** ----- BENCHMARK HUB ---------------------------------------------------
+   * Load + run flows for the Hub. Each benchmark carries its own model
+   * preset; "Load" copies that preset wholesale into `model` so the user
+   * can either Solve as-is (reproduces the benchmark) or tweak then Solve
+   * (e.g. bump refinement). "Run" submits a job with the benchmark's id
+   * so the Hub can find it later via `jobs.filter(j => j.benchmarkId)`.
+   * --------------------------------------------------------------------*/
+
+  /** Per-benchmark live state — { lastRunId, verdict, runningRunId }. Keyed
+   * by benchmark id. Set by runBenchmark / interpretBenchmark. */
+  benchmarkRuns: {},
+  setBenchmarkRun: (benchmarkId, patch) =>
+    set((s) => ({
+      benchmarkRuns: {
+        ...s.benchmarkRuns,
+        [benchmarkId]: { ...(s.benchmarkRuns[benchmarkId] ?? {}), ...patch },
+      },
+    })),
+
+  /** Copy a benchmark's preset into the current model. Returns the preset
+   * so the caller can also flip mode → "pre" if it wants. */
+  loadBenchmark: (preset) => {
+    set({ model: JSON.parse(JSON.stringify(preset)) });
+    return preset;
+  },
+
+  /** Run a benchmark — same end-to-end flow as runSolver but with an
+   * auto-created job named `bench-<benchmarkId>-<timestamp>` and the
+   * given refinement sweep. Pass a single-element refines array for a
+   * single-r run, multiple for a convergence sweep (the script's CLI
+   * --refines already accepts nargs="+", so one call covers both).
+   *
+   * Returns { ok, jobId, runId, statusData } or { ok:false, error }. */
+  runBenchmark: async (benchmark, { refines } = {}) => {
+    const POLL_INTERVAL_MS = 500;
+    const state = useUI.getState();
+
+    // 1) Load the preset so the in-memory model matches what we're solving.
+    state.loadBenchmark(benchmark.modelPreset);
+
+    // 2) Create a deterministic-ish job name. Timestamp suffix so reruns
+    //    stack up instead of overwriting; the hub filters by `bench-<id>-`
+    //    prefix to show the history per benchmark.
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const jobName = `bench-${benchmark.id}-${stamp}`;
+    const created = await state.createJob({ name: jobName, threads: 1 });
+    if (!created.ok) {
+      state.setBenchmarkRun(benchmark.id, {
+        runningRunId: null,
+        error: created.error,
+      });
+      return { ok: false, error: created.error };
+    }
+    const jobId = created.job.id;
+    const sweep = refines && refines.length > 0
+      ? refines
+      : (benchmark.recipe?.refines ?? [5]);
+
+    state.setLastRun({
+      status: "running", phase: "starting",
+      jobId, benchmarkId: benchmark.id,
+      startedAt: Date.now(), elapsedMs: 0,
+    });
+    state.setBenchmarkRun(benchmark.id, {
+      runningRunId: null, jobId, sweep, verdict: null, error: null,
+    });
+
+    try {
+      // 3) Save model into the job folder.
+      const saveRes = await fetch(
+        `/save-model?jobId=${encodeURIComponent(jobId)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(state.serializeModel()),
+        },
+      );
+      const saveData = await saveRes.json();
+      if (!saveData.ok) throw new Error(`save failed: ${saveData.error}`);
+
+      // 4) Submit the solver job. The dev-server accepts `refines` as an
+      //    array now (see backwards-compat note in the server). For a
+      //    single value we just pass it as { refinement } so the existing
+      //    server path stays unchanged.
+      const body = sweep.length === 1
+        ? { jobId, threads: 1, refinement: sweep[0] }
+        : { jobId, threads: 1, refines: sweep };
+      const startRes = await fetch("/run-solver", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const startData = await startRes.json();
+      if (!startData.ok) throw new Error(`start failed: ${startData.error}`);
+      const { runId } = startData;
+      state.setBenchmarkRun(benchmark.id, { runningRunId: runId });
+
+      // 5) Poll until terminal.
+      while (true) {
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+        const statusRes = await fetch(`/run-status?id=${encodeURIComponent(runId)}`);
+        const statusData = await statusRes.json();
+        if (!statusData.ok) throw new Error(`poll failed: ${statusData.error}`);
+        useUI.getState().setLastRun({
+          ...statusData, runId, jobId, benchmarkId: benchmark.id,
+        });
+        if (["success", "failed", "cancelled"].includes(statusData.status)) {
+          if (statusData.status === "success") {
+            // 6) Load the manifest + run the benchmark's interpreter.
+            const manifest = await useUI.getState().loadResultsManifest(jobId);
+            const verdict = benchmark.interpret
+              ? benchmark.interpret(manifest)
+              : { status: "no-interpreter",
+                  text: "no interpreter for this benchmark" };
+            useUI.getState().setBenchmarkRun(benchmark.id, {
+              runningRunId: null,
+              lastRunAt: new Date().toISOString(),
+              jobId,
+              sweep,
+              verdict,
+            });
+          } else {
+            useUI.getState().setBenchmarkRun(benchmark.id, {
+              runningRunId: null,
+              lastRunAt: new Date().toISOString(),
+              jobId,
+              sweep,
+              verdict: { status: statusData.status, text: statusData.error ?? "" },
+            });
+          }
+          await useUI.getState().loadJobs();
+          return { ok: statusData.status === "success", jobId, runId, statusData };
+        }
+      }
+    } catch (err) {
+      const msg = err?.message ?? String(err);
+      useUI.getState().setLastRun({
+        status: "failed", error: msg, jobId, finishedAt: Date.now(),
+      });
+      useUI.getState().setBenchmarkRun(benchmark.id, {
+        runningRunId: null, error: msg,
+      });
+      return { ok: false, error: msg };
+    }
+  },
 
   /** Set model.analysis.kind. Only "lba" is enabled today; gnia / modal /
    * static are placeholders for future sessions. */

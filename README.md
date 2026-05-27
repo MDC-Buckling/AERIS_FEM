@@ -316,6 +316,23 @@ SHA file printed "bundled-with-v25.07.0" for everything).
   cross-checking `gsSmoothInterfaces` moment transfer under bending is
   next in the suite roadmap. See `benchmarks/scordelis_lo/README.md`
   for the full convergence table + interpretation.
+- **Benchmark Hub (GUI, Session H)** — third top-level mode alongside
+  Pre-/Post-Processor. Browseable card grid for the validation suite:
+  every standard shell benchmark (cylinder LBA × 2 variants live, plus
+  Scordelis-Lo + multipatch + pinched-cylinder + pinched-hemisphere as
+  "coming soon" cards). Each card has `LOAD INTO MODEL` (copies the
+  benchmark's case into the pre-processor) + `RUN (r=N)` (single-r
+  submission) + `↗ SWEEP (r=3,4,5)` (one-click convergence study).
+  Verdicts are auto-interpreted from the run.json sidecar via a
+  per-benchmark `interpret(manifest)` hook: PASS/FAIL chip + Δ vs
+  classical + convergence table + 5-deep job history right on the card.
+  Sits on Sessions 3.6–3.8 of wiring (BCs/Loads, Analysis, Jobs) — an
+  audit (model.json + XML diff between the bending and axial IW1 jobs;
+  non-default Analysis settings flowing into the OptionList; classical
+  reference computed from the case's E·t·R·ν, no defaults trap) was run
+  first to confirm the foundation. Adding a new benchmark = adding one
+  entry to `aeris-gui/src/benchmarks/catalog.js`. See the memory note
+  on the hub architecture for the interpreter pattern.
 - **ParaView export** — same script writes the cylinder mesh + linear-elastic
   reference state + first N (default 5) eigenmodes to a `/aeris-output` mount
   for visualisation. Uses the shipped exe's `--plot` flag — no custom VTK

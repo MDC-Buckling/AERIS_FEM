@@ -333,7 +333,21 @@ function aerisOutputServer() {
           // wrapped in OpenMP picks up OMP_NUM_THREADS, so this is the
           // simplest way to surface parallelisation to the user.
           const threads = Math.max(1, Math.min(64, Number(opts.threads) || 1));
-          const refinement = Number.isFinite(opts.refinement) ? opts.refinement : 5;
+          // refines: explicit array (e.g. [3,4,5] for convergence sweep) or
+          // single `refinement` (legacy, equivalent to a 1-element array).
+          // CLI --refines takes nargs="+" so any positive count works.
+          let refines;
+          if (Array.isArray(opts.refines) && opts.refines.length > 0) {
+            refines = opts.refines
+              .map((n) => Number(n))
+              .filter((n) => Number.isFinite(n) && n >= 0)
+              .map((n) => Math.round(n));
+            if (refines.length === 0) refines = [5];
+          } else if (Number.isFinite(opts.refinement)) {
+            refines = [Math.round(opts.refinement)];
+          } else {
+            refines = [5];
+          }
           const args = [
             "run", "--rm",
             "-e", `OMP_NUM_THREADS=${threads}`,
@@ -344,7 +358,7 @@ function aerisOutputServer() {
                                               // markers flush in real time
             "/scripts/cylinder_lba.py",
             "--model", "/work/model.json",
-            "--refines", String(refinement),
+            "--refines", ...refines.map(String),
             "--plot-dir", "/work",
           ];
 
