@@ -170,6 +170,11 @@ function BenchmarkCard({ bench, jobs, state }) {
   };
   const handleOpenResult = async () => {
     if (!state?.jobId) return;
+    // Wipe the result cache before loading. A stale cached entry under
+    // the same (jobId, selectedId) — e.g. one that loaded the wrong
+    // mesh on a previous open — would short-circuit the fresh .vts
+    // fetch and we'd render the bad data again.
+    useUI.setState({ resultCache: {} });
     const manifest = await loadResultsManifest(state.jobId);
     setActiveJob(state.jobId);
     // Pick a result-id that ACTUALLY exists in the new manifest before
@@ -181,7 +186,7 @@ function BenchmarkCard({ bench, jobs, state }) {
     const hasLinear = !!(manifest?.files?.linearPrestress
                           || manifest?.files?.solution);
     const fallbackId = firstMode ?? (hasLinear ? "linear" : "geometry");
-    useUI.setState({ selectedResultId: fallbackId, resultCache: {} });
+    useUI.setState({ selectedResultId: fallbackId });
     setMode("post");
   };
 

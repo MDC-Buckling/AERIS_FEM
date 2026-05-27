@@ -163,6 +163,12 @@ export default function ResultsPanel() {
 
   const handlePickJob = async (jobId) => {
     if (jobId === loadedJobId) return;
+    // Wipe the result cache before loading the new manifest. Without
+    // this a previously-cached entry for the same selectedId (and even
+    // the same jobId, if a buggy earlier load poisoned it) will short-
+    // circuit the .vts fetch and serve stale geometry — typically the
+    // wrong-shape mesh from a different result kind.
+    useUI.setState({ resultCache: {} });
     const manifest = await loadResultsManifest(jobId);
     setActiveJob(jobId);
     // Pick a result-id that actually exists in the new manifest. For LSA

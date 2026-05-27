@@ -92,6 +92,11 @@ export default function Viewport3D() {
   // is "auto" today, so once that becomes editable we'll need to also
   // subscribe to .neumann_traction_axial.
   const loadKind = useUI((s) => s.model.load.kind);
+  // bcs.kind drives the diaphragm-vs-free edge colouring on the
+  // cylinder_segment preview. We skip the indicator for non-segment
+  // shapes (closed cylinder BC topology is shown via the load-arrow
+  // chevrons on top + the clamped bottom is implicit).
+  const bcsKind = useUI((s) => s.model.bcs.kind);
   // Active colormap name. "aeris-auto" tracks theme; others are explicit
   // scientific maps (jet/viridis/plasma/etc.). Drives a DataTexture swap
   // in the theme/colormap effect below.
@@ -411,20 +416,18 @@ export default function Viewport3D() {
     tearDownGroups(st);
     st.uniforms.uMagMax.value = 1.0;
 
-    // Dispatch on shape. cylinder_segment skips the partition / load
-    // overlays for now because those concepts don't carry over cleanly
-    // (no closed cylinder = no full-circle partitions; static gravity
-    // load is shown differently than an axial Neumann edge).
+    // Dispatch on shape. For cylinder_segment we draw the surface + a
+    // u/v wireframe driven by mesh.refinement, then BC edge highlights
+    // (cyan for diaphragm, amber for free) and gravity arrows
+    // distributed over the surface. The closed-cylinder path below uses
+    // a different overlay set (partition rings + edge-Neumann arrows).
     if (geometryShape === "cylinder_segment") {
       const geom = buildRoofSegmentGeometry(segment.R, segment.L, segment.phi_deg);
       const mesh = new THREE.Mesh(geom, st.previewMaterial);
       mesh.userData.kind = "surface";
       st.meshGroup.add(mesh);
 
-      // Edge overlay for the segment: a sparse u/v grid driven by mesh
-      // refinement, plus the four boundary curves (free edges in red,
-      // diaphragm edges in cyan — visualises the BC topology before any
-      // solve, since the Scordelis-Lo BCs are intrinsic to the shape).
+      // Wireframe overlay — u/v grid at the mesh-refinement density.
       const elementsPerPatch = Math.pow(2, Math.max(0, meshRefinement));
       const uSegs = Math.min(elementsPerPatch, 64);
       const vSegs = Math.min(elementsPerPatch, 64);
@@ -436,8 +439,54 @@ export default function Viewport3D() {
       edges.visible = showEdges;
       st.meshGroup.add(edges);
 
+      // BC edge highlights — colour-coded so the user reads the shell's
+      // constraint topology at a glance. scordelis_diaphragm: u=0 / u=L
+      // are diaphragms (cyan, fixed in-plane), v=0 / v=1 are free
+      // (amber, no BC). Any other bcs.kind on a segment is unusual; we
+      // colour all four edges amber to make it visible that no useful
+      // constraint is set.
+      const bcGeoms = buildRoofSegmentBcEdges(segment.R, segment.L,
+                                              segment.phi_deg, bcsKind);
+      if (bcGeoms.diaphragm) {
+        const dia = new THREE.LineSegments(
+          bcGeoms.diaphragm,
+          new THREE.LineBasicMaterial({
+            color: 0x00e5ff, linewidth: 2,
+            transparent: true, opacity: 0.95,
+          }),
+        );
+        dia.userData.kind = "bc-diaphragm";
+        st.meshGroup.add(dia);
+      }
+      if (bcGeoms.free) {
+        const free = new THREE.LineSegments(
+          bcGeoms.free,
+          new THREE.LineBasicMaterial({
+            color: 0xffb454, linewidth: 2,
+            transparent: true, opacity: 0.95,
+          }),
+        );
+        free.userData.kind = "bc-free";
+        st.meshGroup.add(free);
+      }
+
+      // Gravity arrows — when load.kind=gravity, distribute downward
+      // arrows across the surface so the user sees the body force
+      // pattern. Skip for other load kinds (axial / bending don't
+      // physically make sense on an open roof segment; the user can
+      // still set them in the schema, but we don't fake an arrow
+      // pattern that misrepresents what the solver would do).
+      if (loadKind === "gravity") {
+        const arrows = buildRoofGravityArrows(segment.R, segment.L,
+                                              segment.phi_deg);
+        if (arrows) {
+          arrows.userData.kind = "load";
+          st.meshGroup.add(arrows);
+        }
+      }
+
       setStatus(
-        `live preview · roof R=${segment.R} L=${segment.L} t=${segment.t} φ=${segment.phi_deg}° · R/t=${(segment.R / segment.t).toFixed(0)}`
+        `live preview · roof R=${segment.R} L=${segment.L} t=${segment.t} φ=${segment.phi_deg}° · R/t=${(segment.R / segment.t).toFixed(0)} · ${loadKind} · ${bcsKind}`
       );
       return;
     }
@@ -534,7 +583,7 @@ export default function Viewport3D() {
     mode, geometryShape,
     cyl.R, cyl.L, cyl.t, partitionsKey,
     segment.R, segment.L, segment.t, segment.phi_deg,
-    meshRefinement, loadKind, showEdges, setStatus,
+    meshRefinement, loadKind, bcsKind, showEdges, setStatus,
   ]);
 
   // -------------------------------------------------------------------
@@ -795,6 +844,100 @@ function buildRoofSegmentEdges(R, L, phi_deg, uSegs = 16, vSegs = 16) {
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.BufferAttribute(arr, 3));
   return g;
+}
+
+/** BC edge highlights for the roof segment — returns {diaphragm, free}
+ * line geometries, either of which may be null when the active bcs.kind
+ * doesn't carve up the edges the way Scordelis expects. The cyan +
+ * amber rendering happens at the caller; here we just emit the
+ * positions for the boundary curves.
+ *
+ * scordelis_diaphragm: u=0 + u=L (the two curved arcs) are diaphragm;
+ *   v=0 + v=1 (the two straight side eaves) are free.
+ * any other bcs.kind on a segment is unusual; we emit all 4 edges as
+ *   "free" so the user sees clearly that nothing's constrained. */
+function buildRoofSegmentBcEdges(R, L, phi_deg, bcsKind) {
+  const phi = (phi_deg * Math.PI) / 180;
+  const evalP = (u, v) => {
+    const theta = -phi + (2 * phi) * v;
+    return [u * L, R * Math.sin(theta), R * Math.cos(theta)];
+  };
+
+  // Sample each boundary curve with enough segments for the visible
+  // curvature. The u=const arcs need ~32 steps for a smooth arc; the
+  // v=const lines are straight along u, 2 points each is enough.
+  const ARC_STEPS = 32;
+  const arcPositions = (u_fixed) => {
+    const pts = [];
+    for (let j = 0; j < ARC_STEPS; j++) {
+      const a = evalP(u_fixed, j / ARC_STEPS);
+      const b = evalP(u_fixed, (j + 1) / ARC_STEPS);
+      pts.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+    }
+    return pts;
+  };
+  const linePositions = (v_fixed) => {
+    const a = evalP(0, v_fixed);
+    const b = evalP(1, v_fixed);
+    return [a[0], a[1], a[2], b[0], b[1], b[2]];
+  };
+
+  const mkGeom = (positions) => {
+    if (positions.length === 0) return null;
+    const arr = new Float32Array(positions);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+    return g;
+  };
+
+  if (bcsKind === "scordelis_diaphragm") {
+    const dia = [...arcPositions(0), ...arcPositions(1)];
+    const free = [...linePositions(0), ...linePositions(1)];
+    return { diaphragm: mkGeom(dia), free: mkGeom(free) };
+  }
+  // Other BC presets on a segment — treat all 4 edges as free so the
+  // user sees the lack of constraints loudly (amber lines, no cyan).
+  const free = [
+    ...arcPositions(0), ...arcPositions(1),
+    ...linePositions(0), ...linePositions(1),
+  ];
+  return { diaphragm: null, free: mkGeom(free) };
+}
+
+/** Gravity-load indicator for the roof segment — small downward arrows
+ * distributed on a 5×5 parametric grid across the surface, so the user
+ * sees the body force coverage at a glance. Arrow length scales with
+ * max(R, L) so the visual reads consistently across geometries. */
+function buildRoofGravityArrows(R, L, phi_deg, gridSize = 5) {
+  const phi = (phi_deg * Math.PI) / 180;
+  const group = new THREE.Group();
+  const arrowLen = Math.max(R, L) * 0.15;
+  const headLen = arrowLen * 0.32;
+  const headWidth = arrowLen * 0.18;
+  const downDir = new THREE.Vector3(0, 0, -1);
+  const colour = 0xffb454;     // amber, matches the load-arrow palette
+                               // used for the closed-cylinder compression case
+  for (let i = 0; i < gridSize; i++) {
+    for (let j = 0; j < gridSize; j++) {
+      // Avoid placing arrows exactly at the boundary edges so they
+      // don't overlap the BC line highlights.
+      const u = (i + 0.5) / gridSize;
+      const v = (j + 0.5) / gridSize;
+      const theta = -phi + (2 * phi) * v;
+      const x = u * L;
+      const y = R * Math.sin(theta);
+      const z = R * Math.cos(theta);
+      // Arrows sit ABOVE the surface and point down, tips touching the
+      // shell at the sample point so the connection to the body force
+      // is unambiguous.
+      const origin = new THREE.Vector3(x, y, z + arrowLen);
+      const arrow = new THREE.ArrowHelper(
+        downDir, origin, arrowLen, colour, headLen, headWidth,
+      );
+      group.add(arrow);
+    }
+  }
+  return group;
 }
 
 /** Edge overlay for the procedural cylinder driven by an explicit list of
