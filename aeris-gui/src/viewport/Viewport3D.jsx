@@ -96,6 +96,11 @@ export default function Viewport3D() {
 
     const scene = new THREE.Scene();
 
+    // near/far + control limits get rescaled per cylinder bounds in a
+    // later effect — these are just the initial values for the R=L=1
+    // default load. Without this, scrolling out past ~200 units on a
+    // big cylinder (R=33, L=100) used to clip the geometry into the
+    // background.
     const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 200);
     camera.position.set(...VIEW_PRESETS.oblique.pos);
     camera.up.set(...VIEW_PRESETS.oblique.up);
@@ -104,6 +109,8 @@ export default function Viewport3D() {
     controls.target.set(...VIEW_PRESETS.oblique.target);
     controls.enableDamping = true;
     controls.dampingFactor = 0.1;
+    controls.minDistance = 0.5;
+    controls.maxDistance = 60;
     controls.update();
 
     // Group that holds the per-patch meshes for the current result.
@@ -122,6 +129,17 @@ export default function Viewport3D() {
     grid.position.y = -0.01;
     grid.rotation.x = Math.PI / 2; // grid in xy-plane (cylinder base)
     scene.add(grid);
+
+    // Lighting — only the pre-mode preview MeshLambertMaterial honours these;
+    // the post-mode ShaderMaterial ignores lights (does its own dFdx shading).
+    const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+    scene.add(ambient);
+    const sun = new THREE.DirectionalLight(0xeaf4ff, 0.85);
+    sun.position.set(4, -5, 6);
+    scene.add(sun);
+    const fill = new THREE.DirectionalLight(0x88aabb, 0.35);
+    fill.position.set(-3, 3, -2);
+    scene.add(fill);
 
     // Shared shader material parameters.
     const rampTex = makeRampTexture(RAMP_DARK);
@@ -153,6 +171,17 @@ export default function Viewport3D() {
       opacity: 0.35,
     });
 
+    // Pre-mode preview material — a Lambertian dark-cyan that stands out
+    // against the navy backdrop and shades properly under the lights above,
+    // unlike the result ShaderMaterial whose lowest ramp colour blends
+    // straight into the page background.
+    const previewMaterial = new THREE.MeshLambertMaterial({
+      color: 0x2a6580,
+      emissive: 0x06151c,
+      side: THREE.DoubleSide,
+      flatShading: false,
+    });
+
     function resize() {
       const w = container.clientWidth;
       const h = container.clientHeight;
@@ -182,6 +211,7 @@ export default function Viewport3D() {
       rampTex,
       uniforms,
       surfaceMaterial,
+      previewMaterial,
       edgeMaterial,
       wireMaterial,
       grid,
@@ -193,6 +223,7 @@ export default function Viewport3D() {
       controls.dispose();
       renderer.dispose();
       surfaceMaterial.dispose();
+      previewMaterial.dispose();
       edgeMaterial.dispose();
       wireMaterial.dispose();
       rampTex.dispose();
@@ -246,6 +277,22 @@ export default function Viewport3D() {
     st.wireGroup.visible = showUndeformed;
   }, [showUndeformed]);
 
+  // Rescale camera near/far + OrbitControls min/max distance to the current
+  // bounding box. Without this, on a big cylinder (R=33, L=100) the snap-view
+  // distance (~290 units) sat past the original far=200 plane and the geometry
+  // vanished into the background when you scrolled out. Keying on R/L only,
+  // so the limits update once per geometry change, not on every camera nudge.
+  useEffect(() => {
+    const st = stateRef.current;
+    if (!st.camera || !st.controls) return;
+    const scale = Math.max(cyl.R, cyl.L, 1);
+    st.camera.near = scale * 0.002;
+    st.camera.far = scale * 200;     // ~200x bbox — generous, no clipping
+    st.camera.updateProjectionMatrix();
+    st.controls.minDistance = scale * 0.1;
+    st.controls.maxDistance = scale * 50;
+  }, [cyl.R, cyl.L]);
+
   useEffect(() => {
     const st = stateRef.current;
     if (!st.camera || !st.controls) return;
@@ -281,13 +328,12 @@ export default function Viewport3D() {
     geom.rotateX(Math.PI / 2);
     geom.translate(0, 0, cyl.L / 2);
 
-    // The shared shader expects per-vertex aDisp + aMag; zero them so the
-    // procedural mesh draws as the colormap's base colour (deep navy in dark).
-    const nVerts = geom.attributes.position.count;
-    geom.setAttribute("aDisp", new THREE.BufferAttribute(new Float32Array(nVerts * 3), 3));
-    geom.setAttribute("aMag", new THREE.BufferAttribute(new Float32Array(nVerts), 1));
-
-    const mesh = new THREE.Mesh(geom, st.surfaceMaterial);
+    // Pre-mode uses its own Lambertian preview material (lit) — visually
+    // distinct from the result shader, and crucially actually visible
+    // against the dark backdrop (the result ramp's lowest colour blends
+    // straight into the page background, which is fine for results but
+    // not for a "this is your model" preview).
+    const mesh = new THREE.Mesh(geom, st.previewMaterial);
     mesh.userData.kind = "surface";
     st.meshGroup.add(mesh);
 
