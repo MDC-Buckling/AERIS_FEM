@@ -43,10 +43,10 @@ export const useUI = create((set) => ({
     }),
 
   /** Pre-processor: per-section state — "default" | "configured" | "warning".
-   * All sections start at "default" this session; later sessions flip them
-   * to "configured" as fields get filled. */
+   * Session 3.2 flips `geometry` to "configured" as soon as R/L/t are valid.
+   * Later sessions flip the rest as their sections get wired. */
   sectionStatus: {
-    geometry: "default",
+    geometry: "configured",  // wired this session
     shellConstruction: "default",
     material: "default",
     imperfections: "default",
@@ -62,6 +62,59 @@ export const useUI = create((set) => ({
 
   /** Project / model name shown in the top chrome. Editable later. */
   projectName: "Cylinder LBA",
+
+  /** ----------------------------------------------------------------------
+   *  THE MODEL — in-memory mirror of scripts/aeris_model.py's ModelConfig
+   *  schema. Session 3.2 wires GEOMETRY (Cylinder R/L/t); other sections
+   *  carry the validated Session-2.7 defaults as read-only state until
+   *  their sessions land. Serialised to model.json on Solve.
+   *  --------------------------------------------------------------------*/
+  model: {
+    schemaVersion: 1,
+    name: "Cylinder LBA",
+    geometry: {
+      shape: "cylinder",
+      cylinder: { R: 1.0, L: 1.0, t: 0.01 },
+    },
+    material: { model: "linear", E: 1.0, nu: 0.3 },
+    mesh: {
+      refinement: 5, degree: 3, smoothness: 2,
+      coupling: "gsSmoothInterfaces",
+    },
+    bcs: { kind: "clamped_neumann" },
+    load: { kind: "axial", neumann_traction_axial: "auto" },
+    analysis: {
+      kind: "lba", nmodes: 5,
+      solver: "spectra-buckling", shift: "auto",
+      interface_penalty: 1e6,
+    },
+  },
+
+  /** Set cylinder geometry from the inspector. Validates positivity; on
+   * non-positive value silently rejects (the input field clamps). */
+  setCylinderDim: (key, value) =>
+    set((s) => {
+      const v = Number(value);
+      if (!Number.isFinite(v) || v <= 0) return {};
+      return {
+        model: {
+          ...s.model,
+          geometry: {
+            ...s.model.geometry,
+            cylinder: { ...s.model.geometry.cylinder, [key]: v },
+          },
+        },
+      };
+    }),
+
+  /** Set the shape family. Only "cylinder" is wired this session. */
+  setShape: (shape) =>
+    set((s) => ({
+      model: {
+        ...s.model,
+        geometry: { ...s.model.geometry, shape },
+      },
+    })),
 
   /** Which result is currently loaded into the viewport. */
   selectedResultId: "mode1",
