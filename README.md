@@ -304,6 +304,18 @@ SHA file printed "bundled-with-v25.07.0" for everything).
   multipatch basis, eigensolver, XML I/O) is wired correctly. Eigenvalues
   return in clean doublet pairs (sin/cos partners), the textbook signature
   of cylinder buckling.
+- **Validation suite (`benchmarks/`)** — second validated case beyond the
+  cylinder LBA. **Scordelis-Lo roof PASSES** at `|err| = 0.031 %` at r=6
+  vs the Kirchhoff-Love reference `|u_z| = 0.3006` (the literature's
+  shear-rigid number, not the 0.3024 shear-deformable one). Monotonic
+  convergence from below over r=0..6, no shear / membrane locking
+  detected. First test of the **static linear** shell path — confirms
+  `static_shell_XML` + `gsThinShellAssembler` + `gsStaticNewton` produce
+  the right membrane / bending split + Poisson-free isotropic response
+  + free-edge behaviour. Single-patch; a multipatch variant for
+  cross-checking `gsSmoothInterfaces` moment transfer under bending is
+  next in the suite roadmap. See `benchmarks/scordelis_lo/README.md`
+  for the full convergence table + interpretation.
 - **ParaView export** — same script writes the cylinder mesh + linear-elastic
   reference state + first N (default 5) eigenmodes to a `/aeris-output` mount
   for visualisation. Uses the shipped exe's `--plot` flag — no custom VTK

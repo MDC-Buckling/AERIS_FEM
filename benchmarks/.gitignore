@@ -1,0 +1,5 @@
+# Transient solver artifacts — each benchmark writes its per-refinement
+# output here, regenerated on every run. The numerical results are
+# captured in the benchmark's README instead.
+*/output/
+__pycache__/
