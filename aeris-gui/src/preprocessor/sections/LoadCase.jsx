@@ -22,6 +22,7 @@ import { useUI } from "../../store.js";
 const LOAD_OPTIONS = [
   ["axial",   "Axial Compression"],
   ["bending", "Bending"],
+  ["gravity", "Gravity (body force)"],
   ["torsion", "Torsion",
     { disabled: true, title: "needs an N·t shear-Neumann pattern on the top edge and a Donnell-style classical reference — not wired yet" }],
   ["extpress", "External Pressure",
@@ -38,10 +39,36 @@ const LOAD_OPTIONS = [
 const LOAD_DESCRIPTIONS = {
   axial:    "Uniform Tz on top edge → uniform tensile membrane (σ_ref = E). Smallest +λ_1 = compressive buckling load factor.",
   bending:  "Cos(θ) Tz on top edge via Tz(x) = E·t·x/R → tension on +x, compression on -x. Buckle localises on -x half.",
+  gravity:  "Uniform body force per unit shell area, vertical-downward. Used by static analyses (e.g. Scordelis-Lo dead-load, q = 90/area).",
   torsion:  "Shear traction tangent to the top edge.",
   extpress: "Uniform external pressure on the shell surface.",
   intpress: "Uniform internal pressure (stabilising).",
   combined: "Superposition of axial + bending + pressure.",
+};
+
+/** Magnitude-field metadata per load.kind — what symbol to show, what
+ * label, what hint text. Keeps the field semantics honest: a "load
+ * magnitude" means very different things for axial (force), bending
+ * (moment), and gravity (force per area). */
+const MAGNITUDE_META = {
+  axial: {
+    symbol: "F",
+    label: "Applied axial force  (F)",
+    step: 0.1,
+    hint: "in your consistent unit system (e.g. N if you used mm + MPa). Set to 1 to read the eigenvalue as F_cr directly; set to your real applied force to read the verdict as a safety factor.",
+  },
+  bending: {
+    symbol: "M",
+    label: "Applied bending moment  (M)",
+    step: 1.0,
+    hint: "in your consistent unit system (e.g. N·mm if you used mm + MPa). Set to 1 to read the eigenvalue as M_cr directly; set to your real applied moment to read the verdict as a safety factor.",
+  },
+  gravity: {
+    symbol: "q",
+    label: "Surface body force  (q per unit area, vertical -z)",
+    step: 1.0,
+    hint: "force-per-area in your consistent unit system. Scordelis-Lo literature uses q = 90; for self-weight q = ρ·t·g.",
+  },
 };
 
 export default function LoadCase() {
@@ -50,21 +77,7 @@ export default function LoadCase() {
   const setMagnitude = useUI((s) => s.setLoadMagnitude);
 
   const desc = LOAD_DESCRIPTIONS[load.kind] ?? "?";
-
-  // ABAQUS LBA convention: apply 1 N (axial) or 1 N·mm (bending) as the
-  // reference and read the eigenvalue as the critical load directly. Symbol
-  // and human label flip with load.kind; the unit string stays generic
-  // ("force" / "moment") because the whole model is unit-agnostic — the
-  // user is responsible for keeping mm/MPa/N consistent across geometry,
-  // material and load.
-  const isBending = load.kind === "bending";
-  const magSymbol = isBending ? "M" : "F";
-  const magLabel = isBending
-    ? "Applied bending moment  (M)"
-    : "Applied axial force  (F)";
-  const magHint = isBending
-    ? "in your consistent unit system (e.g. N·mm if you used mm + MPa). Set to 1 to read the eigenvalue as M_cr directly; set to your real applied moment to read the verdict as a safety factor."
-    : "in your consistent unit system (e.g. N if you used mm + MPa). Set to 1 to read the eigenvalue as F_cr directly; set to your real applied force to read the verdict as a safety factor.";
+  const meta = MAGNITUDE_META[load.kind] ?? MAGNITUDE_META.axial;
 
   return (
     <>
@@ -88,15 +101,15 @@ export default function LoadCase() {
       </div>
 
       <NumberField
-        label={magLabel}
-        symbol={magSymbol}
+        label={meta.label}
+        symbol={meta.symbol}
         unit="–"
         value={load.magnitude ?? 1.0}
         onChange={setMagnitude}
         min={1e-12}
-        step={isBending ? 1.0 : 0.1}
+        step={meta.step}
         precision={6}
-        hint={magHint}
+        hint={meta.hint}
       />
 
       <div
@@ -129,20 +142,37 @@ export default function LoadCase() {
         >
           {desc}
         </div>
-        <div
-          style={{
-            marginTop: 8,
-            fontSize: 10,
-            color: "var(--text-muted)",
-            lineHeight: 1.45,
-          }}
-        >
-          Internal Neumann magnitude is E-scaled for numerical conditioning
-          (the K_NL − K_L cancellation trick — see Session 3.3 README). Your{" "}
-          <span style={{ color: "var(--accent-muted)" }}>{magSymbol}</span>{" "}
-          above does not change the eigenvalue, only how the verdict reports
-          the critical load.
-        </div>
+        {load.kind !== "gravity" && (
+          <div
+            style={{
+              marginTop: 8,
+              fontSize: 10,
+              color: "var(--text-muted)",
+              lineHeight: 1.45,
+            }}
+          >
+            Internal Neumann magnitude is E-scaled for numerical conditioning
+            (the K_NL − K_L cancellation trick — see Session 3.3 README). Your{" "}
+            <span style={{ color: "var(--accent-muted)" }}>{meta.symbol}</span>{" "}
+            above does not change the eigenvalue, only how the verdict reports
+            the critical load.
+          </div>
+        )}
+        {load.kind === "gravity" && (
+          <div
+            style={{
+              marginTop: 8,
+              fontSize: 10,
+              color: "var(--text-muted)",
+              lineHeight: 1.45,
+            }}
+          >
+            For static analysis the magnitude IS the actual applied
+            force-per-area — no E-scaling trick, displacements scale linearly
+            with{" "}
+            <span style={{ color: "var(--accent-muted)" }}>{meta.symbol}</span>.
+          </div>
+        )}
       </div>
 
       <div
@@ -158,13 +188,34 @@ export default function LoadCase() {
           lineHeight: 1.5,
         }}
       >
-        Both wired cases are <span style={{ color: "var(--accent-muted)" }}>
-        validated against classical
-        </span>{" "}
-        at the default geometry (R=L=1, t=0.01, E=1, ν=0.3, r=5): axial −0.49 %,
-        bending −0.48 % vs σ_cr = E·t/(R·√(3(1−ν²))). For a perfect-shell LBA
-        bending converges to the same critical stress as axial — knockdown for
-        bending only kicks in once imperfections are added (separate session).
+        {load.kind === "gravity" ? (
+          <>
+            Pair with <span style={{ color: "var(--accent-muted)" }}>
+            analysis.kind = static
+            </span>{" "}
+            + <span style={{ color: "var(--accent-muted)" }}>
+            shape = cylinder_segment
+            </span>{" "}
+            + <span style={{ color: "var(--accent-muted)" }}>
+            BCs = scordelis_diaphragm
+            </span>{" "}
+            to set up the Scordelis-Lo roof case. Solver-side dispatch lands in
+            Increment 3 of the integration; until then the SOLVE button will
+            still bounce for this combination, but the model.json round-trips
+            correctly.
+          </>
+        ) : (
+          <>
+            Both wired LBA cases are <span style={{ color: "var(--accent-muted)" }}>
+            validated against classical
+            </span>{" "}
+            at the default geometry (R=L=1, t=0.01, E=1, ν=0.3, r=5):
+            axial −0.49 %, bending −0.48 % vs σ_cr = E·t/(R·√(3(1−ν²))).
+            For a perfect-shell LBA bending converges to the same critical
+            stress as axial — knockdown for bending only kicks in once
+            imperfections are added (separate session).
+          </>
+        )}
       </div>
     </>
   );

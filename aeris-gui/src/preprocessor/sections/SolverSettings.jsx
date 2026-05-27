@@ -68,8 +68,41 @@ export default function SolverSettings() {
 
   const info = SOLVER_INFO[analysis.solver] ?? SOLVER_INFO["spectra-buckling"];
 
+  // Static analysis = single linear solve (K · u = F) — no eigenvalue
+  // iteration, so the Spectra mode + nmodes + spectral-shift knobs are
+  // physically meaningless and get hidden. tolerance + ncv_factor +
+  // interface_penalty stay visible because the static path still uses
+  // the same gsThinShellAssembler infrastructure (tolerance applies to
+  // the linear solver, ifc penalty to the patch-coupling fallback).
+  const isStatic = analysis.kind === "static";
+
   return (
     <>
+      {isStatic && (
+        <div
+          style={{
+            marginBottom: 12,
+            padding: "8px 10px",
+            background: "var(--panel-bg-soft)",
+            border: "1px dashed var(--accent-muted)",
+            borderRadius: 4,
+            fontSize: 10.5,
+            color: "var(--text-secondary)",
+            fontFamily: MONO,
+            lineHeight: 1.5,
+          }}
+        >
+          <span style={{ color: "var(--accent)", fontWeight: 700 }}>
+            Static analysis active.
+          </span>{" "}
+          Eigenvalue-only knobs (Spectra mode, nmodes, spectral shift) are
+          hidden because they don't apply to a direct K · u = F solve. The
+          advanced solver knobs below still affect the linear solver
+          (tolerance) and patch-coupling fallback (interface penalty).
+        </div>
+      )}
+
+      {!isStatic && (<>
       <div style={{ marginBottom: 9 }}>
         <div
           style={{
@@ -198,6 +231,7 @@ export default function SolverSettings() {
           </div>
         )}
       </div>
+      </>)}
 
       {/* ----- ADVANCED disclosure ----- */}
       <div style={{ marginTop: 10 }}>

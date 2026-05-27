@@ -15,6 +15,7 @@ import { useUI } from "../../store.js";
 
 const BCS_OPTIONS = [
   ["clamped_neumann", "Clamped + Neumann"],
+  ["scordelis_diaphragm", "Scordelis Diaphragm"],
   ["clamped_both", "Both Clamped",
     { disabled: true, title: "needs a Dirichlet block on the top edge instead of Neumann — not wired yet" }],
   ["ss_both", "Both SS",
@@ -23,9 +24,49 @@ const BCS_OPTIONS = [
     { disabled: true, title: "bottom clamped, top free — degenerate stress state for an LBA, not wired yet" }],
 ];
 
+/** Per-preset explainer copy — swaps in/out the description block under
+ * the toggle so the user sees what the picked BC actually constrains
+ * before they hit SOLVE. Each entry: rows = list of [edge, condition]
+ * pairs + note that names the geometry the preset was designed for. */
+const BCS_INFO = {
+  clamped_neumann: {
+    title: "Cylinder buckling BC (Session-2.7 validated)",
+    rows: [
+      ["Bottom edge  (z = 0)", "Dirichlet u=0  +  Clamped (KL normal-rotation = 0)"],
+      ["Top edge  (z = L)", "Neumann (load case sets the traction)"],
+    ],
+    note: (
+      <>
+        The KL-shell needs the explicit <span style={{ color: "var(--accent-muted)" }}>Clamped</span> rotation BC
+        alongside the Dirichlet displacement clamp — without it, the bottom edge is only
+        simply-supported and the LBA result drifts. Documented in the G+Smo XML quirks
+        memory note from Session 2.7. Designed for the closed-cylinder buckling case.
+      </>
+    ),
+  },
+  scordelis_diaphragm: {
+    title: "Roof-segment diaphragm BC (Scordelis-Lo)",
+    rows: [
+      ["Curved end edges  (u = 0, u = L)", "Dirichlet u_y = u_z = 0  (rigid in-plane diaphragm; u_x free)"],
+      ["Corner pin  (SW corner)", "Dirichlet u_x = 0  (removes axial rigid-body mode)"],
+      ["Straight edges  (v = ±φ)", "FREE  (no BC — the eaves)"],
+    ],
+    note: (
+      <>
+        Pair with <span style={{ color: "var(--accent-muted)" }}>shape = cylinder_segment</span>{" "}
+        for the Belytschko obstacle-course Scordelis-Lo case. The diaphragm
+        constrains the cross-section to stay rigid in its own plane while
+        allowing axial sliding; the corner pin kills the remaining x rigid-
+        body translation. Solver-side dispatch lands in Increment 3.
+      </>
+    ),
+  },
+};
+
 export default function BcsKind() {
   const bcs = useUI((s) => s.model.bcs);
   const setKind = useUI((s) => s.setBcsKind);
+  const info = BCS_INFO[bcs.kind] ?? BCS_INFO.clamped_neumann;
 
   return (
     <>
@@ -58,8 +99,20 @@ export default function BcsKind() {
           fontFamily: MONO,
         }}
       >
-        <Row label="Bottom edge  (z = 0)" value="Dirichlet u=0  +  Clamped (KL normal-rotation = 0)" />
-        <Row label="Top edge  (z = L)" value="Neumann (load case sets the traction)" />
+        <div
+          style={{
+            color: "var(--text-secondary)",
+            fontSize: 10,
+            textTransform: "uppercase",
+            letterSpacing: 0.08,
+            marginBottom: 6,
+          }}
+        >
+          {info.title}
+        </div>
+        {info.rows.map(([edge, cond]) => (
+          <Row key={edge} label={edge} value={cond} />
+        ))}
         <div
           style={{
             marginTop: 6,
@@ -68,10 +121,7 @@ export default function BcsKind() {
             lineHeight: 1.45,
           }}
         >
-          The KL-shell needs the explicit <span style={{ color: "var(--accent-muted)" }}>Clamped</span> rotation BC
-          alongside the Dirichlet displacement clamp — without it, the bottom edge is only
-          simply-supported and the LBA result drifts. Documented in the G+Smo XML quirks
-          memory note from Session 2.7.
+          {info.note}
         </div>
       </div>
     </>

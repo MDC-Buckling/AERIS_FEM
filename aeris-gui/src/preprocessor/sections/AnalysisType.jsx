@@ -19,20 +19,57 @@ import { useUI } from "../../store.js";
 
 const KIND_OPTIONS = [
   ["lba", "LBA"],
+  ["static", "Static"],
   ["gnia", "GNIA · Arc-Length",
     { disabled: true,
       title: "geometrically nonlinear / arc-length (Riks-Crisfield) — needs gsALMBase driver, post-buckling sweep, separate verdict pipeline. Not wired yet." }],
   ["modal", "Modal",
     { disabled: true,
       title: "free-vibration K x = λ M x — same Spectra machinery as LBA but K_geom is replaced by the mass matrix M. Not wired yet." }],
-  ["static", "Static",
-    { disabled: true,
-      title: "linear elastic single solve — no eigenproblem; useful for stress visualisation pre-buckling. Not wired yet." }],
 ];
+
+/** Per-kind explainer copy. Switching kind in the toggle swaps the panel
+ * below so the user sees what the picked analysis actually solves +
+ * which solver settings apply. Static intentionally calls out the
+ * Scordelis-Lo benchmark since that's the validated CLI reference. */
+const KIND_INFO = {
+  lba: {
+    title: "LBA = Linear Buckling Analysis",
+    body: (
+      <>
+        Solve the generalised eigenproblem{" "}
+        <span style={{ color: "var(--accent)" }}>K_L · v = λ · K_geom · v</span>{" "}
+        to find the smallest load factor λ_1 that drives static instability.
+        Linear because both stiffness matrices are computed at the undeformed
+        configuration — no large-displacement coupling. The result is the
+        classical bifurcation load for a perfect shell; knockdown for
+        imperfections is a separate analysis (later session).
+      </>
+    ),
+    settingsHint: "Use SOLVER SETTINGS below to pick the Spectra eigenvalue mode, eigenvalue count and convergence knobs.",
+  },
+  static: {
+    title: "Static = Linear Elastic Single Solve",
+    body: (
+      <>
+        Solve{" "}
+        <span style={{ color: "var(--accent)" }}>K · u = F</span>{" "}
+        directly — one linear system, no eigenvalue iteration. Useful for the
+        prestress response under a distributed load (e.g. self-weight roof
+        deflection, axisymmetric pressurisation, … any case where you want
+        the actual displacement field, not the buckling load factor).
+        Validated against the Scordelis-Lo benchmark on the CLI side
+        (benchmarks/scordelis_lo/, PASS at 0.031 % at r=6).
+      </>
+    ),
+    settingsHint: "Solver settings: tolerance + interface penalty are honoured; eigenvalue-only knobs (nmodes, shift, Spectra mode) are skipped.",
+  },
+};
 
 export default function AnalysisType() {
   const kind = useUI((s) => s.model.analysis.kind);
   const setKind = useUI((s) => s.setAnalysisKind);
+  const info = KIND_INFO[kind] ?? KIND_INFO.lba;
 
   return (
     <>
@@ -68,16 +105,10 @@ export default function AnalysisType() {
         }}
       >
         <div style={{ color: "var(--text-secondary)", marginBottom: 4 }}>
-          LBA = Linear Buckling Analysis
+          {info.title}
         </div>
         <div style={{ color: "var(--text-primary)" }}>
-          Solve the generalised eigenproblem{" "}
-          <span style={{ color: "var(--accent)" }}>K_L · v = λ · K_geom · v</span>{" "}
-          to find the smallest load factor λ_1 that drives static instability.
-          Linear because both stiffness matrices are computed at the undeformed
-          configuration — no large-displacement coupling. The result is the
-          classical bifurcation load for a perfect shell; knockdown for
-          imperfections is a separate analysis (later session).
+          {info.body}
         </div>
         <div
           style={{
@@ -87,8 +118,7 @@ export default function AnalysisType() {
             lineHeight: 1.45,
           }}
         >
-          Use SOLVER SETTINGS below to pick the Spectra mode, eigenvalue count
-          and convergence knobs.
+          {info.settingsHint}
         </div>
       </div>
     </>
