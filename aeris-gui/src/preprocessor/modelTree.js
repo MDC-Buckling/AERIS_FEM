@@ -158,39 +158,21 @@ export const SECTIONS = [
     label: "Mesh / Discretisation",
     items: [
       {
-        id: "refinement",
-        label: "Refinement level",
-        defaultPreview: "r = 5  (matches cylinder_lba.py default)",
-        kind: "selector",
-        options: [
-          { value: 3, label: "r = 3  (coarse)", enabled: true },
-          { value: 4, label: "r = 4  (medium)", enabled: true },
-          { value: 5, label: "r = 5  (fine — Session-2.7 default)", enabled: true },
-          { value: 6, label: "r = 6  (very fine — slow)", enabled: false, note: "later" },
-        ],
-      },
-      {
-        id: "degree",
-        label: "Polynomial degree",
-        defaultPreview: "p = 3, s = 2",
+        // Session 3.5 collapses the previous 3 stub sub-items (refinement /
+        // degree / coupling) into a single wired inspector. The three IGA
+        // knobs h / p / k are tightly coupled (smoothness < degree, both
+        // drive DOF count quadratically, coupling only matters for >1 patch)
+        // so it's clearer to edit them in one place than to dispatch
+        // through three separate tree items.
+        id: "discretisation",
+        label: "Discretisation",
+        defaultPreview: "r=5  p=3  s=2  ·  gsSmoothInterfaces",
         kind: "fields",
         fields: [
-          { name: "p", label: "Spline degree", unit: "–" },
-          { name: "s", label: "Inter-patch smoothness", unit: "–" },
-        ],
-      },
-      {
-        id: "coupling",
-        label: "Patch coupling",
-        defaultPreview: "gsSmoothInterfaces  (m=0)",
-        kind: "selector",
-        // Reflects what Session-2.7 validated; AlmostC1 needed for extraordinary
-        // vertices in later geometries (cone-cylinder junctions, etc.).
-        options: [
-          { value: 0, label: "gsSmoothInterfaces  (regular topology)", enabled: true },
-          { value: 1, label: "gsAlmostC1  (extraordinary vertices OK)", enabled: false, note: "later" },
-          { value: 2, label: "gsDPatch  (B-spline only)", enabled: false, note: "later" },
-          { value: 3, label: "gsApproxC1Spline", enabled: false, note: "later" },
+          { name: "r", label: "Refinement (h)",     unit: "–" },
+          { name: "p", label: "Degree (p)",         unit: "–" },
+          { name: "s", label: "Smoothness (k)",     unit: "–" },
+          { name: "m", label: "Coupling",           unit: "–" },
         ],
       },
     ],

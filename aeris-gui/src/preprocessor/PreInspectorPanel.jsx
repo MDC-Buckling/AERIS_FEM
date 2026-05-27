@@ -8,6 +8,7 @@ import GeometryShape from "./sections/GeometryShape.jsx";
 import GeometryDimensions from "./sections/GeometryDimensions.jsx";
 import MaterialBase from "./sections/MaterialBase.jsx";
 import SectionAssignments from "./sections/SectionAssignments.jsx";
+import MeshDiscretisation from "./sections/MeshDiscretisation.jsx";
 
 /** Sub-items that have a real, wired inspector this session.
  * Adding to this set drops the "STUB · NOT WIRED" badge for that item. */
@@ -16,6 +17,7 @@ const WIRED_ITEMS = new Set([
   "geometry.dimensions",
   "material.base",
   "shellConstruction.sectionAssignments",
+  "mesh.discretisation",
 ]);
 
 /** Per-item real inspector dispatcher. Returns null if not wired (the
@@ -26,6 +28,7 @@ function WiredInspector({ dottedId }) {
     case "geometry.dimensions":                     return <GeometryDimensions />;
     case "material.base":                           return <MaterialBase />;
     case "shellConstruction.sectionAssignments":    return <SectionAssignments />;
+    case "mesh.discretisation":                     return <MeshDiscretisation />;
     default: return null;
   }
 }
@@ -73,6 +76,9 @@ function LivePreviewLine({ dottedId, fallback }) {
     text = m ? `${m.model} · E=${m.E}  ν=${m.nu}` : fallback;
   } else if (dottedId === "shellConstruction.sectionAssignments") {
     text = `${model.assignments.length} region · ${model.sections.length} section`;
+  } else if (dottedId === "mesh.discretisation") {
+    const m = model.mesh;
+    text = `r=${m.refinement}  p=${m.degree}  s=${m.smoothness}  ·  ${m.coupling}`;
   }
   return <>current value: {text}</>;
 }
@@ -457,8 +463,10 @@ export default function PreInspectorPanel() {
         }}
       >
         {totalItems} model-tree items defined ·{" "}
-        <span style={{ color: "var(--accent-muted)" }}>0 wired</span> ·
-        scaffold session 3.1
+        <span style={{ color: "var(--accent-muted)" }}>
+          {WIRED_ITEMS.size} wired
+        </span>{" "}
+        · session 3.5
       </div>
     </GlassPanel>
   );

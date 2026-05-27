@@ -470,6 +470,38 @@ partition at z=50, t=[0.2, 0.1] mm, E=208000 MPa, ν=0.3): 8 patches, 12
 interfaces, 2 materials in container; r=4 → +0.48 %, r=5 → -0.28 % vs
 the classical formula evaluated at the top-band (loaded-edge) thickness.
 
+### Session 3.5 — MESH wired (h / p / k + coupling) ✅
+
+The IGA mesh surface is much narrower than classical FEM — no element
+types, no element size, no normals — just the three classical h/p/k
+refinement knobs plus the inter-patch coupling strategy. All four now
+flow from `model.mesh` through `cylinder_lba.py` to the multipatch
+driver's `-r / -p / -s / -m` flags.
+
+Python side: `run_buckling` takes `method`/`degree`/`smoothness` as
+parameters (defaults preserved); `main` resolves them as model.json →
+CLI override (`--degree` / `--smoothness` / `--coupling`) → hardcoded
+fallback. `COUPLING_METHOD` maps the schema-level coupling string
+(`gsSmoothInterfaces`, `gsAlmostC1`, …) onto the integer `-m` flag. The
+smoothness < degree invariant (a spline-theory requirement) is enforced
+at parse time with a clean `SystemExit` message.
+
+GUI side: the three previous stub sub-items (refinement / degree /
+coupling) collapse into a single wired `MESH → Discretisation` inspector
+— three integer `NumberField`s (h / p / k) + a four-segment `ToggleGroup`
+for coupling, plus a derived block that live-estimates patch count
+(`4·(N+1)`), interface count (`8N+4`), per-patch DOFs
+(`((2^r·(p-k)+k+1)²·3)`), and total DOFs as the user dials knobs. The
+smoothness field clamps silently to `[0, degree-1]` when the user lowers
+degree — no spurious solver crashes.
+
+**Regression:** default no-args path still hits -0.01 % at r=5 (=
+Session-3.3 number, bit-identical). **Mesh smoke-test** (r=4 with p=4
+instead of default p=3) ran end-to-end and converged to -0.98 % vs
+classical, proving the model.json → CLI → solver chain is live; the
+"Mesh : degree=4, smoothness=2, coupling=gsSmoothInterfaces (-m 0)"
+banner in the run output is the audit trail.
+
 ### Known gaps — next-session candidates (ordered)
 
 1. **Mesh / BCs / Loads / Analysis sections** — same wiring pattern as

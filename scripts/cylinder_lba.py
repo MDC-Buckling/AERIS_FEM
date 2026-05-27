@@ -407,13 +407,24 @@ EXE = Path(os.environ.get(
     "/opt/gismo/build/bin/buckling_shell_multipatch_XML",
 ))
 
-# Method picked for the multipatch coupling. 0 = gsSmoothInterfaces is the
-# simplest construction; it gives identical eigenvalues to AlmostC1 (method=1)
-# for our regular cylinder topology and runs much faster.
-SMOOTH_METHOD = 0
-# Smooth-basis degree/smoothness handed to the unstructured-splines builder.
-SMOOTH_DEGREE = 3
-SMOOTH_SMOOTHNESS = 2
+# DEFAULT mesh parameters. The model.mesh block in model.json is the
+# authoritative source; these constants are only fallbacks if no model is
+# loaded AND no CLI override is given. Values match the Session-2.7
+# validated path so the regression case still passes with no inputs at all.
+SMOOTH_METHOD = 0            # 0 = gsSmoothInterfaces (regular topology)
+SMOOTH_DEGREE = 3            # cubic NURBS after p-elevation
+SMOOTH_SMOOTHNESS = 2        # C^2 inside each patch (one less than degree)
+
+# Maps the schema-level `mesh.coupling` string onto the integer the
+# multipatch driver expects (-m flag). Order intentionally matches the
+# values in the model-tree dropdown so a future "5 = …" choice can be
+# added by appending here + extending the GUI dropdown — no other touch.
+COUPLING_METHOD = {
+    "gsSmoothInterfaces":   0,
+    "gsAlmostC1":           1,
+    "gsDPatch":             2,
+    "gsApproxC1Spline":     3,
+}
 
 # Solver prints eigenvalues like:
 #   First 10 eigenvalues:
@@ -423,9 +434,17 @@ EIG_LINE = re.compile(r"^\s+([-+0-9.eE]+)\s*$")
 
 
 def run_buckling(xml_path: Path, r: int, e: int = 0, nmodes: int = 5,
+                 method: int = SMOOTH_METHOD,
+                 degree: int = SMOOTH_DEGREE,
+                 smoothness: int = SMOOTH_SMOOTHNESS,
                  timeout: int = 600,
                  plot_dir: Path | None = None) -> list[float]:
     """Invoke buckling_shell_XML and parse eigenvalues.
+
+    `method` (-m), `degree` (-p), `smoothness` (-s) are forwarded to the
+    multipatch driver's unstructured-splines builder. Defaults pin the
+    Session-2.7 validated combination so passing nothing reproduces the
+    regression case bit-identically.
 
     If ``plot_dir`` is provided, the exe is run with --plot and -o pointing
     at a subdirectory of plot_dir, AND its working directory is set to
@@ -438,9 +457,9 @@ def run_buckling(xml_path: Path, r: int, e: int = 0, nmodes: int = 5,
            "-r", str(r),
            "-e", str(e),
            "-N", str(nmodes),
-           "-m", str(SMOOTH_METHOD),
-           "-p", str(SMOOTH_DEGREE),
-           "-s", str(SMOOTH_SMOOTHNESS)]
+           "-m", str(method),
+           "-p", str(degree),
+           "-s", str(smoothness)]
     cwd = None
     if plot_dir is not None:
         plot_dir.mkdir(parents=True, exist_ok=True)
@@ -532,6 +551,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--elevate", type=int, default=0,
                    help="Degree elevation (-e), same for all runs")
     p.add_argument("--nmodes", type=int, default=5)
+    # Mesh-block overrides — pulled from model.mesh by default, CLI wins
+    # if given. None sentinel preserves "use whatever the model says" so a
+    # missing flag never silently downgrades the model's value to a CLI
+    # default.
+    p.add_argument("--degree", type=int, default=None,
+                   help="Spline degree (-p). Overrides model.mesh.degree")
+    p.add_argument("--smoothness", type=int, default=None,
+                   help="Inter-element smoothness inside a patch (-s). "
+                        "Overrides model.mesh.smoothness. Must be < degree.")
+    p.add_argument("--coupling", type=str, default=None,
+                   choices=tuple(COUPLING_METHOD.keys()),
+                   help="Multipatch coupling strategy (-m mapped via "
+                        f"{COUPLING_METHOD}). Overrides model.mesh.coupling.")
     p.add_argument("--keep-xml", action="store_true",
                    help="Don't delete the generated XML")
     p.add_argument("--plot-dir", type=Path, default=None,
@@ -545,8 +577,8 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     # Start from a model — file if given, else the validated default — then let
-    # scalar CLI flags override geometry/material on top. Other sections (mesh,
-    # bcs, load, analysis) are read from the model and ignored at solve time
+    # scalar CLI flags override geometry/material/mesh on top. Other sections
+    # (bcs, load, analysis) are read from the model and ignored at solve time
     # since their wiring lands in later sessions; only their presence in the
     # model.json is contract.
     from aeris_model import ModelConfig
@@ -565,11 +597,33 @@ def main(argv: list[str] | None = None) -> int:
     if args.nu is not None: model.materials[0]["nu"] = args.nu
     case = model.case()
 
+    # Mesh-block resolution: model.json → CLI override → hardcoded fallback.
+    # The defaults in DEFAULT_MESH already match Session 2.7 so the no-args
+    # path stays bit-identical to the validated case.
+    mesh = model.mesh
+    degree     = args.degree     if args.degree     is not None else int(mesh.get("degree", SMOOTH_DEGREE))
+    smoothness = args.smoothness if args.smoothness is not None else int(mesh.get("smoothness", SMOOTH_SMOOTHNESS))
+    coupling_name = args.coupling if args.coupling is not None else str(mesh.get("coupling", "gsSmoothInterfaces"))
+    if coupling_name not in COUPLING_METHOD:
+        raise SystemExit(
+            f"unknown coupling '{coupling_name}'; expected one of "
+            f"{list(COUPLING_METHOD)}"
+        )
+    method = COUPLING_METHOD[coupling_name]
+    if smoothness >= degree:
+        raise SystemExit(
+            f"mesh.smoothness ({smoothness}) must be < mesh.degree ({degree}) "
+            "— smoothness is the C^k continuity inside a patch, which is "
+            "capped at one less than the polynomial degree."
+        )
+
     print("=" * 70)
     print("Aeris cylinder LBA — classical vs gsKLShell")
     print("=" * 70)
     print(f"Geometry : R={case.R}, L={case.L}, t={case.t}")
     print(f"Material : E={case.E}, nu={case.nu}")
+    print(f"Mesh     : degree={degree}, smoothness={smoothness}, "
+          f"coupling={coupling_name} (-m {method})")
     print(f"Slenderness  R/t = {case.R / case.t:.0f}")
     print(f"Aspect ratio L/R = {case.L / case.R:.2f}")
     print()
@@ -602,7 +656,8 @@ def main(argv: list[str] | None = None) -> int:
 
     table: list[tuple[int, float, float, float]] = []
     for r in args.refines:
-        eigs = run_buckling(xml_path, r=r, e=args.elevate, nmodes=args.nmodes)
+        eigs = run_buckling(xml_path, r=r, e=args.elevate, nmodes=args.nmodes,
+                            method=method, degree=degree, smoothness=smoothness)
         lam1 = first_physical_positive(eigs)
         if lam1 is None:
             print(f"  {r:>4}  {len(eigs):>6}  NO POSITIVE EIGENVALUE; raw = {eigs}")
@@ -646,6 +701,7 @@ def main(argv: list[str] | None = None) -> int:
                 r=r_finest,
                 e=args.elevate,
                 nmodes=max(args.nmodes, args.plot_modes),
+                method=method, degree=degree, smoothness=smoothness,
                 plot_dir=plot_dir,
             )
             written = sorted(p.name for p in plot_dir.iterdir() if p.is_file())

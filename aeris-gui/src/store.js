@@ -49,7 +49,7 @@ export const useUI = create((set) => ({
     material:          "configured",  // 3.3
     shellConstruction: "configured",  // 3.3  (trivial section assignment view)
     imperfections:     "default",
-    mesh:              "default",
+    mesh:              "configured",  // 3.5
     bcsLoads:          "default",
     analysis:          "default",
     run:               "default",
@@ -248,6 +248,17 @@ export const useUI = create((set) => ({
         return { ...sec, thickness_source: { kind: "geometry" } };
       });
       return { model: { ...s.model, sections } };
+    }),
+
+  /** Patch one field on the model.mesh block (refinement / degree /
+   * smoothness / coupling). The smoothness-must-be-less-than-degree
+   * invariant is enforced at the inspector level so we can clamp
+   * silently without a redundant store-side check. Strings and ints
+   * both flow through here, validated by the caller. */
+  setMeshField: (key, value) =>
+    set((s) => {
+      if (typeof value === "number" && !Number.isFinite(value)) return {};
+      return { model: { ...s.model, mesh: { ...s.model.mesh, [key]: value } } };
     }),
 
   /** Serialise the current model state into the on-disk model.json schema
