@@ -83,6 +83,11 @@ export default function Viewport3D() {
   // care about r here — p and k change DOF count but not the
   // element-grid layout.
   const meshRefinement = useUI((s) => s.model.mesh.refinement);
+  // Load case drives the arrow indicators on the top edge so the user
+  // sees axial-vs-bending at a glance. Subscribe to .kind only — magnitude
+  // is "auto" today, so once that becomes editable we'll need to also
+  // subscribe to .neumann_traction_axial.
+  const loadKind = useUI((s) => s.model.load.kind);
 
   // One-time three.js init.
   useEffect(() => {
@@ -457,16 +462,24 @@ export default function Viewport3D() {
       st.meshGroup.add(seams);
     }
 
+    // Load indicators — arrows on the top edge that visualise the load
+    // case currently selected in the BCs+LOADS inspector.
+    const loadGroup = buildLoadArrows(loadKind, cyl.R, cyl.L);
+    if (loadGroup) {
+      loadGroup.userData.kind = "load";
+      st.meshGroup.add(loadGroup);
+    }
+
     const seamNote = partitionZs.length
       ? ` · ${partitionZs.length} cut → ${partitionZs.length + 1} bands`
       : "";
     setStatus(
-      `live preview · cylinder R=${cyl.R} L=${cyl.L} t=${cyl.t} · R/t=${(cyl.R / cyl.t).toFixed(0)}${seamNote}`
+      `live preview · cylinder R=${cyl.R} L=${cyl.L} t=${cyl.t} · R/t=${(cyl.R / cyl.t).toFixed(0)}${seamNote} · ${loadKind}`
     );
     return () => {
       // Tear-down handled at next effect run (or on unmount inside init).
     };
-  }, [mode, cyl.R, cyl.L, cyl.t, partitionsKey, meshRefinement, showEdges, setStatus]);
+  }, [mode, cyl.R, cyl.L, cyl.t, partitionsKey, meshRefinement, loadKind, showEdges, setStatus]);
 
   // -------------------------------------------------------------------
   // Post-mode: load + build result on selection change (existing path).
@@ -748,6 +761,66 @@ function makeAxisLabel(letter, color) {
   const sprite = new THREE.Sprite(mat);
   sprite.scale.set(0.55, 0.55, 1);
   return sprite;
+}
+
+/** Top-edge load arrows for the live pre-mode preview.
+ *
+ *   axial:   N uniform downward arrows whose tips touch the top rim —
+ *            "the column is being squeezed against the clamped bottom".
+ *   bending: N arrows around the rim with magnitude ∝ |cos(θ)| and
+ *            direction sgn(cos(θ)). +x side gets upward (tension) cyan
+ *            arrows, -x side gets downward (compression) amber arrows.
+ *            Exactly what build_cylinder_xml emits as Tz(x) = (E·t/R)·x.
+ *
+ * Returns a THREE.Group of ArrowHelpers (so tear-down only has to dispose
+ * the group), or null for unsupported load kinds — keeps the dispatch
+ * narrow and avoids drawing misleading indicators for cases the solver
+ * hasn't wired yet (torsion / extpress / …). */
+function buildLoadArrows(loadKind, R, L, nArrows = 16) {
+  if (loadKind !== "axial" && loadKind !== "bending") return null;
+
+  const group = new THREE.Group();
+  // Arrow size scales with the cylinder so big-R steel cases (R=33, L=100)
+  // and unit-default cases (R=1, L=1) both produce readable arrows. 18% of
+  // the larger dimension feels right — long enough to see, short enough
+  // not to dominate.
+  const maxLen = Math.max(R, L) * 0.22;
+  const COMPRESS = 0xffb454;   // amber (matches partition-seam material)
+  const TENSION  = 0x40dd60;   // green (matches Y-axis in the gizmo)
+
+  for (let i = 0; i < nArrows; i++) {
+    const theta = (i / nArrows) * 2 * Math.PI;
+    const x = R * Math.cos(theta);
+    const y = R * Math.sin(theta);
+
+    // Signed Tz weight in [-1, +1]. Compression = -1.
+    let w;
+    if (loadKind === "axial") {
+      w = -1;                          // uniform compression: all arrows down
+    } else {
+      w = Math.cos(theta);             // bending: tension on +x, compression on -x
+    }
+    if (Math.abs(w) < 0.03) continue;  // skip near-zero arrows (avoid speckle on ±y)
+
+    const len = maxLen * Math.abs(w);
+    const headLen = len * 0.32;
+    const headWidth = len * 0.20;
+    const color = w > 0 ? TENSION : COMPRESS;
+
+    // Place compression arrows ABOVE the rim pointing DOWN (tip on rim);
+    // place tension arrows AT the rim pointing UP (tail on rim). Either
+    // way the arrow visually emerges from the cylinder's top edge.
+    let origin, dir;
+    if (w > 0) {
+      origin = new THREE.Vector3(x, y, L);
+      dir    = new THREE.Vector3(0, 0, +1);
+    } else {
+      origin = new THREE.Vector3(x, y, L + len);
+      dir    = new THREE.Vector3(0, 0, -1);
+    }
+    group.add(new THREE.ArrowHelper(dir, origin, len, color, headLen, headWidth));
+  }
+  return group;
 }
 
 /** Bright ring at each axial cut z — used in pre-mode to flag the partition
