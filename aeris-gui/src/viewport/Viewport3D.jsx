@@ -75,9 +75,13 @@ export default function Viewport3D() {
   const resultCache = useUI((s) => s.resultCache);
   const cacheResult = useUI((s) => s.cacheResult);
   const setStatus = useUI((s) => s.setStatus);
-  // In pre-mode the viewport renders a procedural cylinder driven LIVE
-  // by these dimensions — no .vts/.pvd round-trip, no solver involvement.
+  // In pre-mode the viewport renders a procedural shell driven LIVE
+  // by the model's geometry — no .vts/.pvd round-trip, no solver
+  // involvement. We subscribe to the geometry block as a whole and
+  // dispatch on `shape` further down.
+  const geometryShape = useUI((s) => s.model.geometry.shape);
   const cyl = useUI((s) => s.model.geometry.cylinder);
+  const segment = useUI((s) => s.model.geometry.cylinder_segment);
   // Mesh refinement drives the edge-overlay density so the user gets
   // visual feedback when they bump r/p/k in the MESH inspector. We only
   // care about r here — p and k change DOF count but not the
@@ -350,6 +354,13 @@ export default function Viewport3D() {
     st.wireGroup.visible = showUndeformed;
   }, [showUndeformed]);
 
+  // Pick the active geometry's bounding R/L for camera / scale ops. The
+  // segment uses its own R/L (Scordelis-Lo's R=25, L=50 differs sharply
+  // from the cylinder default R=33, L=100), so camera limits need to
+  // follow whichever shape is currently selected.
+  const activeR = geometryShape === "cylinder_segment" ? segment.R : cyl.R;
+  const activeL = geometryShape === "cylinder_segment" ? segment.L : cyl.L;
+
   // Rescale camera near/far + OrbitControls min/max distance to the current
   // bounding box. Without this, on a big cylinder (R=33, L=100) the snap-view
   // distance (~290 units) sat past the original far=200 plane and the geometry
@@ -358,29 +369,29 @@ export default function Viewport3D() {
   useEffect(() => {
     const st = stateRef.current;
     if (!st.camera || !st.controls) return;
-    const scale = Math.max(cyl.R, cyl.L, 1);
+    const scale = Math.max(activeR, activeL, 1);
     st.camera.near = scale * 0.002;
     st.camera.far = scale * 200;     // ~200x bbox — generous, no clipping
     st.camera.updateProjectionMatrix();
     st.controls.minDistance = scale * 0.1;
     st.controls.maxDistance = scale * 50;
-  }, [cyl.R, cyl.L]);
+  }, [activeR, activeL]);
 
   useEffect(() => {
     const st = stateRef.current;
     if (!st.camera || !st.controls) return;
-    // Camera snaps auto-scale to the current cylinder bounding box so the
+    // Camera snaps auto-scale to the current geometry bounding box so the
     // procedural preview stays in frame across user-edited R/L. Post-mode
     // results are also dimensioned at R=1, L=1 for now so this works there
     // too; later the result loader will set its own bounds.
-    const presets = viewPresets(cyl.R, cyl.L);
+    const presets = viewPresets(activeR, activeL);
     const p = presets[viewPreset];
     if (!p) return;
     st.camera.position.set(...p.pos);
     st.camera.up.set(...p.up);
     st.controls.target.set(...p.target);
     st.controls.update();
-  }, [viewPreset, cyl.R, cyl.L]);
+  }, [viewPreset, activeR, activeL]);
 
   // -------------------------------------------------------------------
   // Pre-mode: procedural cylinder driven LIVE by the model dimensions.
@@ -400,6 +411,38 @@ export default function Viewport3D() {
     tearDownGroups(st);
     st.uniforms.uMagMax.value = 1.0;
 
+    // Dispatch on shape. cylinder_segment skips the partition / load
+    // overlays for now because those concepts don't carry over cleanly
+    // (no closed cylinder = no full-circle partitions; static gravity
+    // load is shown differently than an axial Neumann edge).
+    if (geometryShape === "cylinder_segment") {
+      const geom = buildRoofSegmentGeometry(segment.R, segment.L, segment.phi_deg);
+      const mesh = new THREE.Mesh(geom, st.previewMaterial);
+      mesh.userData.kind = "surface";
+      st.meshGroup.add(mesh);
+
+      // Edge overlay for the segment: a sparse u/v grid driven by mesh
+      // refinement, plus the four boundary curves (free edges in red,
+      // diaphragm edges in cyan — visualises the BC topology before any
+      // solve, since the Scordelis-Lo BCs are intrinsic to the shape).
+      const elementsPerPatch = Math.pow(2, Math.max(0, meshRefinement));
+      const uSegs = Math.min(elementsPerPatch, 64);
+      const vSegs = Math.min(elementsPerPatch, 64);
+      const edges = new THREE.LineSegments(
+        buildRoofSegmentEdges(segment.R, segment.L, segment.phi_deg, uSegs, vSegs),
+        st.edgeMaterial
+      );
+      edges.userData.kind = "edges";
+      edges.visible = showEdges;
+      st.meshGroup.add(edges);
+
+      setStatus(
+        `live preview · roof R=${segment.R} L=${segment.L} t=${segment.t} φ=${segment.phi_deg}° · R/t=${(segment.R / segment.t).toFixed(0)}`
+      );
+      return;
+    }
+
+    // ---- cylinder (closed) ----
     // THREE.CylinderGeometry default axis is Y; rotate so axis is Z and shift
     // so bottom is at z=0, top at z=L (matches our solver convention).
     const segR = 64;       // around circumference
@@ -487,7 +530,12 @@ export default function Viewport3D() {
     return () => {
       // Tear-down handled at next effect run (or on unmount inside init).
     };
-  }, [mode, cyl.R, cyl.L, cyl.t, partitionsKey, meshRefinement, loadKind, showEdges, setStatus]);
+  }, [
+    mode, geometryShape,
+    cyl.R, cyl.L, cyl.t, partitionsKey,
+    segment.R, segment.L, segment.t, segment.phi_deg,
+    meshRefinement, loadKind, showEdges, setStatus,
+  ]);
 
   // -------------------------------------------------------------------
   // Post-mode: load + build result on selection change (existing path).
@@ -648,6 +696,96 @@ function tearDownGroups(st) {
     const c = st.wireGroup.children.pop();
     c.geometry?.dispose();
   }
+}
+
+/** Build a cylindrical-segment "roof" surface mesh.
+ *
+ * Axis along x: x ∈ [0, L] (the roof length). Arc in the y-z plane
+ * sweeping from θ = -phi to θ = +phi, measured from the apex. In
+ * Cartesian: y = R·sin(θ), z = R·cos(θ). The arc's center is at
+ * (0, 0, 0), apex of the arc at (·, 0, R), free-edge points at
+ * (·, ±R·sin(phi), R·cos(phi)).
+ *
+ * Returns a BufferGeometry with positions + normals + a unit-square uv
+ * (so the existing Lambertian preview material lights it correctly).
+ * uSegs × vSegs tessellation; both default to 32 which is comfortable
+ * for visual inspection. */
+function buildRoofSegmentGeometry(R, L, phi_deg, uSegs = 32, vSegs = 32) {
+  const phi = (phi_deg * Math.PI) / 180;
+  const positions = new Float32Array((uSegs + 1) * (vSegs + 1) * 3);
+  const normals = new Float32Array((uSegs + 1) * (vSegs + 1) * 3);
+  const indices = [];
+
+  let p = 0, n = 0;
+  for (let j = 0; j <= vSegs; j++) {
+    const v = j / vSegs;                 // 0 → 1 along v
+    const theta = -phi + (2 * phi) * v;  // -phi → +phi
+    const sy = R * Math.sin(theta);
+    const sz = R * Math.cos(theta);
+    // Outward normal at the mid-surface points radially: (0, sin θ, cos θ).
+    const ny = Math.sin(theta);
+    const nz = Math.cos(theta);
+    for (let i = 0; i <= uSegs; i++) {
+      const u = i / uSegs;
+      positions[p++] = u * L;
+      positions[p++] = sy;
+      positions[p++] = sz;
+      normals[n++] = 0;
+      normals[n++] = ny;
+      normals[n++] = nz;
+    }
+  }
+  // Standard quad → 2 triangles, CCW from outward.
+  for (let j = 0; j < vSegs; j++) {
+    for (let i = 0; i < uSegs; i++) {
+      const a = j * (uSegs + 1) + i;
+      const b = a + 1;
+      const c = a + (uSegs + 1);
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  g.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+  g.setIndex(new THREE.Uint32BufferAttribute(indices, 1));
+  return g;
+}
+
+/** Wireframe edge overlay for the roof segment: a u/v grid at the
+ * mesh-refinement density (so bumping r densifies the preview),
+ * plus the 4 boundary curves drawn explicitly so the user can
+ * tell at a glance which edges are diaphragm (curved, at u=0 and
+ * u=L) vs free (straight, at v=0 and v=1). */
+function buildRoofSegmentEdges(R, L, phi_deg, uSegs = 16, vSegs = 16) {
+  const phi = (phi_deg * Math.PI) / 180;
+  const pts = [];
+  const evalP = (u, v) => {
+    const theta = -phi + (2 * phi) * v;
+    return [u * L, R * Math.sin(theta), R * Math.cos(theta)];
+  };
+  const PUSH = (p1, p2) => {
+    pts.push(p1[0], p1[1], p1[2]);
+    pts.push(p2[0], p2[1], p2[2]);
+  };
+  // u-grid (parametric u = const lines, swept across v) → axial element edges
+  for (let i = 0; i <= uSegs; i++) {
+    const u = i / uSegs;
+    for (let j = 0; j < vSegs; j++) {
+      PUSH(evalP(u, j / vSegs), evalP(u, (j + 1) / vSegs));
+    }
+  }
+  // v-grid (parametric v = const lines, swept along u) → arc-direction element edges
+  for (let j = 0; j <= vSegs; j++) {
+    const v = j / vSegs;
+    for (let i = 0; i < uSegs; i++) {
+      PUSH(evalP(i / uSegs, v), evalP((i + 1) / uSegs, v));
+    }
+  }
+  const arr = new Float32Array(pts);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+  return g;
 }
 
 /** Edge overlay for the procedural cylinder driven by an explicit list of

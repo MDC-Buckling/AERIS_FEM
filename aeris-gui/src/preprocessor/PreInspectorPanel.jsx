@@ -84,7 +84,12 @@ function LivePreviewLine({ dottedId, fallback }) {
 
   let text = fallback;
   if (dottedId === "geometry.dimensions") {
-    text = `R=${cyl.R}  L=${cyl.L}  t=${cyl.t}  ·  R/t=${(cyl.R / cyl.t).toFixed(0)}`;
+    if (model.geometry.shape === "cylinder_segment") {
+      const s = model.geometry.cylinder_segment;
+      text = `R=${s.R}  L=${s.L}  t=${s.t}  φ=${s.phi_deg}°  ·  R/t=${(s.R / s.t).toFixed(0)}`;
+    } else {
+      text = `R=${cyl.R}  L=${cyl.L}  t=${cyl.t}  ·  R/t=${(cyl.R / cyl.t).toFixed(0)}`;
+    }
   } else if (dottedId === "geometry.shape") {
     text = model.geometry.shape;
   } else if (dottedId === "material.base") {

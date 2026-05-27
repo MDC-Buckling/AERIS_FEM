@@ -83,6 +83,15 @@ export const useUI = create((set) => ({
     geometry: {
       shape: "cylinder",
       cylinder: { R: 33.0, L: 100.0, t: 0.1, partitions: [] },
+      // Cylindrical-segment "roof" geometry (Increment 1 of the
+      // Scordelis-Lo integration). Single biquadratic NURBS patch
+      // swung ±phi_deg about the apex; axis along x. Solver wiring
+      // lands in Increment 3 — for now the GUI lets you select the
+      // shape, edit its dimensions, and see it in the pre-mode
+      // viewport, but SOLVE will still bounce until the static
+      // driver dispatch is in place. Defaults match the literature
+      // Scordelis-Lo case (Belytschko 1985).
+      cylinder_segment: { R: 25.0, L: 50.0, t: 0.25, phi_deg: 40.0 },
     },
     materials: [
       {
@@ -153,6 +162,25 @@ export const useUI = create((set) => ({
           geometry: {
             ...s.model.geometry,
             cylinder: { ...s.model.geometry.cylinder, [key]: v },
+          },
+        },
+      };
+    }),
+
+  /** Set a cylinder-segment dimension (R / L / t / phi_deg). phi_deg is
+   * clamped to (0, 90] — the geometry blows up at the closing 90° (full
+   * half-circle) and is unphysical past it. R/L/t positivity enforced. */
+  setSegmentDim: (key, value) =>
+    set((s) => {
+      const v = Number(value);
+      if (!Number.isFinite(v) || v <= 0) return {};
+      if (key === "phi_deg" && v > 90) return {};
+      return {
+        model: {
+          ...s.model,
+          geometry: {
+            ...s.model.geometry,
+            cylinder_segment: { ...s.model.geometry.cylinder_segment, [key]: v },
           },
         },
       };

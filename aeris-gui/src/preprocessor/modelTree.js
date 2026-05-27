@@ -23,7 +23,9 @@ export const SECTIONS = [
         // Multiple shell families — only Cylinder is functional in the first fill.
         // Listed in full so the tree structure doesn't move when we add the rest.
         options: [
-          { value: "cylinder", label: "Cylinder", enabled: true },
+          { value: "cylinder", label: "Cylinder (closed)", enabled: true },
+          { value: "cylinder_segment", label: "Cylinder segment (roof)", enabled: true,
+            note: "preview only — solver wires in increment 3" },
           { value: "cone", label: "Cone", enabled: false, note: "coming soon" },
           { value: "sphere", label: "Sphere", enabled: false, note: "coming soon" },
           { value: "torispherical", label: "Torispherical", enabled: false, note: "coming soon" },

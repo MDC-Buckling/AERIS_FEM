@@ -3,14 +3,23 @@ import NumberField from "../../components/ui/NumberField.jsx";
 import { MONO } from "../../constants.js";
 import { useUI } from "../../store.js";
 
-/** Functional inspector for GEOMETRY > Dimensions (Cylinder).
+/** Functional inspector for GEOMETRY > Dimensions.
  *
- * Three live number fields drive store.model.geometry.cylinder.{R,L,t}.
- * Show the derived R/t live, plus a gentle thin-shell-assumption warning
- * if R/t < 20 (Kirchhoff–Love thin-shell theory loses validity in that
- * regime — we don't hard-block, just flag, since the validation case has
- * R/t = 100 and we don't want to surprise the user). */
+ * Branches on `model.geometry.shape`:
+ *   - cylinder         → R, L, t  (plus axial partitions for stepped wall)
+ *   - cylinder_segment → R, L, t, phi_deg  (Scordelis-Lo class roof)
+ *
+ * Both kinds surface the derived R/t + L/R live, plus a gentle thin-shell
+ * warning (R/t < 20 = Kirchhoff–Love validity edge). Solver dispatch on
+ * the shape lands in Increment 3; until then the segment is preview-only,
+ * which the GeometryShape selector flags with an inline note. */
 export default function GeometryDimensions() {
+  const shape = useUI((s) => s.model.geometry.shape);
+  if (shape === "cylinder_segment") return <SegmentDimensions />;
+  return <CylinderDimensions />;
+}
+
+function CylinderDimensions() {
   const cyl = useUI((s) => s.model.geometry.cylinder);
   const setDim = useUI((s) => s.setCylinderDim);
 
@@ -75,6 +84,113 @@ export default function GeometryDimensions() {
       </div>
 
       <AxialPartitionsEditor />
+    </>
+  );
+}
+
+/** Cylindrical-segment ("roof") dimensions panel. Adds phi_deg (half
+ * subtended angle, ±phi measured from the apex) alongside R, L, t.
+ * Derived block also shows the chord width 2R·sin(phi) and the sagitta
+ * R·(1 - cos(phi)) so the user can see the actual roof footprint while
+ * dialling the angle. */
+function SegmentDimensions() {
+  const seg = useUI((s) => s.model.geometry.cylinder_segment);
+  const setDim = useUI((s) => s.setSegmentDim);
+
+  const rOverT = seg.R / seg.t;
+  const lOverR = seg.L / seg.R;
+  const thin = rOverT >= 20;
+  const phi = (seg.phi_deg * Math.PI) / 180;
+  const chord = 2 * seg.R * Math.sin(phi);
+  const sagitta = seg.R * (1 - Math.cos(phi));
+
+  return (
+    <>
+      <NumberField
+        label="Mid-surface radius"
+        symbol="R"
+        unit="–"
+        value={seg.R}
+        onChange={(v) => setDim("R", v)}
+        min={1e-9}
+        step={0.1}
+        precision={5}
+      />
+      <NumberField
+        label="Axial length"
+        symbol="L"
+        unit="–"
+        value={seg.L}
+        onChange={(v) => setDim("L", v)}
+        min={1e-9}
+        step={0.1}
+        precision={5}
+      />
+      <NumberField
+        label="Shell thickness"
+        symbol="t"
+        unit="–"
+        value={seg.t}
+        onChange={(v) => setDim("t", v)}
+        min={1e-9}
+        step={0.01}
+        precision={6}
+        hint="same unit system as R and L"
+      />
+      <NumberField
+        label="Half-subtended angle"
+        symbol="φ"
+        unit="°"
+        value={seg.phi_deg}
+        onChange={(v) => setDim("phi_deg", v)}
+        min={1}
+        max={90}
+        step={1}
+        precision={3}
+        showRange
+        hint="arc opens from -φ to +φ around the apex. Scordelis-Lo classical case is φ=40°. Hard cap at 90° (full half-circle)."
+      />
+
+      <div
+        style={{
+          marginTop: 8,
+          padding: "10px 12px",
+          background: "var(--panel-bg-soft)",
+          border: "1px solid var(--line-soft)",
+          borderRadius: 5,
+          fontFamily: MONO,
+        }}
+      >
+        <DerivedRow label="Slenderness  R / t"  value={rOverT.toFixed(0)}
+          warn={!thin} warnMsg="thin-shell regime: R/t ≥ 20" />
+        <DerivedRow label="Aspect ratio  L / R" value={lOverR.toFixed(2)} />
+        <DerivedRow label="Chord  2R·sin(φ)"    value={chord.toFixed(3)} />
+        <DerivedRow label="Sagitta  R·(1−cos(φ))" value={sagitta.toFixed(3)} />
+      </div>
+
+      <div
+        style={{
+          marginTop: 8,
+          padding: "8px 10px",
+          background: "var(--panel-bg-soft)",
+          border: "1px dashed var(--warning-border)",
+          borderRadius: 4,
+          fontSize: 9.5,
+          color: "var(--text-muted)",
+          fontFamily: MONO,
+          lineHeight: 1.5,
+        }}
+      >
+        <span style={{ color: "var(--warning)", fontWeight: 700 }}>
+          Preview-only:{" "}
+        </span>
+        The viewport shows the geometry live, but{" "}
+        <code style={{ color: "var(--accent-muted)" }}>SOLVE</code> won't
+        run for cylinder_segment until the static-analysis dispatch lands
+        (planned: Increment 3 of the Scordelis-Lo integration). The CLI
+        benchmark already PASSes — see{" "}
+        <code style={{ color: "var(--accent-muted)" }}>benchmarks/scordelis_lo/</code>.
+      </div>
     </>
   );
 }

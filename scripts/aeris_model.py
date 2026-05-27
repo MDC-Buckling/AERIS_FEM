@@ -92,6 +92,18 @@ DEFAULT_GEOMETRY: Dict[str, Any] = {
         # `kind:"constant"` carries `value` directly.
         "partitions": [],
     },
+    # Increment 1 of Scordelis-Lo integration — cylindrical-segment "roof"
+    # geometry. Single NURBS patch (biquadratic, 3x3 control points), arc
+    # in the y-z plane sweeping ±phi_deg from the apex, x ∈ [0, L] as the
+    # cylinder axis. Solver dispatch on geometry.shape lands in
+    # Increment 3 (until then this is preview-only in the GUI viewport).
+    # Defaults match the literature Scordelis-Lo case (Belytschko 1985).
+    "cylinder_segment": {
+        "R": 25.0,
+        "L": 50.0,
+        "t": 0.25,
+        "phi_deg": 40.0,
+    },
 }
 
 # materials[] is a library — any section can reference any material by id.

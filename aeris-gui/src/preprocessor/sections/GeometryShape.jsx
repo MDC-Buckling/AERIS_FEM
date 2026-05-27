@@ -70,11 +70,11 @@ export default function GeometryShape() {
               }}
             />
             <span style={{ flex: 1 }}>{opt.label}</span>
-            {!enabled && (
+            {(opt.note || !enabled) && (
               <span
                 style={{
                   fontSize: 9.5,
-                  color: "var(--text-soft)",
+                  color: enabled ? "var(--warning)" : "var(--text-soft)",
                   fontStyle: "italic",
                 }}
               >
