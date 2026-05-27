@@ -457,8 +457,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.R is not None: cyl["R"] = args.R
     if args.L is not None: cyl["L"] = args.L
     if args.t is not None: cyl["t"] = args.t
-    if args.E is not None: model.material["E"] = args.E
-    if args.nu is not None: model.material["nu"] = args.nu
+    # Schema v2: --E/--nu edit materials[0]. ModelConfig.case() resolves it
+    # via the shell_full assignment → section → material_ref → materials[].
+    if args.E is not None: model.materials[0]["E"] = args.E
+    if args.nu is not None: model.materials[0]["nu"] = args.nu
     case = model.case()
 
     print("=" * 70)
