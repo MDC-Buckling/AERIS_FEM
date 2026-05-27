@@ -503,7 +503,13 @@ def main(argv: list[str] | None = None) -> int:
         if lam1 is None:
             print(f"  {r:>4}  {len(eigs):>6}  NO POSITIVE EIGENVALUE; raw = {eigs}")
             continue
-        sigma_computed = abs(lam1) * case.E / case.L
+        # Reference state = Neumann line force T_z = t at the top, so the
+        # implied uniform membrane axial stress σ_ref = T_z / t = 1 (independent
+        # of geometry). λ_1 is the load factor on this reference, so the
+        # critical compressive stress is just |λ_1|.
+        # (Old buggy line did `lam1 * E / L`; that's correct iff E=L=1, which
+        # was the validated default — so the audit caught the bug at L=3.)
+        sigma_computed = abs(lam1)
         pct = 100.0 * (sigma_computed - sigma_cr_ref) / sigma_cr_ref
         print(f"  {r:>4}  {len(eigs):>6}  {lam1:>16.8e}  "
               f"{sigma_computed:>20.8e}  {pct:>+15.2f}%")
