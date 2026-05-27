@@ -59,13 +59,26 @@ export const KNOWN_RESULTS = [
   },
 ];
 
-/** Cylinder bounds for camera framing / snap views.
- * Matches DEFAULT_CASE in scripts/cylinder_lba.py. */
+/** Cylinder bounds for camera framing / snap views (default-case defaults). */
 export const CYL = { R: 1.0, L: 1.0, center: [0, 0, 0.5] };
 
-/** Camera snap presets — same intent as render_modes.py's three views. */
-export const VIEW_PRESETS = {
-  oblique: { pos: [3.0, -3.0, 2.5], target: CYL.center, up: [0, 0, 1] },
-  side:    { pos: [0.0, -4.0, 0.5], target: CYL.center, up: [0, 0, 1] },
-  end:     { pos: [0.0,  0.0, 4.0], target: CYL.center, up: [0, 1, 0] },
-};
+/** Camera snap presets parameterised by current (R, L). Same intent as
+ * render_modes.py's three fixed cameras, but rescaled so non-default
+ * geometries (e.g. R=2, L=3 from the pre-processor) stay in frame.
+ *
+ *   oblique  3/4 from above-front
+ *   side     profile along -Y (cylinder axis horizontal)
+ *   end      straight down +Z, looking at the open top circle
+ */
+export function viewPresets(R = 1, L = 1) {
+  const r = Math.max(R, L * 0.6);
+  const center = [0, 0, L / 2];
+  return {
+    oblique: { pos: [3.0 * r, -3.0 * r, L / 2 + 2.0 * r], target: center, up: [0, 0, 1] },
+    side:    { pos: [0.0, -4.0 * r, L / 2], target: center, up: [0, 0, 1] },
+    end:     { pos: [0.0, 0.0, L + 3.0 * r], target: center, up: [0, 1, 0] },
+  };
+}
+
+/** Static defaults, for the initial camera before any geometry is loaded. */
+export const VIEW_PRESETS = viewPresets(1, 1);

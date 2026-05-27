@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React from "react";
 import { useUI } from "./store.js";
 import TopChrome from "./components/TopChrome.jsx";
 import ResultsPanel from "./components/ResultsPanel.jsx";
@@ -12,27 +12,10 @@ export default function App() {
   const theme = useUI((s) => s.theme);
   const mode = useUI((s) => s.mode);
   const selectedResultId = useUI((s) => s.selectedResultId);
-  const selectResult = useUI((s) => s.selectResult);
-
-  // Pre-processor mode uses the viewport as a live-preview stand-in: force
-  // it to the bare geometry. When the user switches back to post-processor
-  // they see whatever result they had selected (last selection preserved
-  // because selectedResultId stays around — we only override it on entry
-  // to pre, and restore on entry to post via a remembered id).
-  const lastPostId = React.useRef(selectedResultId);
-  useEffect(() => {
-    if (mode === "pre") {
-      if (selectedResultId !== "geometry") {
-        lastPostId.current = selectedResultId;
-        selectResult("geometry");
-      }
-    } else {
-      if (selectedResultId === "geometry" && lastPostId.current !== "geometry") {
-        selectResult(lastPostId.current);
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode]);
+  // The pre-mode viewport now builds its own procedural cylinder from
+  // store.model.geometry.cylinder, so we no longer need to force
+  // selectedResultId to "geometry" on mode switch (Session 3.0's hack).
+  // selectedResultId is purely a post-mode concept now.
 
   return (
     <div
@@ -74,7 +57,7 @@ export default function App() {
           <span className="hud-corner hud-bl" />
           <span className="hud-corner hud-br" />
           <Viewport3D />
-          <ViewportLegend />
+          {mode === "post" && <ViewportLegend />}
 
           {/* Small mode badge in the corner so the viewport always says
               what it's showing (model preview vs result). */}

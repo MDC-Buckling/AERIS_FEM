@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 import { useUI } from "../store.js";
-import { KNOWN_RESULTS, VIEW_PRESETS } from "../constants.js";
+import { KNOWN_RESULTS, VIEW_PRESETS, viewPresets } from "../constants.js";
 import { loadResult } from "../vtk/loadResult.js";
 import { RAMP_DARK, RAMP_LIGHT } from "./colormap.js";
 
@@ -66,6 +66,7 @@ export default function Viewport3D() {
   const stateRef = useRef({});
 
   const theme = useUI((s) => s.theme);
+  const mode = useUI((s) => s.mode);
   const selectedId = useUI((s) => s.selectedResultId);
   const warpScale = useUI((s) => s.warpScale);
   const showEdges = useUI((s) => s.showEdges);
@@ -74,6 +75,9 @@ export default function Viewport3D() {
   const resultCache = useUI((s) => s.resultCache);
   const cacheResult = useUI((s) => s.cacheResult);
   const setStatus = useUI((s) => s.setStatus);
+  // In pre-mode the viewport renders a procedural cylinder driven LIVE
+  // by these dimensions — no .vts/.pvd round-trip, no solver involvement.
+  const cyl = useUI((s) => s.model.geometry.cylinder);
 
   // One-time three.js init.
   useEffect(() => {
@@ -245,18 +249,72 @@ export default function Viewport3D() {
   useEffect(() => {
     const st = stateRef.current;
     if (!st.camera || !st.controls) return;
-    const p = VIEW_PRESETS[viewPreset];
+    // Camera snaps auto-scale to the current cylinder bounding box so the
+    // procedural preview stays in frame across user-edited R/L. Post-mode
+    // results are also dimensioned at R=1, L=1 for now so this works there
+    // too; later the result loader will set its own bounds.
+    const presets = viewPresets(cyl.R, cyl.L);
+    const p = presets[viewPreset];
     if (!p) return;
     st.camera.position.set(...p.pos);
     st.camera.up.set(...p.up);
     st.controls.target.set(...p.target);
     st.controls.update();
-  }, [viewPreset]);
+  }, [viewPreset, cyl.R, cyl.L]);
 
-  // Load + build result on selection change.
+  // -------------------------------------------------------------------
+  // Pre-mode: procedural cylinder driven LIVE by the model dimensions.
+  // -------------------------------------------------------------------
   useEffect(() => {
     const st = stateRef.current;
     if (!st.meshGroup) return;
+    if (mode !== "pre") return;
+
+    tearDownGroups(st);
+    st.uniforms.uMagMax.value = 1.0;
+
+    // THREE.CylinderGeometry default axis is Y; rotate so axis is Z and shift
+    // so bottom is at z=0, top at z=L (matches our solver convention).
+    const segR = 64;       // around circumference
+    const segH = 24;       // along axis — preview-light, not solver mesh
+    const geom = new THREE.CylinderGeometry(cyl.R, cyl.R, cyl.L, segR, segH, true);
+    geom.rotateX(Math.PI / 2);
+    geom.translate(0, 0, cyl.L / 2);
+
+    // The shared shader expects per-vertex aDisp + aMag; zero them so the
+    // procedural mesh draws as the colormap's base colour (deep navy in dark).
+    const nVerts = geom.attributes.position.count;
+    geom.setAttribute("aDisp", new THREE.BufferAttribute(new Float32Array(nVerts * 3), 3));
+    geom.setAttribute("aMag", new THREE.BufferAttribute(new Float32Array(nVerts), 1));
+
+    const mesh = new THREE.Mesh(geom, st.surfaceMaterial);
+    mesh.userData.kind = "surface";
+    st.meshGroup.add(mesh);
+
+    // Edge overlay = rims + meridians, sparser than the surface tessellation.
+    const edges = new THREE.LineSegments(
+      buildCylinderEdges(cyl.R, cyl.L, 16, 4),
+      st.edgeMaterial
+    );
+    edges.userData.kind = "edges";
+    edges.visible = showEdges;
+    st.meshGroup.add(edges);
+
+    setStatus(
+      `live preview · cylinder R=${cyl.R} L=${cyl.L} t=${cyl.t} · R/t=${(cyl.R / cyl.t).toFixed(0)}`
+    );
+    return () => {
+      // Tear-down handled at next effect run (or on unmount inside init).
+    };
+  }, [mode, cyl.R, cyl.L, cyl.t, showEdges, setStatus]);
+
+  // -------------------------------------------------------------------
+  // Post-mode: load + build result on selection change (existing path).
+  // -------------------------------------------------------------------
+  useEffect(() => {
+    const st = stateRef.current;
+    if (!st.meshGroup) return;
+    if (mode !== "post") return;
 
     const result = KNOWN_RESULTS.find((r) => r.id === selectedId);
     if (!result) return;
@@ -372,6 +430,47 @@ export default function Viewport3D() {
       }}
     />
   );
+}
+
+/** Tear down both group's meshes + dispose geometries. */
+function tearDownGroups(st) {
+  while (st.meshGroup.children.length) {
+    const c = st.meshGroup.children.pop();
+    c.geometry?.dispose();
+  }
+  while (st.wireGroup.children.length) {
+    const c = st.wireGroup.children.pop();
+    c.geometry?.dispose();
+  }
+}
+
+/** Sparse edge overlay for the procedural cylinder: top + bottom rims +
+ * `meridians` axial lines + `axialRings` intermediate rings. */
+function buildCylinderEdges(R, L, segmentsAround = 64, axialRings = 4, meridians = 12) {
+  const pts = [];
+  const ringZ = [];
+  for (let i = 0; i <= axialRings + 1; i++) {
+    ringZ.push((i / (axialRings + 1)) * L);
+  }
+  // Rings (full circles)
+  for (const z of ringZ) {
+    for (let i = 0; i < segmentsAround; i++) {
+      const a0 = (i / segmentsAround) * 2 * Math.PI;
+      const a1 = ((i + 1) / segmentsAround) * 2 * Math.PI;
+      pts.push(R * Math.cos(a0), R * Math.sin(a0), z);
+      pts.push(R * Math.cos(a1), R * Math.sin(a1), z);
+    }
+  }
+  // Meridians (top → bottom lines at evenly spaced angles)
+  for (let m = 0; m < meridians; m++) {
+    const a = (m / meridians) * 2 * Math.PI;
+    pts.push(R * Math.cos(a), R * Math.sin(a), 0);
+    pts.push(R * Math.cos(a), R * Math.sin(a), L);
+  }
+  const arr = new Float32Array(pts);
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+  return geom;
 }
 
 /** Build a line-segment geometry tracing the (nx × ny) structured grid edges. */
