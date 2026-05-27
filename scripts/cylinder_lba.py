@@ -415,11 +415,16 @@ def first_physical_positive(eigs: list[float], floor: float = 1e-10,
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("--R", type=float, default=DEFAULT_CASE.R)
-    p.add_argument("--L", type=float, default=DEFAULT_CASE.L)
-    p.add_argument("--t", type=float, default=DEFAULT_CASE.t)
-    p.add_argument("--E", type=float, default=DEFAULT_CASE.E)
-    p.add_argument("--nu", type=float, default=DEFAULT_CASE.nu)
+    p.add_argument("--model", type=Path, default=None,
+                   help="Path to a model.json (schema in aeris_model.py). Geometry "
+                        "and material come from this file; --R/--L/--t/--E/--nu "
+                        "override on top if also given. If not set, the validated "
+                        "default case (R=1, L=1, t=0.01, E=1, nu=0.3) is used.")
+    p.add_argument("--R", type=float, default=None)
+    p.add_argument("--L", type=float, default=None)
+    p.add_argument("--t", type=float, default=None)
+    p.add_argument("--E", type=float, default=None)
+    p.add_argument("--nu", type=float, default=None)
     p.add_argument("--refines", type=int, nargs="+", default=[3, 4, 5],
                    help="Mesh refinement levels (-r) to sweep")
     p.add_argument("--elevate", type=int, default=0,
@@ -437,7 +442,24 @@ def main(argv: list[str] | None = None) -> int:
                    help="Skip the ParaView export pass even if --plot-dir is set")
     args = p.parse_args(argv)
 
-    case = Case(R=args.R, L=args.L, t=args.t, E=args.E, nu=args.nu)
+    # Start from a model — file if given, else the validated default — then let
+    # scalar CLI flags override geometry/material on top. Other sections (mesh,
+    # bcs, load, analysis) are read from the model and ignored at solve time
+    # since their wiring lands in later sessions; only their presence in the
+    # model.json is contract.
+    from aeris_model import ModelConfig
+    model = (
+        ModelConfig.from_json_file(args.model)
+        if args.model
+        else ModelConfig()
+    )
+    cyl = model.geometry["cylinder"]
+    if args.R is not None: cyl["R"] = args.R
+    if args.L is not None: cyl["L"] = args.L
+    if args.t is not None: cyl["t"] = args.t
+    if args.E is not None: model.material["E"] = args.E
+    if args.nu is not None: model.material["nu"] = args.nu
+    case = model.case()
 
     print("=" * 70)
     print("Aeris cylinder LBA — classical vs gsKLShell")
