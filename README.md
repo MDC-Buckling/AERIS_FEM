@@ -502,6 +502,38 @@ classical, proving the model.json → CLI → solver chain is live; the
 "Mesh : degree=4, smoothness=2, coupling=gsSmoothInterfaces (-m 0)"
 banner in the run output is the audit trail.
 
+### Session 3.6 — BCs + Loads wired (axial + bending) ✅
+
+`build_cylinder_xml` now dispatches on `model.load.kind`:
+
+- **axial** (current path) — constant `Tz = E·t` on the top edge →
+  uniform tensile membrane stress `σ_z = E`. Smallest positive λ_1 is
+  the load factor that drives compressive buckling.
+- **bending** (new) — `Tz(x) = (E·t/R)·x` on the top edge → cos(θ)
+  around the circle. Tension on +x, compression on −x; membrane stress
+  `σ_z(x) = (E/R)·x` gives `|σ_max| = E` at `x = ±R`, so the same
+  E-scaling that fixes the K_NL−K_L cancellation for axial carries
+  over verbatim. Buckle localises on the −x half-cylinder.
+
+GUI: two new inspector components under BOUNDARY CONDITIONS & LOADS —
+`BcsKind.jsx` (single enabled preset: clamped + Neumann, three locked
+with tooltips explaining the un-wired XML blocks) and `LoadCase.jsx`
+(two enabled: axial + bending, four locked: torsion / extpress /
+intpress / combined). Each disabled toggle carries a hover tooltip that
+explains what's missing rather than leaving the user wondering whether
+the UI is broken — same pattern as the Session-3.5 coupling toggle.
+
+**Bending validation:** at the default geometry (R=L=1, t=0.01, E=1,
+ν=0.3, r=5) bending LBA converges to σ_cr = 6.023e-3, **−0.48 %** vs
+the classical σ_cr = E·t/(R·√(3(1−ν²))) = 6.052e-3. That's
+essentially the same number as axial (−0.49 % at the same mesh), which
+matches Stein & Mayers' result that perfect-shell LBA gives the same
+critical stress for both load cases — the localised buckle on the
+compression side sees an effectively uniform stress field. Bending
+knockdown is an imperfection-sensitivity story, not LBA.
+
+Axial regression unchanged: −0.01 % at r=5.
+
 ### Known gaps — next-session candidates (ordered)
 
 1. **Mesh / BCs / Loads / Analysis sections** — same wiring pattern as

@@ -9,6 +9,8 @@ import GeometryDimensions from "./sections/GeometryDimensions.jsx";
 import MaterialBase from "./sections/MaterialBase.jsx";
 import SectionAssignments from "./sections/SectionAssignments.jsx";
 import MeshDiscretisation from "./sections/MeshDiscretisation.jsx";
+import BcsKind from "./sections/BcsKind.jsx";
+import LoadCase from "./sections/LoadCase.jsx";
 
 /** Sub-items that have a real, wired inspector this session.
  * Adding to this set drops the "STUB · NOT WIRED" badge for that item. */
@@ -18,6 +20,8 @@ const WIRED_ITEMS = new Set([
   "material.base",
   "shellConstruction.sectionAssignments",
   "mesh.discretisation",
+  "bcsLoads.bcs",
+  "bcsLoads.load",
 ]);
 
 /** Per-item real inspector dispatcher. Returns null if not wired (the
@@ -29,6 +33,8 @@ function WiredInspector({ dottedId }) {
     case "material.base":                           return <MaterialBase />;
     case "shellConstruction.sectionAssignments":    return <SectionAssignments />;
     case "mesh.discretisation":                     return <MeshDiscretisation />;
+    case "bcsLoads.bcs":                            return <BcsKind />;
+    case "bcsLoads.load":                           return <LoadCase />;
     default: return null;
   }
 }
@@ -79,6 +85,10 @@ function LivePreviewLine({ dottedId, fallback }) {
   } else if (dottedId === "mesh.discretisation") {
     const m = model.mesh;
     text = `r=${m.refinement}  p=${m.degree}  s=${m.smoothness}  ·  ${m.coupling}`;
+  } else if (dottedId === "bcsLoads.bcs") {
+    text = model.bcs.kind;
+  } else if (dottedId === "bcsLoads.load") {
+    text = model.load.kind;
   }
   return <>current value: {text}</>;
 }

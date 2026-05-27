@@ -50,7 +50,7 @@ export const useUI = create((set) => ({
     shellConstruction: "configured",  // 3.3  (trivial section assignment view)
     imperfections:     "default",
     mesh:              "configured",  // 3.5
-    bcsLoads:          "default",
+    bcsLoads:          "configured",  // 3.6 — bcs + axial/bending load wired
     analysis:          "default",
     run:               "default",
   },
@@ -260,6 +260,19 @@ export const useUI = create((set) => ({
       if (typeof value === "number" && !Number.isFinite(value)) return {};
       return { model: { ...s.model, mesh: { ...s.model.mesh, [key]: value } } };
     }),
+
+  /** Set the boundary-condition preset (model.bcs.kind). Currently only
+   * "clamped_neumann" is wired in the solver; the inspector enforces the
+   * narrower allow-list via disabled toggles. */
+  setBcsKind: (kind) =>
+    set((s) => ({ model: { ...s.model, bcs: { ...s.model.bcs, kind } } })),
+
+  /** Set the load-case preset (model.load.kind). "axial" and "bending" are
+   * wired end-to-end as of Session 3.6; "torsion" / "extpress" / "intpress"
+   * / "combined" are disabled in the GUI until the solver-side branches
+   * land. */
+  setLoadKind: (kind) =>
+    set((s) => ({ model: { ...s.model, load: { ...s.model.load, kind } } })),
 
   /** Serialise the current model state into the on-disk model.json schema
    * (mirrors scripts/aeris_model.py::ModelConfig.to_dict). JSON.stringify

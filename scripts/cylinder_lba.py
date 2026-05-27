@@ -290,10 +290,58 @@ def build_cylinder_xml(model) -> str:
     # on the top band's outer edge), so we use the top band's `t` here.
     # For a homogeneous cylinder that's just `case.t` (= cylinder.t).
     top_band_thickness = model.band_thickness(n_bands - 1)
-    neumann_Tz = top_band_thickness * case.E
+    neumann_Tz_const = top_band_thickness * case.E
     bottom_patches = "\n    ".join(f"{q} 3" for q in range(4))
     top_off = 4 * (n_bands - 1)
     top_patches = "\n    ".join(f"{top_off + q} 4" for q in range(4))
+
+    # Load-case dispatch — picks the Tz function on the top edge.
+    #
+    # axial:    Tz(x) = T_max (constant)
+    #             → uniform tensile membrane stress σ_z = E everywhere
+    #             → smallest-positive eigenvalue = uniform compressive buckling load
+    #
+    # bending:  Tz(x) = T_max · x / R  (cos(θ) on the top circle)
+    #             → linear x-dependence on top edge: tension at +x, compression at -x
+    #             → membrane stress σ_z(x) = (E/R)·x; |σ_max| = E at x = ±R
+    #             → smallest-positive eigenvalue = bending-induced compressive
+    #               buckling on the -x half-cylinder. The classical reference
+    #               (perfect-shell LBA, no Brazier effect at thin shells) is the
+    #               same σ_cr as axial — knockdown for bending is an
+    #               imperfection-sensitivity story, not LBA.
+    #
+    # K_geom is positive-(semi)definite for axial (everywhere tension) and
+    # INDEFINITE for bending (tension on +x, compression on -x). Spectra's
+    # Buckling mode handles indefinite K_geom; we still extract λ_1 > 0 as the
+    # load factor that drives the corresponding compressive buckling.
+    load_kind = model.load.get("kind", "axial")
+    if load_kind == "axial":
+        neumann_components = (
+            f"  <c> 0 </c>\n"
+            f"  <c> 0 </c>\n"
+            f"  <c> {neumann_Tz_const} </c>"
+        )
+        load_summary = (
+            f"axial · Tz = {neumann_Tz_const}  (uniform tensile reference; "
+            f"σ_ref = E)"
+        )
+    elif load_kind == "bending":
+        Tz_slope = neumann_Tz_const / case.R     # = E·t/R, gives σ_max = E at x=±R
+        neumann_components = (
+            f"  <c> 0 </c>\n"
+            f"  <c> 0 </c>\n"
+            f"  <c> {Tz_slope} * x </c>"
+        )
+        load_summary = (
+            f"bending · Tz(x) = {Tz_slope} · x  (cos(θ) on top edge; "
+            f"|σ_max| = E at x = ±R)"
+        )
+    else:
+        raise NotImplementedError(
+            f"load.kind '{load_kind}' not yet wired in build_cylinder_xml; "
+            "supported today: axial, bending"
+        )
+
     bcs = f"""<boundaryConditions id="20" multipatch="0">
   <Function type="FunctionExpr" dim="3" index="0">
   <c> 0 </c>
@@ -301,9 +349,7 @@ def build_cylinder_xml(model) -> str:
   <c> 0 </c>
   </Function>
   <Function type="FunctionExpr" dim="3" index="1">
-  <c> 0 </c>
-  <c> 0 </c>
-  <c> {neumann_Tz} </c>
+{neumann_components}
   </Function>
 
   <bc type="Dirichlet" function="0" unknown="0" component="-1">
@@ -316,6 +362,9 @@ def build_cylinder_xml(model) -> str:
     {top_patches}
   </bc>
 </boundaryConditions>"""
+
+    # Stash a one-liner so main() can echo what the LBA is actually loaded by.
+    build_cylinder_xml._last_load_summary = load_summary  # type: ignore[attr-defined]
 
     # Zero body force and pressure; no point loads. Driving comes from the
     # prescribed Dirichlet displacement on the top edge.
@@ -617,6 +666,8 @@ def main(argv: list[str] | None = None) -> int:
             "capped at one less than the polynomial degree."
         )
 
+    load_kind = model.load.get("kind", "axial")
+
     print("=" * 70)
     print("Aeris cylinder LBA — classical vs gsKLShell")
     print("=" * 70)
@@ -624,23 +675,33 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Material : E={case.E}, nu={case.nu}")
     print(f"Mesh     : degree={degree}, smoothness={smoothness}, "
           f"coupling={coupling_name} (-m {method})")
+    print(f"Load     : {load_kind}")
     print(f"Slenderness  R/t = {case.R / case.t:.0f}")
     print(f"Aspect ratio L/R = {case.L / case.R:.2f}")
     print()
     sigma_cr_ref = classical_sigma_cr(case)
     N_cr_ref = classical_N_cr(case)
     print(f"Classical sigma_cr = E*t / (R * sqrt(3(1-nu^2))) = {sigma_cr_ref:.8e}")
-    print(f"Classical N_cr     = 2 pi R t sigma_cr            = {N_cr_ref:.8e}")
-    print()
-    print("Reference loading state (driving the LBA):")
-    print(f"  Neumann line force on top edge: T = (0, 0, +t·E) = (0, 0, +{case.t * case.E})")
-    print(f"  Implied axial membrane stress sigma_ref = T_z / t = +E = +{case.E}")
-    print( "  E-scaling above keeps K_NL and K_geom of comparable magnitude →")
-    print( "  no catastrophic cancellation at large E. Eigenvalues are NORMALISED,")
-    print(f"  recover physical stress as  sigma_cr_computed = |lambda_1| · E.")
+    if load_kind == "axial":
+        print(f"Classical N_cr     = 2 pi R t sigma_cr            = {N_cr_ref:.8e}")
+    elif load_kind == "bending":
+        # Pure-bending classical: same critical local membrane stress as
+        # axial for a perfect-shell LBA (Stein & Mayers; Brazier-effect is
+        # negligible for R/t in the thin-shell regime we work in). The
+        # corresponding bending moment is M_cr = pi · R^2 · t · sigma_cr.
+        M_cr_ref = math.pi * case.R**2 * case.t * sigma_cr_ref
+        print(f"Classical M_cr     = pi R^2 t sigma_cr            = {M_cr_ref:.8e}")
+        print( "  (perfect-shell LBA — bending knockdown is an imperfection")
+        print( "   sensitivity story, not LBA)")
     print()
 
     xml_text = build_cylinder_xml(model)
+    print("Reference loading state (driving the LBA):")
+    print(f"  {build_cylinder_xml._last_load_summary}")
+    print( "  E-scaling keeps K_NL and K_geom of comparable magnitude →")
+    print( "  no catastrophic cancellation at large E. Eigenvalues are NORMALISED,")
+    print(f"  recover physical stress as  sigma_cr_computed = |lambda_1| · E.")
+    print()
     with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False,
                                      dir="/tmp") as f:
         f.write(xml_text)
