@@ -72,6 +72,9 @@ export default function RunSolve() {
   const runSolver = useUI((s) => s.runSolver);
   const loadJobs = useUI((s) => s.loadJobs);
   const createJob = useUI((s) => s.createJob);
+  const deleteJob = useUI((s) => s.deleteJob);
+  const loadResultsManifest = useUI((s) => s.loadResultsManifest);
+  const setMode = useUI((s) => s.setMode);
   const model = useUI((s) => s.model);
 
   // Pull the latest jobs index on mount so the list always reflects disk.
@@ -127,64 +130,28 @@ export default function RunSolve() {
             borderRadius: 5,
             background: "var(--panel-bg-soft)",
             overflow: "hidden",
-            maxHeight: 220,
+            maxHeight: 260,
             overflowY: "auto",
           }}
         >
-          {jobs.map((j) => {
-            const active = j.id === activeJobId;
-            return (
-              <button
-                key={j.id}
-                type="button"
-                onClick={() => setActiveJob(j.id)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  width: "100%",
-                  padding: "6px 8px",
-                  borderBottom: "1px solid var(--line-faint)",
-                  border: "none",
-                  background: active ? "var(--control-active-bg)" : "transparent",
-                  cursor: "pointer",
-                  textAlign: "left",
-                  fontFamily: MONO,
-                }}
-              >
-                <span
-                  style={{
-                    width: 8, height: 8, borderRadius: 999,
-                    background: statusColor(j.lastRunStatus),
-                    boxShadow: j.lastRunStatus === "running"
-                      ? "0 0 6px var(--accent)" : "none",
-                    flexShrink: 0,
-                  }}
-                />
-                <span
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    fontSize: 11,
-                    color: active ? "var(--accent)" : "var(--text-primary)",
-                    fontWeight: active ? 700 : 500,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                  title={j.id}
-                >
-                  {j.name}
-                </span>
-                <span style={{ fontSize: 9, color: "var(--text-soft)" }}>
-                  {j.threads}×
-                </span>
-                <span style={{ fontSize: 9, color: "var(--text-muted)", minWidth: 60, textAlign: "right" }}>
-                  {relTime(j.lastRunAt ?? j.createdAt)}
-                </span>
-              </button>
-            );
-          })}
+          {jobs.map((j) => (
+            <JobRow
+              key={j.id}
+              job={j}
+              active={j.id === activeJobId}
+              onSelect={() => setActiveJob(j.id)}
+              onLoadResults={async () => {
+                await loadResultsManifest(j.id);
+                setActiveJob(j.id);
+                setMode("post");
+              }}
+              onDelete={async () => {
+                if (!confirm(`Delete job '${j.name}' and all its results?`)) return;
+                const r = await deleteJob(j.id);
+                if (!r.ok) alert(`Delete failed: ${r.error}`);
+              }}
+            />
+          ))}
         </div>
       )}
 
@@ -330,6 +297,109 @@ export default function RunSolve() {
         <RunStatusPanel lastRun={lastRun} />
       )}
     </>
+  );
+}
+
+/** One job's row in the Jobs list. Clicking the body selects it as active
+ * (and auto-loads its run.json if it had a successful past run). The
+ * trailing action chips give one-click load-into-post-processor + delete. */
+function JobRow({ job, active, onSelect, onLoadResults, onDelete }) {
+  const hasResults = job.lastRunStatus === "success";
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "6px 8px",
+        borderBottom: "1px solid var(--line-faint)",
+        background: active ? "var(--control-active-bg)" : "transparent",
+        fontFamily: MONO,
+      }}
+    >
+      <button
+        type="button"
+        onClick={onSelect}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          flex: 1,
+          minWidth: 0,
+          background: "transparent",
+          border: "none",
+          padding: 0,
+          cursor: "pointer",
+          textAlign: "left",
+          color: "inherit",
+        }}
+      >
+        <span
+          style={{
+            width: 8, height: 8, borderRadius: 999,
+            background: statusColor(job.lastRunStatus),
+            boxShadow: job.lastRunStatus === "running" ? "0 0 6px var(--accent)" : "none",
+            flexShrink: 0,
+          }}
+        />
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            fontSize: 11,
+            color: active ? "var(--accent)" : "var(--text-primary)",
+            fontWeight: active ? 700 : 500,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={job.id}
+        >
+          {job.name}
+        </span>
+        <span style={{ fontSize: 9, color: "var(--text-soft)" }}>{job.threads}×</span>
+        <span style={{ fontSize: 9, color: "var(--text-muted)", minWidth: 56, textAlign: "right" }}>
+          {relTime(job.lastRunAt ?? job.createdAt)}
+        </span>
+      </button>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onLoadResults(); }}
+        disabled={!hasResults}
+        title={hasResults ? "Load this job's results into the post-processor" : "No successful run yet"}
+        style={{
+          background: "transparent",
+          border: "1px solid var(--line-faint)",
+          borderRadius: 3,
+          color: hasResults ? "var(--accent-muted)" : "var(--text-soft)",
+          cursor: hasResults ? "pointer" : "not-allowed",
+          fontFamily: MONO,
+          fontSize: 9.5,
+          padding: "2px 6px",
+          opacity: hasResults ? 1 : 0.5,
+        }}
+      >
+        ↗
+      </button>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onDelete(); }}
+        title="Delete this job + its result folder"
+        style={{
+          background: "transparent",
+          border: "1px solid var(--line-faint)",
+          borderRadius: 3,
+          color: "var(--error)",
+          cursor: "pointer",
+          fontFamily: MONO,
+          fontSize: 11,
+          padding: "1px 6px",
+          fontWeight: 700,
+        }}
+      >
+        ×
+      </button>
+    </div>
   );
 }
 

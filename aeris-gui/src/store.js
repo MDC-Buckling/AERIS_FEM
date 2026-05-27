@@ -352,7 +352,31 @@ export const useUI = create((set) => ({
   jobs: [],
   activeJobId: null,
   setJobs: (jobs) => set({ jobs }),
-  setActiveJob: (id) => set({ activeJobId: id }),
+  /** Select a job as active. If the job has a successful past run, also
+   * auto-load its run.json into currentResults so the post-processor
+   * immediately reflects it (no extra click). */
+  setActiveJob: (id) => {
+    set({ activeJobId: id });
+    if (!id) return;
+    const job = useUI.getState().jobs.find((j) => j.id === id);
+    if (job?.lastRunStatus === "success") {
+      // fire-and-forget: GUI updates when promise resolves
+      useUI.getState().loadResultsManifest(id);
+    }
+  },
+
+  /** Delete a job from disk + index. If it was the active job, clears
+   * activeJobId so the panel falls back to "(auto-create on SOLVE)". */
+  deleteJob: async (id) => {
+    const res = await fetch(`/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const data = await res.json();
+    if (!data.ok) return { ok: false, error: data.error };
+    await useUI.getState().loadJobs();
+    if (useUI.getState().activeJobId === id) {
+      set({ activeJobId: null, currentResults: null });
+    }
+    return { ok: true };
+  },
 
   /** Last-run record for the ACTIVE job. Single-slot for now (Session
    * 4.1 — one in-flight run at a time); a Phase-3 queue will turn this

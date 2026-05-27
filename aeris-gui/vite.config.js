@@ -133,15 +133,79 @@ function aerisOutputServer() {
         });
       });
 
-      // GET /jobs — return the on-disk job index (output/jobs/index.json).
-      // POST /jobs — create a new job: { name, threads?, model? } →
-      //   slugifies name, mkdirs output/jobs/<id>/, optionally writes
-      //   model.json, prepends to index, returns the new job record.
+      // GET    /jobs           — return on-disk job index
+      // POST   /jobs           — create a new job
+      // DELETE /jobs/<id>      — remove the folder + index entry
+      // GET    /jobs/<id>      — get a single job's record + run.json
       server.middlewares.use("/jobs", (req, res, next) => {
-        // Sub-paths like /jobs/<id> handled elsewhere (Phase 2).
         const rest = (req.url || "/").split("?")[0].replace(/^\/+/, "");
-        if (rest.length > 0) return next();
 
+        // ------- per-job sub-paths -----------------------------------------
+        if (rest.length > 0) {
+          const id = slugifyJobName(decodeURIComponent(rest.split("/")[0]));
+          const dir = jobDir(ROOT, id);
+
+          if (req.method === "DELETE") {
+            const idx = readJobsIndex(ROOT);
+            const existed = idx.jobs.find((j) => j.id === id);
+            if (!existed) {
+              res.statusCode = 404;
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ ok: false, error: `no job '${id}'` }));
+              return;
+            }
+            // Refuse to delete if its run is currently in flight — the
+            // user would lose the in-progress stdout buffer. Surface the
+            // running runId so the GUI can offer a "cancel first" path
+            // later (Phase 3).
+            const live = [...RUNS.values()].find(
+              (r) => r.jobId === id && r.status === "running"
+            );
+            if (live) {
+              res.statusCode = 409;
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({
+                ok: false,
+                error: `job '${id}' is currently running — cancel it first`,
+                runId: live.runId,
+              }));
+              return;
+            }
+            try { fs.rmSync(dir, { recursive: true, force: true }); }
+            catch (e) { /* missing folder is fine */ }
+            idx.jobs = idx.jobs.filter((j) => j.id !== id);
+            writeJobsIndex(ROOT, idx);
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ ok: true, id }));
+            return;
+          }
+
+          if (req.method === "GET") {
+            const idx = readJobsIndex(ROOT);
+            const job = idx.jobs.find((j) => j.id === id);
+            if (!job) {
+              res.statusCode = 404;
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ ok: false, error: `no job '${id}'` }));
+              return;
+            }
+            let manifest = null;
+            const runPath = path.join(dir, "run.json");
+            if (fs.existsSync(runPath)) {
+              try { manifest = JSON.parse(fs.readFileSync(runPath, "utf8")); }
+              catch (e) { /* leave null on parse error */ }
+            }
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ ok: true, job, manifest }));
+            return;
+          }
+
+          res.statusCode = 405;
+          res.end("GET or DELETE");
+          return;
+        }
+
+        // ------- collection -----------------------------------------------
         if (req.method === "GET") {
           const idx = readJobsIndex(ROOT);
           res.setHeader("Content-Type", "application/json");
