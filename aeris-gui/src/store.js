@@ -351,6 +351,36 @@ export const useUI = create((set) => ({
   lastRun: { status: "idle" },
   setLastRun: (next) => set({ lastRun: next }),
 
+  /** Parsed sidecar manifest (output/run.json) from the most recent
+   * successful solve. null until the first run completes. Drives the
+   * post-processor's ResultsPanel + InspectorPanel — replaces the
+   * hardcoded LBA_META + KNOWN_RESULTS constants once a real run is
+   * available. Shape: see scripts/cylinder_lba.py write-out block.
+   *
+   * generatedAt + command stamps let the GUI tell at a glance whether
+   * what's on screen matches the model in the inspector (model edits
+   * after a solve = stale results). */
+  currentResults: null,
+  setCurrentResults: (next) => set({ currentResults: next }),
+
+  /** Fetch /data/run.json (vite middleware serves output/) and store as
+   * currentResults. Called automatically after a successful runSolver;
+   * can also be called manually to re-sync if the file changed on disk.
+   * Returns the parsed manifest or null on failure. */
+  loadResultsManifest: async () => {
+    try {
+      // Cache-bust because the dev server sets Cache-Control no-store
+      // for /data, but some proxies still cache aggressively.
+      const res = await fetch(`/data/run.json?t=${Date.now()}`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      set({ currentResults: data });
+      return data;
+    } catch {
+      return null;
+    }
+  },
+
   /** End-to-end Solve: serialise the model, POST to /save-model, then POST
    * to /run-solver to async-start the docker container. The solver returns
    * a runId immediately; we then poll /run-status every POLL_INTERVAL_MS
@@ -398,6 +428,23 @@ export const useUI = create((set) => ({
         if (!statusData.ok) throw new Error(`poll failed: ${statusData.error}`);
         useUI.getState().setLastRun({ ...statusData, runId });
         if (statusData.status === "success" || statusData.status === "failed") {
+          // On success: pull the sidecar manifest the script just wrote,
+          // pre-load the first mode so the post-processor renders something
+          // immediately, and flip into post mode. The user can flip back
+          // to pre-mode any time via the top-chrome toggle.
+          if (statusData.status === "success") {
+            const manifest = await useUI.getState().loadResultsManifest();
+            const firstMode = manifest?.modes?.[0]?.id;
+            useUI.setState((s) => ({
+              ...s,
+              selectedResultId: firstMode ?? s.selectedResultId,
+              mode: "post",
+              // Invalidate result cache so the post-processor reloads .vts
+              // files from disk (a previous run's bytes might still live
+              // in memory under the same mode-id).
+              resultCache: {},
+            }));
+          }
           return statusData;
         }
       }

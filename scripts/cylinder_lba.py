@@ -20,6 +20,7 @@ CLI is intentionally tiny — geometry params are pinned in DEFAULT_CASE.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import re
@@ -27,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -895,7 +897,127 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Load factor          : {applied_symbol}_cr / {applied_symbol}_applied = "
                   f"{critical / magnitude:.6e}")
 
-    if abs(pct_finest) < 25.0:
+    deviation_ok = abs(pct_finest) < 25.0
+
+    # --- Sidecar manifest --------------------------------------------------
+    # When plot_dir is set (the GUI flow always mounts /work, so always set
+    # there) write a machine-readable summary alongside the .pvd files. The
+    # GUI's post-processor picks this up via /data/run.json to drive the
+    # eigenvalue list + verdict panel + per-mode loader, replacing the
+    # hardcoded LBA_META constant. Schema versioned so future field renames
+    # don't silently break consumers.
+    if plot_dir is not None:
+        try:
+            n_bands = len(model.band_z_ranges())
+            modes_dir = plot_dir / "modes"
+            # Per-mode files match `modes<N>_.pvd` (older G+Smo builds drop
+            # the trailing underscore — also accept that). The combined
+            # `modes.pvd` index file gets skipped here; it points at all
+            # modes via <DataSet timestep="N" file="..."/> entries and is
+            # not what the per-mode viewer wants.
+            _MODE_PVD = re.compile(r"^modes(\d+)_?\.pvd$")
+            mode_pvds = (
+                sorted(
+                    (p.name for p in modes_dir.iterdir()
+                     if p.is_file() and _MODE_PVD.match(p.name)),
+                    key=lambda n: int(_MODE_PVD.match(n).group(1)),
+                )
+                if modes_dir.exists() else []
+            )
+            # Eigenvalues come from the finest-r entry of the convergence
+            # table; the plot pass ran at that same r, so mode files are in
+            # the right sigma scale. We don't currently capture individual
+            # mode eigenvalues from the solver — only λ_1 is parsed today,
+            # the rest of the mode-file list inherits that one as a
+            # placeholder until the multipatch driver's eigenvalue dump is
+            # also captured (next session).
+            modes_entries = []
+            for i, fname in enumerate(mode_pvds):
+                modes_entries.append({
+                    "id": f"mode{i}",
+                    "index": i,
+                    "label": f"Buckling mode {i + 1}",
+                    "pvd": f"modes/{fname}",
+                    # Best-effort: λ_1 for the first mode, None for the rest
+                    # until we parse the full eigenvalue list per-mode.
+                    "lambda": table[-1][1] if i == 0 else None,
+                    "sigmaComputed": sigma_finest if i == 0 else None,
+                })
+            run_json = {
+                "schemaVersion": 1,
+                "generatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "command": " ".join(sys.argv),
+                "case": {
+                    "R": case.R, "L": case.L, "t": case.t,
+                    "E": case.E, "nu": case.nu,
+                    "RoverT": case.R / case.t,
+                    "LoverR": case.L / case.R,
+                },
+                "geometry": {
+                    "shape": "cylinder",
+                    "n_bands": n_bands,
+                    "n_patches": 4 * n_bands,
+                    "n_interfaces": 4 * n_bands + 4 * (n_bands - 1),
+                    "partitions": [
+                        float(p["z"]) for p in
+                        model.geometry["cylinder"].get("partitions", [])
+                    ],
+                },
+                "mesh": {
+                    "refinement": int(args.refines[-1]),
+                    "degree": degree,
+                    "smoothness": smoothness,
+                    "coupling": coupling_name,
+                    "couplingMethod": method,
+                },
+                "load": {
+                    "kind": load_kind,
+                    "magnitude": magnitude,
+                },
+                "analysis": {
+                    "kind": model.analysis.get("kind", "lba"),
+                    "solver": solver_name,
+                    "nmodes": nmodes,
+                    "shift": model.analysis.get("shift", "auto"),
+                    "tolerance": float(model.analysis.get("tolerance", 1e-8)),
+                    "ncvFactor": int(model.analysis.get("ncv_factor", 3)),
+                    "interfacePenalty": float(model.analysis.get("interface_penalty", 1e6)),
+                },
+                "convergence": [
+                    {"r": r_, "lambda1": lam, "sigmaComputed": sig, "pct": pct}
+                    for (r_, lam, sig, pct) in table
+                ],
+                "verdict": {
+                    "sigmaFinest": sigma_finest,
+                    "sigmaClassical": sigma_cr_ref,
+                    "deviationPct": pct_finest,
+                    "ok": deviation_ok,
+                    "finestR": int(args.refines[-1]),
+                },
+                "criticalLoad": (
+                    {
+                        "kind": applied_symbol,           # "F" or "M"
+                        "label": applied_label,           # "axial force" / "bending moment"
+                        "applied": magnitude,
+                        "computed": critical,
+                        "classical": critical_classical,
+                        "loadFactor": (critical / magnitude) if (magnitude not in (0.0, 1.0)) else None,
+                    } if critical is not None else None
+                ),
+                "modes": modes_entries,
+                "files": {
+                    "geometry": "mp.pvd",
+                    "linearPrestress": "linearSolution.pvd",
+                    "modesDir": "modes",
+                },
+            }
+            (plot_dir / "run.json").write_text(json.dumps(run_json, indent=2))
+            print(f"\nSidecar manifest written: {plot_dir}/run.json")
+        except Exception as e:
+            print(f"\nSidecar write failed: {e}")
+            print("(Numerical results above are unaffected.)")
+
+    if deviation_ok:
         print("\nORDER OF MAGNITUDE OK — gap within expected finite-length /")
         print("clamped vs classical-infinite-cylinder envelope (~ +/- 25%).")
         _phase("done")

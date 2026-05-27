@@ -88,6 +88,10 @@ export default function Viewport3D() {
   // is "auto" today, so once that becomes editable we'll need to also
   // subscribe to .neumann_traction_axial.
   const loadKind = useUI((s) => s.model.load.kind);
+  // Post-mode result lookup: prefer the live run.json sidecar's modes[]
+  // (carries the actual pvd paths the script just wrote), fall back to
+  // the shipped KNOWN_RESULTS list if no run has landed yet.
+  const currentResults = useUI((s) => s.currentResults);
 
   // One-time three.js init.
   useEffect(() => {
@@ -489,7 +493,20 @@ export default function Viewport3D() {
     if (!st.meshGroup) return;
     if (mode !== "post") return;
 
-    const result = KNOWN_RESULTS.find((r) => r.id === selectedId);
+    // Look up the selected result. Manifest entries take priority because
+    // they reflect what's actually on disk after the last solve; fallback
+    // to KNOWN_RESULTS for the pre-run case. The shape (id, pvd, kind) is
+    // the same so the downstream loader doesn't care which one wins.
+    const fromManifest = currentResults
+      ? [
+          currentResults.files?.geometry && { id: "geometry", pvd: currentResults.files.geometry, kind: "geometry" },
+          currentResults.files?.linearPrestress && { id: "linear", pvd: currentResults.files.linearPrestress, kind: "displacement" },
+          ...((currentResults.modes ?? []).map((m) => ({ id: m.id, pvd: m.pvd, kind: "mode" }))),
+        ].filter(Boolean)
+      : null;
+    const result =
+      (fromManifest && fromManifest.find((r) => r.id === selectedId)) ||
+      KNOWN_RESULTS.find((r) => r.id === selectedId);
     if (!result) return;
 
     let cancelled = false;
@@ -591,7 +608,7 @@ export default function Viewport3D() {
     return () => {
       cancelled = true;
     };
-  }, [selectedId, resultCache, cacheResult, setStatus, showEdges]);
+  }, [selectedId, resultCache, cacheResult, setStatus, showEdges, currentResults]);
 
   return (
     <div

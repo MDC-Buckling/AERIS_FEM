@@ -5,6 +5,47 @@ import { KNOWN_RESULTS } from "../constants.js";
 import { useUI } from "../store.js";
 import { MONO } from "../constants.js";
 
+/** Project the run.json sidecar's modes[] entries into the same shape
+ * KNOWN_RESULTS uses (id / label / pvd / kind / description). Lets us
+ * keep the rendering code uniform across "live run" and "shipped
+ * fallback" cases. */
+function resultsFromManifest(r) {
+  if (!r) return null;
+  const items = [];
+  if (r.files?.geometry) {
+    items.push({
+      id: "geometry",
+      label: "Geometry (undeformed)",
+      pvd: r.files.geometry,
+      kind: "geometry",
+      description: `${r.geometry.n_patches}-patch${r.geometry.n_bands > 1 ? ` · ${r.geometry.n_bands} bands` : ""} cylinder · R=${r.case.R}, L=${r.case.L}, t=${r.case.t}`,
+    });
+  }
+  if (r.files?.linearPrestress) {
+    items.push({
+      id: "linear",
+      label: "Linear elastic (pre-buckling)",
+      pvd: r.files.linearPrestress,
+      kind: "displacement",
+      description: r.load.kind === "bending"
+        ? "Cos(θ) Tz prestress — tension on +x, compression on -x"
+        : "Uniform axial Tz prestress at the E-scaled reference state",
+    });
+  }
+  for (const m of r.modes ?? []) {
+    items.push({
+      id: m.id,
+      label: m.label,
+      pvd: m.pvd,
+      kind: "mode",
+      description: m.sigmaComputed != null
+        ? `σ_cr = ${m.sigmaComputed.toExponential(3)} · λ = ${m.lambda.toExponential(3)}`
+        : "eigenvalue not separately captured (see Mode 1 for λ_1)",
+    });
+  }
+  return items;
+}
+
 function ResultItem({ r, active, onClick }) {
   return (
     <button
@@ -66,11 +107,21 @@ function ResultItem({ r, active, onClick }) {
 export default function ResultsPanel() {
   const selected = useUI((s) => s.selectedResultId);
   const select = useUI((s) => s.selectResult);
+  const currentResults = useUI((s) => s.currentResults);
+
+  // Drive the list from the sidecar manifest if a real solve has landed;
+  // otherwise fall back to the shipped KNOWN_RESULTS so a fresh dev
+  // session still has something to look at.
+  const items = resultsFromManifest(currentResults) ?? KNOWN_RESULTS;
+  const isLive = !!currentResults;
+  const headerHint = isLive
+    ? `r=${currentResults.verdict.finestR} · ${currentResults.mesh.coupling}`
+    : "cylinder LBA — r=5 (fallback)";
 
   const groups = [
-    { id: "geom", title: "Geometry", items: KNOWN_RESULTS.filter((r) => r.kind === "geometry") },
-    { id: "pre", title: "Pre-buckling", items: KNOWN_RESULTS.filter((r) => r.kind === "displacement") },
-    { id: "modes", title: "Eigenmodes", items: KNOWN_RESULTS.filter((r) => r.kind === "mode") },
+    { id: "geom", title: "Geometry", items: items.filter((r) => r.kind === "geometry") },
+    { id: "pre", title: "Pre-buckling", items: items.filter((r) => r.kind === "displacement") },
+    { id: "modes", title: "Eigenmodes", items: items.filter((r) => r.kind === "mode") },
   ];
 
   return (
@@ -89,7 +140,7 @@ export default function ResultsPanel() {
           RESULTS
         </span>
         <span style={{ fontSize: 9.5, color: "var(--text-soft)", fontFamily: MONO }}>
-          cylinder LBA — r=5
+          {headerHint}
         </span>
       </div>
 

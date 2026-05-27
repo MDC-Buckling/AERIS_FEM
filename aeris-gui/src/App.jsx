@@ -12,10 +12,18 @@ export default function App() {
   const theme = useUI((s) => s.theme);
   const mode = useUI((s) => s.mode);
   const selectedResultId = useUI((s) => s.selectedResultId);
+  const loadResultsManifest = useUI((s) => s.loadResultsManifest);
   // The pre-mode viewport now builds its own procedural cylinder from
   // store.model.geometry.cylinder, so we no longer need to force
   // selectedResultId to "geometry" on mode switch (Session 3.0's hack).
   // selectedResultId is purely a post-mode concept now.
+
+  // On startup, try to pick up any run.json already on disk so the
+  // post-processor reflects the previous solve without forcing a re-run.
+  // No-op if the file doesn't exist.
+  React.useEffect(() => {
+    loadResultsManifest();
+  }, [loadResultsManifest]);
 
   return (
     <div
