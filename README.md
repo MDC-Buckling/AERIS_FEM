@@ -363,15 +363,44 @@ silently move sub-items between sections without a session note.
 - The Solve button is deliberately the LAST item — Codex-style continuous
   flow, but the run is still a discrete commit at the end.
 
+### Session 3.2 — GEOMETRY wired end-to-end ✅
+
+The first functional slice landed. The Python side has a new module
+[`scripts/aeris_model.py`](scripts/aeris_model.py) holding `ModelConfig`,
+the in-memory mirror of the `model.json` schema that every later section
+will extend. `cylinder_lba.py` now accepts `--model PATH` (or scalar
+`--R/--L/--t/--E/--nu` overrides on top) and routes through `ModelConfig
+→ case() → build_cylinder_xml`. Verified by dumping the XML for
+`R=2, L=3, t=0.02` and confirming the 4 patches' control points scale to
+(±2, 0, z) / (0, ±2, z) and z spans 0→3, while `Thickness=0.02` and the
+BC block (Dirichlet+Clamped at bottom, Neumann at top) survive intact.
+The default-case regression still gives -1.02% at r=4 vs classical (= Session 2.7).
+
+GUI side: GEOMETRY → Shape & Type and GEOMETRY → Dimensions are now real,
+not stubs. R/L/t inputs use a new GlowInput-style `NumberField` primitive
+(mono, right-aligned, tabular-nums, dark/light-aware glass body); the
+inspector shows live R/t and L/R derived values plus a gentle thin-shell
+warning if R/t < 20. The model-tree sub-item preview line under
+"Dimensions" reflects the live values. GEOMETRY's section dot is now
+cyan ("configured · live") and the per-item badge swaps from
+`STUB · NOT WIRED` to `CONFIGURED · LIVE` for the two wired items.
+
+The central 3D viewport now branches on mode: **post** still loads
+`.pvd / .vts` results as before; **pre** builds a procedural cylinder
+(64×24 segments, open-ended, `THREE.CylinderGeometry` rotated and shifted
+to match the solver z-up convention) directly from `model.geometry.cylinder`
+— changing R/L/t in the inspector updates the preview live with no
+solver round-trip. Snap-view cameras auto-frame for any R/L.
+
 ### Known gaps — next-session candidates (ordered)
 
-1. **Wire up GEOMETRY → Dimensions** so the user-typed R/L/t actually drives
-   the Python-side cylinder XML build (replace `DEFAULT_CASE` in
-   `cylinder_lba.py` with a sidecar JSON the GUI writes; or eventually have
-   the GUI build the XML directly). This is the first functional slice.
-2. **Solve-button wiring** — POST the assembled XML to the running G+Smo
-   container, stream eigenvalues + .vts back into `output/`, refresh the
-   post-processor tree when done.
+1. **MATERIAL section wired next** — make `E`, `ν`, optional density real
+   inputs the same way as R/L/t (sidecar manifest schema is already there
+   under `material:` in `aeris_model.py`'s default).
+2. **Solve-button wiring** — POST the assembled `model.json` to the running
+   G+Smo container, run `cylinder_lba.py --model /aeris-input/model.json`,
+   stream eigenvalues + .vts back into `output/`, refresh the post-processor
+   tree when done.
 3. **Sidecar manifest from `cylinder_lba.py`** so the inspector reads
    eigenvalues + convergence table from disk instead of the hard-coded
    `LBA_META` constant in `InspectorPanel.jsx`.

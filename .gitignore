@@ -48,6 +48,13 @@ scratch/
 
 # Per-run ParaView output dropped by cylinder_lba.py via -v mount
 output/
+# If cylinder_lba.py runs from scripts/, it drops these alongside the script.
+scripts/BucklingResults/
+scripts/LinearSolution.pvd
+scripts/LinearSolution*.vts
+scripts/mp.pvd
+scripts/mp_*.vts
+scripts/mp_*.vtp
 
 # Aeris GUI (Tauri + Vite + React) — generated artefacts
 aeris-gui/node_modules/
