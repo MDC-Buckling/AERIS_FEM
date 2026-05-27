@@ -48,3 +48,11 @@ scratch/
 
 # Per-run ParaView output dropped by cylinder_lba.py via -v mount
 output/
+
+# Aeris GUI (Tauri + Vite + React) — generated artefacts
+aeris-gui/node_modules/
+aeris-gui/dist/
+aeris-gui/.vite/
+aeris-gui/src-tauri/target/
+aeris-gui/src-tauri/gen/
+# (keep aeris-gui/src-tauri/Cargo.lock — binary crate, locks for reproducibility)
