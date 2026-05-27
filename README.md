@@ -392,15 +392,62 @@ to match the solver z-up convention) directly from `model.geometry.cylinder`
 — changing R/L/t in the inspector updates the preview live with no
 solver round-trip. Snap-view cameras auto-frame for any R/L.
 
+### Session 3.3 — MATERIAL wired + ABAQUS-style section assignments ✅
+
+Schema bumped to v2: the top-level `material: {...}` is replaced by a
+section-assignment layout with three new arrays — `materials[]`,
+`sections[]`, `assignments[]` — trivial today (1 + 1 + 1) but the contract
+for stiffened shells / variable thickness later. See
+[`scripts/aeris_model.py`](scripts/aeris_model.py) for the canonical
+schema; v1 model.json files are auto-migrated on read.
+
+GUI side: MATERIAL → Base Properties now has real `E` and `ν` `NumberField`
+inputs flowing through `materials[0]` into the solver XML `<Parameters>`.
+SHELL CONSTRUCTION → Section Assignments is a new sub-item showing the
+region→section→material table (1 row today; many later). Thickness stays
+single-source-of-truth in `geometry.cylinder.t` — surfaced in the
+MaterialBase derived block as "Thickness from geometry.cylinder.t" so
+nobody types it in two places.
+
+**Audit (E=210, ν=0.33 ≠ default E=1, ν=0.3):**
+
+- model.json on disk has `"E": 210, "nu": 0.33` after EXPORT MODEL.
+- Solver XML `<Parameters>` carries `210.0` and `0.33` verbatim.
+- `<Thickness>` still `0.01` (from geometry, not duplicated in material).
+- Solver runs, returns clean doublet pairs (`1.197 / 1.197`, `1.211 / 1.211`),
+  converges from −13.52 % at r=4 to −6.83 % at r=5 vs classical = 1.284 (the
+  formula scales correctly with both E and ν, verified by an independent
+  sweep — see Working notes below).
+- Classical `σ_cr = E·t/(R·√(3(1−ν²)))` confirmed to use the **real** E and ν
+  from the case, not hardcoded defaults — exactly the cancels-at-default
+  trap the Session-3.2 audit caught.
+
+**One solver-numerics limitation found:** at very large E (tested with
+E=208000), `gsBucklingSolver` returns garbage eigenvalues (e.g. 1e+28). Root
+cause is **catastrophic cancellation in `m_B = K_NL − K_L`**: both matrices
+are O(E), their difference is O(1), so relative precision in the geometric
+stiffness `K_geom` degrades by ~log₁₀(E) significant digits. Workaround for
+now: pick consistent dimensionless units so `E` stays moderate (e.g. GPa
+with mm, or normalise E ≈ 1). Documented in the "Known gaps" list below;
+not a wiring bug.
+
 ### Known gaps — next-session candidates (ordered)
 
-1. **MATERIAL section wired next** — make `E`, `ν`, optional density real
-   inputs the same way as R/L/t (sidecar manifest schema is already there
-   under `material:` in `aeris_model.py`'s default).
+1. **Mesh / BCs / Loads / Analysis sections** — same wiring pattern as
+   MATERIAL: editable inputs for the values that already live in `model.json`
+   under the respective keys. Mesh next (refinement / degree / smoothness
+   are pure integers, easy slice).
 2. **Solve-button wiring** — POST the assembled `model.json` to the running
    G+Smo container, run `cylinder_lba.py --model /aeris-input/model.json`,
    stream eigenvalues + .vts back into `output/`, refresh the post-processor
    tree when done.
+3. **Numerical conditioning at large E (Session-3.3 finding).** The
+   `m_B = K_NL − K_L` subtraction in `gsBucklingSolver` loses precision when
+   `K_L = O(E)` and `K_geom = O(1)`. Workarounds:
+   (a) auto-rescale the system internally before handing it to Spectra;
+   (b) try `GEigsMode::Cayley` (solver index 4) which may be less sensitive;
+   (c) document "pick units so E is moderate" and put a soft warning in the
+   GUI MATERIAL inspector when E > ~1e4.
 3. **Sidecar manifest from `cylinder_lba.py`** so the inspector reads
    eigenvalues + convergence table from disk instead of the hard-coded
    `LBA_META` constant in `InspectorPanel.jsx`.
