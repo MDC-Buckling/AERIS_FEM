@@ -253,12 +253,15 @@ def _run_static(xml_path: Path, work_dir: Path,
         raise RuntimeError(f"static_shell_XML exited {res.returncode}")
 
 
-def _extract_qoi(work_dir: Path, R: float, L: float, phi_deg: float
-                 ) -> dict:
+def _extract_qoi(work_dir: Path, R: float, L: float, phi_deg: float,
+                 r: int) -> dict:
     """u_z at parametric (u=0.5, v=1) — the midpoint of the free edge
     at v=1 (the lower eave at chord-endpoint y = -2R·sin(phi)). The
     structured grid that gsWriteParaview emits is uniform in parametric
-    space, so VtsGrid.point_at_param resolves it directly."""
+    space, so VtsGrid.point_at_param resolves it directly.
+
+    Returns a row dict that goes into both qois[] (last entry =
+    headline) and convergence[] (one row per r in the sweep)."""
     vts = parse_vts(work_dir / "solution0.vts")
     pos, disp = vts.point_at_param(0.5, 1.0)
     if vts.field_components < 3:
@@ -270,10 +273,11 @@ def _extract_qoi(work_dir: Path, R: float, L: float, phi_deg: float
     phi = math.radians(phi_deg)
     physical_target = (L / 2.0, -2.0 * R * math.sin(phi), 0.0)
     return {
+        "r": int(r),
         "name": "uz_free_edge_midpoint",
         "label": "u_z at free-edge midpoint",
-        "value": uz,
-        "absValue": abs(uz),
+        "qoiValue": uz,
+        "qoiAbsValue": abs(uz),
         "deformedPosition": [pos[0], pos[1], pos[2]],
         "physicalTarget": list(physical_target),
         "parametricPoint": [0.5, 1.0],
@@ -285,12 +289,19 @@ def _extract_qoi(work_dir: Path, R: float, L: float, phi_deg: float
 # ---------------------------------------------------------------------------
 
 def _write_sidecar(work_dir: Path, model: dict,
-                   qoi: dict, refines: int, threads: int) -> None:
+                   convergence: list[dict], refines: list[int],
+                   threads: int) -> None:
     """Write /work/run.json. Shape mirrors cylinder_lba.py's sidecar so
     the GUI's loadResultsManifest path Just Works; the static-specific
     fields live under qois[] + analysisKind="static". The Hub
-    interpreter for Scordelis-Lo reads qois[0].value and compares to
-    the literature 0.3006 reference."""
+    interpreter for Scordelis-Lo reads qois[0].value (the finest-r
+    headline) and the convergence[] table (per-r history) and compares
+    against the literature 0.3006 reference.
+
+    `convergence` is the list of per-r QoI rows captured during the
+    sweep — the last entry is the headline (finest r). `refines` is
+    the full list of refinement levels that were actually run."""
+    finest_qoi = convergence[-1]
     seg = model["geometry"]["cylinder_segment"]
     mat = model["materials"][0]
     run_json = {
@@ -308,7 +319,7 @@ def _write_sidecar(work_dir: Path, model: dict,
             "n_patches": 1,
         },
         "mesh": {
-            "refinement": int(refines),
+            "refinement": int(refines[-1]),
             "degree": int(model["mesh"].get("degree", 3)),
             "smoothness": int(model["mesh"].get("smoothness", 2)),
             "coupling": str(model["mesh"].get("coupling", "gsSmoothInterfaces")),
@@ -325,21 +336,27 @@ def _write_sidecar(work_dir: Path, model: dict,
         "files": {
             # Match the gsWriteParaview naming exactly so the GUI's
             # post-processor can find these via /data/jobs/<id>/...
+            # The .vts is the FINEST r's plot pass — gsWriteParaview
+            # overwrites the file per call, so intermediate r's
+            # plots are gone but the convergence[] numbers survive.
             "geometry": "mp.pvd",
             "solution": "solution.pvd",
         },
-        "qois": [qoi],
+        "qois": [finest_qoi],
+        # convergence[] is the per-r sweep history. Each row carries
+        # {r, qoiValue, qoiAbsValue} — pct-vs-reference comparison is
+        # per-benchmark and lives in the Hub interpreter.
+        "convergence": convergence,
         # Empty arrays for fields the LBA sidecar carries so the
         # GUI's existing parsers don't blow up on missing keys.
         "modes": [],
-        "convergence": [],
         "verdict": {
             # The reference value is per-benchmark, not per-script —
             # the Hub interpreter applies it. Script just reports what
             # it computed + whether the solver converged at all.
-            "qoiValue": qoi["value"],
-            "qoiAbsValue": qoi["absValue"],
-            "qoiName": qoi["name"],
+            "qoiValue": finest_qoi["qoiValue"],
+            "qoiAbsValue": finest_qoi["qoiAbsValue"],
+            "qoiName": finest_qoi["name"],
             "solverOk": True,
         },
     }
@@ -393,33 +410,48 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Geometry : R={seg['R']}, L={seg['L']}, t={seg['t']}, phi={seg['phi_deg']}°")
     print(f"Material : E={mat['E']}, nu={mat['nu']}")
     print(f"Load     : gravity, q = {model['load'].get('magnitude', 90.0)} per area, -z")
-    print(f"Mesh     : r = {args.refines[0]} · OMP threads = {args.threads}")
+    print(f"Mesh     : r = {args.refines} · OMP threads = {args.threads}")
     print()
 
-    _phase(f"solving_r{args.refines[0]}")
-    _run_static(xml_path, work_dir, refines=args.refines[0], threads=args.threads)
+    # Convergence sweep: one solve per requested r. Each solve overwrites
+    # solution0.vts (gsWriteParaview's hardcoded filename), so we extract
+    # the QoI immediately after each solve before the next overwrites it.
+    # The .vts of the LAST r in the list survives on disk → the GUI's
+    # post-processor loads that one's mesh.
+    print("Convergence sweep:")
+    print(f"  {'-r':>4}  {'|u_z|':>14}  {'u_z (signed)':>14}")
+    print(f"  {'-' * 50}")
+
+    convergence: list[dict] = []
+    for r in args.refines:
+        _phase(f"solving_r{r}")
+        _run_static(xml_path, work_dir, refines=r, threads=args.threads)
+        row = _extract_qoi(work_dir,
+                           R=float(seg["R"]), L=float(seg["L"]),
+                           phi_deg=float(seg["phi_deg"]), r=r)
+        convergence.append(row)
+        print(f"  {r:>4}  {row['qoiAbsValue']:>14.8f}  {row['qoiValue']:>+14.8f}")
 
     _phase("verdict")
-    qoi = _extract_qoi(work_dir, R=float(seg["R"]), L=float(seg["L"]),
-                       phi_deg=float(seg["phi_deg"]))
+    finest = convergence[-1]
 
     print()
     print("=" * 70)
     print("Verdict")
     print("=" * 70)
-    print(f"QoI  : {qoi['label']}")
-    print(f"  parametric (u, v) = ({qoi['parametricPoint'][0]}, {qoi['parametricPoint'][1]})")
-    print(f"  physical target   = ({qoi['physicalTarget'][0]:.3f}, "
-          f"{qoi['physicalTarget'][1]:.3f}, {qoi['physicalTarget'][2]:.3f})")
-    print(f"  deformed position = ({qoi['deformedPosition'][0]:.6f}, "
-          f"{qoi['deformedPosition'][1]:.6f}, {qoi['deformedPosition'][2]:.6f})")
-    print(f"  u_z (signed)      = {qoi['value']:+.8f}")
-    print(f"  |u_z|             = {qoi['absValue']:.8f}")
+    print(f"QoI  : {finest['label']}  (finest r = {finest['r']})")
+    print(f"  parametric (u, v) = ({finest['parametricPoint'][0]}, {finest['parametricPoint'][1]})")
+    print(f"  physical target   = ({finest['physicalTarget'][0]:.3f}, "
+          f"{finest['physicalTarget'][1]:.3f}, {finest['physicalTarget'][2]:.3f})")
+    print(f"  deformed position = ({finest['deformedPosition'][0]:.6f}, "
+          f"{finest['deformedPosition'][1]:.6f}, {finest['deformedPosition'][2]:.6f})")
+    print(f"  u_z (signed)      = {finest['qoiValue']:+.8f}")
+    print(f"  |u_z|             = {finest['qoiAbsValue']:.8f}")
     print()
     print("(reference comparison is per-benchmark; the Hub interpreter handles it)")
 
-    _write_sidecar(work_dir, model, qoi, refines=args.refines[0],
-                   threads=args.threads)
+    _write_sidecar(work_dir, model, convergence,
+                   refines=args.refines, threads=args.threads)
     print(f"\nSidecar manifest written: {work_dir}/run.json")
 
     if not args.keep_xml:

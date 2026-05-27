@@ -316,11 +316,25 @@ SHA file printed "bundled-with-v25.07.0" for everything).
   cross-checking `gsSmoothInterfaces` moment transfer under bending is
   next in the suite roadmap. See `benchmarks/scordelis_lo/README.md`
   for the full convergence table + interpretation.
-- **Benchmark Hub (GUI, Session H)** — third top-level mode alongside
-  Pre-/Post-Processor. Browseable card grid for the validation suite:
-  every standard shell benchmark (cylinder LBA × 2 variants live, plus
-  Scordelis-Lo + multipatch + pinched-cylinder + pinched-hemisphere as
-  "coming soon" cards). Each card has `LOAD INTO MODEL` (copies the
+- **Scordelis-Lo in the GUI (Inc 1–4 of the integration)** — the
+  benchmarks/scordelis_lo/ CLI case now runs end-to-end inside Aeris:
+  `geometry.shape="cylinder_segment"` (R, L, t, phi_deg editable in the
+  Dimensions panel + procedural roof preview in the viewport),
+  `bcs.kind="scordelis_diaphragm"` (diaphragm + corner pin), 
+  `load.kind="gravity"` (surface body force per area, q-symbol),
+  `analysis.kind="static"` (SolverSettings hides eigenvalue-only knobs).
+  The dev server's `/run-solver` peeks at the model.json and dispatches:
+  cylinder + lba → `cylinder_lba.py`; cylinder_segment + static →
+  `scripts/scordelis_static.py` (new). The static script loops over
+  refines and writes a sidecar with `qois[] + convergence[]`. Verified
+  end-to-end at r=3/4/5: 0.24151 / 0.29581 / 0.30015 |u_z| — bit-
+  identical to the CLI benchmark.
+- **Benchmark Hub (GUI, Session H + Inc 4)** — third top-level mode
+  alongside Pre-/Post-Processor. Browseable card grid for the validation
+  suite: 4 live cards (cylinder LBA validated + IW1 compression + IW1
+  bending + **Scordelis-Lo single-patch** — flipped to enabled in Inc 4),
+  3 "coming soon" cards (Scordelis-Lo multipatch, pinched-cylinder,
+  pinched-hemisphere). Each card has `LOAD INTO MODEL` (copies the
   benchmark's case into the pre-processor) + `RUN (r=N)` (single-r
   submission) + `↗ SWEEP (r=3,4,5)` (one-click convergence study).
   Verdicts are auto-interpreted from the run.json sidecar via a

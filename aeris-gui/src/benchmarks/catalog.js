@@ -39,6 +39,12 @@ const DEFAULT_MESH = {
   refinement: 5, degree: 3, smoothness: 2, coupling: "gsSmoothInterfaces",
 };
 
+/** Defaults preserved in every preset so the loaded model always carries
+ * BOTH shape blocks (matches the store's default) — switching shape in
+ * the GUI after loading doesn't lose the dimensions of the OTHER kind. */
+const DEFAULT_CYLINDER = { R: 33.0, L: 100.0, t: 0.1, partitions: [] };
+const DEFAULT_SEGMENT  = { R: 25.0, L: 50.0, t: 0.25, phi_deg: 40.0 };
+
 /** Helper: build a cylinder-LBA preset with sensible defaults. Each
  * benchmark only has to specify what's special (R / L / t / E / nu /
  * load.kind), the rest comes from these defaults. materialName
@@ -55,6 +61,10 @@ function cylinderLbaPreset({ R, L, t, E, nu,
     geometry: {
       shape: "cylinder",
       cylinder: { R, L, t, partitions: [] },
+      // Carry the segment defaults too so a user who switches shape
+      // after loading this preset still finds reasonable values to
+      // edit (matches store.js's default geometry block).
+      cylinder_segment: { ...DEFAULT_SEGMENT },
     },
     materials: [
       { id: "mat-default", name: materialName,
@@ -98,6 +108,70 @@ function cylinderLbaInterpret(manifest, pct_tolerance) {
     headline,
     tolerance: pct_tolerance,
     convergence: manifest.convergence ?? [],
+  };
+}
+
+/** Interpreter for the Scordelis-Lo static benchmark. Reads the static
+ * sidecar shape (qois[0].qoiAbsValue + convergence[] with per-r
+ * qoiAbsValue entries) and compares |u_z| against the literature
+ * reference (0.3006 for the KL shell; the often-quoted 0.3024 is for
+ * shear-deformable shells, which is NOT us).
+ *
+ * Also enriches each convergence row with `pct` = (|u_z| - ref) / ref
+ * so the Hub's formatConvergenceRow can render the per-r deviation
+ * trend without the script having to know the reference. */
+function scordelisLoInterpret(manifest, pct_tolerance, refAbsUz) {
+  if (!manifest || !manifest.qois || manifest.qois.length === 0) {
+    return { status: "no-data", text: "no run yet" };
+  }
+  const q = manifest.qois[0];
+  const computed = Number(q.qoiAbsValue ?? Math.abs(q.qoiValue));
+  const dev = 100.0 * (computed - refAbsUz) / refAbsUz;
+  const passed = Math.abs(dev) <= pct_tolerance;
+  const conv = (manifest.convergence ?? []).map((row) => {
+    const v = Number(row.qoiAbsValue ?? Math.abs(row.qoiValue));
+    return {
+      ...row,
+      pct: 100.0 * (v - refAbsUz) / refAbsUz,
+    };
+  });
+  return {
+    status: passed ? "pass" : "fail",
+    deviationPct: dev,
+    headline: `|u_z| = ${computed.toFixed(5)}  (reference ${refAbsUz})`,
+    tolerance: pct_tolerance,
+    convergence: conv,
+  };
+}
+
+/** Preset for the Scordelis-Lo roof. Mirrors store.js's defaults so the
+ * "load into model" flow doesn't churn unused fields; only what's
+ * actually different for this benchmark is overridden. */
+function scordelisLoPreset() {
+  return {
+    schemaVersion: 2,
+    name: "Scordelis-Lo roof",
+    geometry: {
+      shape: "cylinder_segment",
+      cylinder: { ...DEFAULT_CYLINDER },
+      cylinder_segment: {
+        R: 25.0, L: 50.0, t: 0.25, phi_deg: 40.0,
+      },
+    },
+    materials: [
+      { id: "mat-default", name: "Scordelis isotropic",
+        model: "linear", E: 4.32e8, nu: 0.0 },
+    ],
+    sections: [
+      { id: "sec-shell-1", name: "Shell — roof segment",
+        kind: "shell", material_ref: "mat-default",
+        thickness_source: { kind: "geometry" }, offset: "midsurface" },
+    ],
+    assignments: [{ region: "shell_full", section_ref: "sec-shell-1" }],
+    mesh:     { ...DEFAULT_MESH },
+    bcs:      { kind: "scordelis_diaphragm" },
+    load:     { kind: "gravity", magnitude: 90.0 },
+    analysis: { ...DEFAULT_ANALYSIS, kind: "static" },
   };
 }
 
@@ -152,21 +226,19 @@ export const BENCHMARKS = [
     interpret: (m) => cylinderLbaInterpret(m, 1.0),
   },
 
-  // ----- Coming soon (need solver-side wiring before they go live) -----
+  // ----- Live (Scordelis-Lo single-patch shipped in Inc 4) -----
   {
     id: "scordelis-lo",
     name: "Scordelis-Lo roof — single patch",
     category: CATEGORIES.STATIC_MEMBRANE,
-    shortDescription: "Cylindrical-segment roof (R=25, L=50, t=0.25, φ=40°, ν=0!) loaded by self-weight. Canonical Belytschko obstacle-course test for membrane-dominated bending with free edges.",
+    shortDescription: "Cylindrical-segment roof (R=25, L=50, t=0.25, φ=40°, ν=0!) loaded by self-weight (q=90/area). Canonical Belytschko obstacle-course test for membrane-dominated bending with free edges.",
     referenceSource: "Belytschko et al. (1985) · |u_z| = 0.3006 (KL shell)",
     referenceQoI: "|u_z|@free-edge-midpoint = 0.3006",
-    tolerancePct: 2.0,
-    enabled: false,
-    comingSoonReason: (
-      "Needs the static-analysis path in the GUI (analysis.kind=\"static\" is disabled today) "
-      + "plus a new shape=\"cylinder_segment\" in geometry. The CLI version already PASSes — "
-      + "see benchmarks/scordelis_lo/."
-    ),
+    tolerancePct: 1.0,
+    enabled: true,
+    modelPreset: scordelisLoPreset(),
+    recipe: { refines: [5], convergenceRefines: [3, 4, 5] },
+    interpret: (m) => scordelisLoInterpret(m, 1.0, 0.3006),
   },
   {
     id: "scordelis-lo-multipatch",
@@ -203,8 +275,16 @@ export const BENCHMARKS = [
   },
 ];
 
-/** Pretty-print one convergence-table row as a string. */
+/** Pretty-print one convergence-table row as a string. Dispatches on
+ * which fields the row carries so a single Hub renderer covers both
+ * LBA (sigmaComputed) and static (qoiAbsValue) sweeps. */
 export function formatConvergenceRow(row) {
-  const { r, sigmaComputed, pct } = row;
-  return `r=${r}  σ_cr=${sigmaComputed.toExponential(3)}  Δ=${pct >= 0 ? "+" : ""}${pct.toFixed(3)}%`;
+  const { r, sigmaComputed, qoiAbsValue, pct } = row;
+  const pctStr = pct == null
+    ? ""
+    : `  Δ=${pct >= 0 ? "+" : ""}${pct.toFixed(3)}%`;
+  if (qoiAbsValue != null) {
+    return `r=${r}  |u_z|=${Number(qoiAbsValue).toFixed(5)}${pctStr}`;
+  }
+  return `r=${r}  σ_cr=${sigmaComputed.toExponential(3)}${pctStr}`;
 }
