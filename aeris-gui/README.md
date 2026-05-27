@@ -98,8 +98,9 @@ The 3D viewport uses a **custom ShaderMaterial**:
 This lets the **warp slider** change a single uniform per frame — no
 geometry rebuild — so the deformation animates live with no perceptible lag.
 
-## What works today (Session 3.0)
+## What works today (Sessions 3.0 → 3.1)
 
+### Session 3.0 — Post-processor
 - [x] App shell in the MDC Codex visual language (dark default, cyan accents,
       glass panels with HUD corners, mono everywhere, dense engineering spacing).
 - [x] Light theme toggle (civil-engineering / concrete-grey variant from the spec).
@@ -112,14 +113,29 @@ geometry rebuild — so the deformation animates live with no perceptible lag.
 - [x] View-snap buttons: OBLIQUE / SIDE / END (match `render_modes.py`).
 - [x] Edge wireframe overlay toggle, undeformed-mesh overlay toggle.
 
+### Session 3.1 — Pre-processor SHELL (scaffold only)
+- [x] **PRE / POST mode switch** in the top chrome flips the left + right panels;
+      central viewport is shared and shows the cylinder as a live-preview
+      stand-in when in pre mode.
+- [x] **Codex-styled collapsible model tree** with the locked 8-section
+      structure (Geometry / Shell Construction / Material / Imperfections /
+      Mesh / BCs & Loads / Analysis Step / Run). Each section has a status
+      dot (all "default" for now) and a 2-digit prefix.
+- [x] **17 model-tree sub-items** addressable by dotted id, each with a
+      `defaultPreview` line that mirrors the eventual current-value display.
+- [x] **Stub right inspector** with per-`kind` renderers: `selector` (radio
+      list with future-options listed as disabled + a "later" hint), `fields`,
+      `field`, `toggle+config`, `run-button` (disabled Solve). Shows the
+      eventual UI as a sketch so we know what to build.
+- [x] All Session-3.0 post-processor features still work in POST mode.
+
 ## What's next
 
-- [ ] Solve button — POST to the running container with a parameter set,
-      stream output, refresh the result tree when done.
-- [ ] Pre-processor — geometry+material+BC editor that writes the XML
-      `cylinder_lba.py` currently builds in Python.
-- [ ] Sidecar manifest from `cylinder_lba.py` so the inspector reads
-      eigenvalues + convergence table from disk instead of the hard-coded
-      `LBA_META` constant in `InspectorPanel.jsx`.
-- [ ] Replace the cheap derivative-shading with proper precomputed normals
-      so light mode looks less flat.
+- [ ] Fill **GEOMETRY → Dimensions** functionally so the user-typed R/L/t
+      drives the Python cylinder build (smallest end-to-end slice).
+- [ ] Solve button — POST to the running container with the assembled config,
+      stream output, refresh the post-processor result tree when done.
+- [ ] Sidecar manifest from `cylinder_lba.py` so the post-processor inspector
+      reads eigenvalues + convergence from disk instead of `LBA_META`.
+- [ ] Replace cheap derivative-shading with proper precomputed normals so
+      light mode looks less flat.

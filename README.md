@@ -313,18 +313,69 @@ SHA file printed "bundled-with-v25.07.0" for everything).
   cameras) so you can judge mode shapes without opening ParaView. Renders
   use PyVista + Xvfb in a slim Python image; warp + colour are tuned to
   show both bulk buckling patterns and patch-corner artefacts honestly.
-- **Aeris GUI** (`aeris-gui/`, Session 3.0) — Tauri 2 desktop front-end in
-  the MDC Codex visual language. Shell + interactive three.js viewport
-  reads the multi-patch `.pvd` / `.vts` files directly, rotates with
-  OrbitControls, deforms live via a warp-scale slider, colours by `|u|`
-  with a cyan-tinted ramp + legend, snaps to oblique/side/end-on views.
-  Launch with `cd aeris-gui && npm install && npm run dev` (browser at
-  http://localhost:5174) or `npm run tauri:dev` (native window). No solver
-  wiring yet — pre-processor + Solve-button is next session.
+- **Aeris GUI** (`aeris-gui/`, Sessions 3.0–3.1) — Tauri 2 desktop front-end
+  in the MDC Codex visual language.
+  - **Post-processor** (3.0): interactive three.js viewport reads multi-patch
+    `.pvd` / `.vts` directly, rotates with OrbitControls, deforms live via a
+    warp-scale slider, colours by `|u|` with a cyan-tinted ramp + legend,
+    snaps to oblique/side/end-on views.
+  - **Pre-processor SHELL** (3.1, this session — scaffold only): Codex-styled
+    collapsible model-tree with the locked 8-section structure, per-sub-item
+    stub inspectors, status dots. Disabled `► SOLVE` placeholder at the end
+    of the chain. Tree items clickable; stubs sketch the eventual fields as
+    disabled. PRE / POST mode switch in the top chrome flips the left + right
+    panels; the central viewport stays shared (live-preview stand-in shows the
+    cylinder geometry in pre mode).
+
+  Launch: `cd aeris-gui && npm install && npm run dev` (browser at
+  http://localhost:5174) or `npm run tauri:dev` (native window).
+
+### Pre-processor model-tree — locked structure (Session 3.1)
+
+The 8 sections (with sub-items) that fill in over the next several sessions.
+Order shown is the navigation order; **fill order is Geometry → Material →
+BCs/Loads → Analysis → Mesh → Imperfections → Shell Construction → Run**
+(get the smallest functional vertical slice working end-to-end first).
+
+```
+01  GEOMETRY              · Shape & Type  · Dimensions
+02  SHELL CONSTRUCTION    · Thickness Mode  · Ring Frames / Stiffeners
+03  MATERIAL              · Base · Manufacturing · Plasticity · Thermal
+04  IMPERFECTIONS         · Amplitude · Type/Source · Cutouts (KDF)
+05  MESH / DISCRETISATION · Refinement · Polynomial degree · Patch coupling
+06  BCs & LOADS           · Boundary Conditions · Load Case
+07  ANALYSIS STEP         · Analysis Type · Solver Settings
+08  RUN                   · ► SOLVE (disabled until wiring lands)
+```
+
+See [aeris-gui/src/preprocessor/modelTree.js](aeris-gui/src/preprocessor/modelTree.js)
+for the full data (defaults, all selector options for both functional and
+"later" choices, field lists). Structure is the architecture contract — don't
+silently move sub-items between sections without a session note.
+
+**Session 3.1 architecture decisions captured in the tree:**
+- `Cutouts` lives under `IMPERFECTIONS` with the `(KDF)` suffix making the
+  η-knockdown choice explicit (vs `GEOMETRY` where real holes would go).
+- `Patch coupling` defaults to `gsSmoothInterfaces (m=0)` matching the
+  Session-2.7 validated path.
+- `Shape & Type` already lists Cylinder, Cone, Sphere, Torispherical,
+  Stiffened so the structure doesn't need rebuilding when we add them.
+- The Solve button is deliberately the LAST item — Codex-style continuous
+  flow, but the run is still a discrete commit at the end.
 
 ### Known gaps — next-session candidates (ordered)
 
-1. **Fix pygismo.** Still `GISMO_WITH_PYBIND11=OFF`. Both Ubuntu apt
+1. **Wire up GEOMETRY → Dimensions** so the user-typed R/L/t actually drives
+   the Python-side cylinder XML build (replace `DEFAULT_CASE` in
+   `cylinder_lba.py` with a sidecar JSON the GUI writes; or eventually have
+   the GUI build the XML directly). This is the first functional slice.
+2. **Solve-button wiring** — POST the assembled XML to the running G+Smo
+   container, stream eigenvalues + .vts back into `output/`, refresh the
+   post-processor tree when done.
+3. **Sidecar manifest from `cylinder_lba.py`** so the inspector reads
+   eigenvalues + convergence table from disk instead of the hard-coded
+   `LBA_META` constant in `InspectorPanel.jsx`.
+4. **Fix pygismo.** Still `GISMO_WITH_PYBIND11=OFF`. Both Ubuntu apt
    `pybind11-dev 2.9.1` and pip `pybind11==2.13.6` fail to compile
    `src/misc/gsPyBind11.cpp` against G+Smo's renamed `gsEigen` namespace
    (`src/gsCore/gsLinearAlgebra.h:21` does `#define Eigen gsEigen`).
