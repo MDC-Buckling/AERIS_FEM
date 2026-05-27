@@ -5,22 +5,34 @@ import { KNOWN_RESULTS } from "../constants.js";
 import { useUI } from "../store.js";
 import { MONO } from "../constants.js";
 
-/** Project the run.json sidecar's modes[] entries into the same shape
- * KNOWN_RESULTS uses (id / label / pvd / kind / description). Lets us
- * keep the rendering code uniform across "live run" and "shipped
- * fallback" cases. */
+/** Project the run.json sidecar's entries into the same shape KNOWN_RESULTS
+ * uses (id / label / pvd / kind / description). Dispatches on
+ * analysisKind so the LSA (static) sidecar — which has files.solution +
+ * empty modes[] — gets the deformed-roof displayed under id="linear"
+ * instead of producing a results panel with only the undeformed
+ * geometry to click on. */
 function resultsFromManifest(r) {
   if (!r) return null;
+  const isStatic = (r.analysisKind ?? "lba") === "static";
   const items = [];
+
   if (r.files?.geometry) {
+    const isSegment = r.geometry?.shape === "cylinder_segment";
+    const desc = isSegment
+      ? `1-patch roof segment · R=${r.case.R}, L=${r.case.L}, t=${r.case.t}, φ=${r.case.phi_deg}°`
+      : `${r.geometry.n_patches}-patch${r.geometry.n_bands > 1 ? ` · ${r.geometry.n_bands} bands` : ""} cylinder · R=${r.case.R}, L=${r.case.L}, t=${r.case.t}`;
     items.push({
       id: "geometry",
       label: "Geometry (undeformed)",
       pvd: r.files.geometry,
       kind: "geometry",
-      description: `${r.geometry.n_patches}-patch${r.geometry.n_bands > 1 ? ` · ${r.geometry.n_bands} bands` : ""} cylinder · R=${r.case.R}, L=${r.case.L}, t=${r.case.t}`,
+      description: desc,
     });
   }
+
+  // LBA: linear-prestress pvd lives under files.linearPrestress and is
+  // a pre-buckling reference state. LSA: files.solution IS the result
+  // (the actual deformed shape under the applied static load).
   if (r.files?.linearPrestress) {
     items.push({
       id: "linear",
@@ -31,7 +43,21 @@ function resultsFromManifest(r) {
         ? "Cos(θ) Tz prestress — tension on +x, compression on -x"
         : "Uniform axial Tz prestress at the E-scaled reference state",
     });
+  } else if (isStatic && r.files?.solution) {
+    const qoi = r.qois?.[0];
+    items.push({
+      id: "linear",                          // reuse the same id so the
+                                             // post-mode default selector
+                                             // falls into a valid item
+      label: "LSA solution (deformed)",
+      pvd: r.files.solution,
+      kind: "displacement",
+      description: qoi
+        ? `${qoi.label} = ${Number(qoi.qoiAbsValue).toFixed(5)} (signed ${Number(qoi.qoiValue).toFixed(5)})`
+        : `deformed shape under ${r.load?.kind ?? "applied"} load`,
+    });
   }
+
   for (const m of r.modes ?? []) {
     items.push({
       id: m.id,
@@ -139,17 +165,24 @@ export default function ResultsPanel() {
     if (jobId === loadedJobId) return;
     const manifest = await loadResultsManifest(jobId);
     setActiveJob(jobId);
-    // If the previously-selected result id (mode5 say) doesn't exist in
-    // the newly-loaded job (which might only have 4 modes), fall back
-    // to the first available item so the viewport always has something
-    // valid to render.
-    const newIds = new Set([
-      "geometry", "linear",
+    // Pick a result-id that actually exists in the new manifest. For LSA
+    // jobs (modes=[]) this means "linear" (the deformed solution) rather
+    // than the bare geometry — far more useful as a first view. For LBA
+    // we prefer the first mode. Without this the user can land on a
+    // stale "mode0" id from a previous job and either see the wrong
+    // mesh (cache hit on old data) or crash the inspector (LBA fields
+    // missing from a static manifest).
+    const firstMode = manifest?.modes?.[0]?.id;
+    const hasLinear = !!(manifest?.files?.linearPrestress
+                          || manifest?.files?.solution);
+    const validIds = new Set([
+      "geometry",
+      ...(hasLinear ? ["linear"] : []),
       ...((manifest?.modes ?? []).map((m) => m.id)),
     ]);
-    if (!newIds.has(selected)) {
-      const first = manifest?.modes?.[0]?.id ?? "geometry";
-      select(first);
+    if (!validIds.has(selected)) {
+      const fallbackId = firstMode ?? (hasLinear ? "linear" : "geometry");
+      select(fallbackId);
     }
   };
 

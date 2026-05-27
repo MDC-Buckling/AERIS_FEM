@@ -170,8 +170,18 @@ function BenchmarkCard({ bench, jobs, state }) {
   };
   const handleOpenResult = async () => {
     if (!state?.jobId) return;
-    await loadResultsManifest(state.jobId);
+    const manifest = await loadResultsManifest(state.jobId);
     setActiveJob(state.jobId);
+    // Pick a result-id that ACTUALLY exists in the new manifest before
+    // flipping to post-mode. Without this we'd land in post with a stale
+    // "mode0" id from a previous LBA viewing → the inspector tries to
+    // render LBA-only fields on the new (possibly static) manifest and
+    // can crash on undefined .toExponential() calls.
+    const firstMode = manifest?.modes?.[0]?.id;
+    const hasLinear = !!(manifest?.files?.linearPrestress
+                          || manifest?.files?.solution);
+    const fallbackId = firstMode ?? (hasLinear ? "linear" : "geometry");
+    useUI.setState({ selectedResultId: fallbackId, resultCache: {} });
     setMode("post");
   };
 

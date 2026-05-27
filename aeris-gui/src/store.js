@@ -712,10 +712,19 @@ export const useUI = create((set) => ({
         if (terminal) {
           if (statusData.status === "success") {
             const manifest = await useUI.getState().loadResultsManifest(effectiveJobId);
+            // Default selection order: first mode (LBA result) → "linear"
+            // (LSA deformed solution) → "geometry" (undeformed only).
+            // Without this static manifests would leave the user looking
+            // at a stale mode-id from a previous job (mode0 etc) which
+            // doesn't exist in the new manifest, and the viewport would
+            // silently show the previous job's cached mesh.
             const firstMode = manifest?.modes?.[0]?.id;
+            const hasLinear = !!(manifest?.files?.linearPrestress
+                                  || manifest?.files?.solution);
+            const fallbackId = firstMode ?? (hasLinear ? "linear" : "geometry");
             useUI.setState((s) => ({
               ...s,
-              selectedResultId: firstMode ?? s.selectedResultId,
+              selectedResultId: fallbackId,
               mode: "post",
               resultCache: {},
             }));

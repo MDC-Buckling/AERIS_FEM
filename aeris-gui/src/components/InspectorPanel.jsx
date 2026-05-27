@@ -14,6 +14,7 @@ import { COLORMAPS, COLORMAP_OPTIONS, resolveColormap } from "../viewport/colorm
  * — once a real run lands the GUI drives everything from
  * currentResults (output/run.json) instead. */
 const LBA_META_FALLBACK = {
+  kind: "lba",
   R: 1.0,
   L: 1.0,
   t: 0.01,
@@ -32,16 +33,48 @@ const LBA_META_FALLBACK = {
   isFallback: true,
 };
 
-/** Project a currentResults manifest (from output/run.json) into the same
- * shape the InspectorPanel was already consuming. Keeps the render code
- * straight while the source-of-truth becomes the sidecar. */
+/** Project a currentResults manifest (from output/run.json) into the
+ * shape the InspectorPanel consumes. Dispatches on analysisKind so the
+ * static (LSA) sidecar — which has no eigenvalues, no critical load,
+ * no per-mode list — doesn't fall into LBA's .toExponential traps on
+ * undefined verdict fields. The render branches on `kind` further down
+ * to show the right blocks per analysis type. */
 function metaFromResults(r) {
   if (!r) return LBA_META_FALLBACK;
+  const analysisKind = r.analysisKind ?? "lba";
+
+  // ---- LSA (Linear Static Analysis) ----
+  if (analysisKind === "static") {
+    const qoi = (r.qois && r.qois[0]) || null;
+    const segCase = r.case ?? {};
+    return {
+      kind: "static",
+      // Geometry/material fields used by the "case" block. Segment cases
+      // carry phi_deg too (rendered alongside R/L/t when present).
+      R: segCase.R, L: segCase.L, t: segCase.t,
+      phi_deg: segCase.phi_deg,
+      E: segCase.E, nu: segCase.nu,
+      driver: "static_shell_XML",
+      coupling: r.mesh?.coupling ?? "—",
+      qoi,                                     // { name, label, qoiValue, qoiAbsValue, ... }
+      finestR: r.mesh?.refinement,
+      load: r.load,                            // { kind, magnitude }
+      bcs: r.bcs,
+      // Mode list is empty for static — keep an empty modeEigs map so
+      // the "isMode && eig" guard short-circuits cleanly.
+      modeEigs: {},
+      generatedAt: r.generatedAt,
+      isFallback: false,
+    };
+  }
+
+  // ---- LBA (existing path) ----
   const modeEigs = {};
   for (const m of r.modes ?? []) {
     if (m.sigmaComputed != null) modeEigs[m.id] = m.sigmaComputed;
   }
   return {
+    kind: "lba",
     R: r.case.R, L: r.case.L, t: r.case.t,
     E: r.case.E, nu: r.case.nu,
     finestR: r.verdict.finestR,
@@ -231,80 +264,115 @@ export default function InspectorPanel() {
 
         {/* ----- Result metadata ----- */}
         <SectionHeader>case</SectionHeader>
-        <ResultRow label="R (radius)" value={LBA_META.R.toFixed(2)} unit="–" />
-        <ResultRow label="L (length)" value={LBA_META.L.toFixed(2)} unit="–" />
-        <ResultRow label="t (thickness)" value={LBA_META.t.toFixed(3)} unit="–" />
-        <ResultRow label="E" value={LBA_META.E.toFixed(1)} unit="–" />
-        <ResultRow label="ν" value={LBA_META.nu.toFixed(2)} unit="–" />
-        <ResultRow label="R / t" value={(LBA_META.R / LBA_META.t).toFixed(0)} />
+        <ResultRow label="R (radius)" value={LBA_META.R?.toFixed(2) ?? "—"} unit="–" />
+        <ResultRow label="L (length)" value={LBA_META.L?.toFixed(2) ?? "—"} unit="–" />
+        <ResultRow label="t (thickness)" value={LBA_META.t?.toFixed(3) ?? "—"} unit="–" />
+        {LBA_META.phi_deg != null && (
+          <ResultRow label="φ (half-angle)" value={LBA_META.phi_deg.toFixed(1)} unit="°" />
+        )}
+        <ResultRow label="E" value={LBA_META.E?.toFixed(1) ?? "—"} unit="–" />
+        <ResultRow label="ν" value={LBA_META.nu?.toFixed(2) ?? "—"} unit="–" />
+        {LBA_META.R != null && LBA_META.t != null && (
+          <ResultRow label="R / t" value={(LBA_META.R / LBA_META.t).toFixed(0)} />
+        )}
 
-        {/* ----- Eigenvalue / verdict (only for modes) ----- */}
-        {isMode && eig != null && (
+        {/* ----- LBA: eigenvalue / verdict / critical-load blocks ----- */}
+        {LBA_META.kind === "lba" && (
           <>
-            <SectionHeader>eigenvalue</SectionHeader>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <KeyMetric
-                variant="primary"
-                label="σ_cr (computed)"
-                value={eig.toExponential(3)}
-              />
-              <KeyMetric
-                label="σ_cr (classical)"
-                value={LBA_META.classical.toExponential(3)}
-              />
-              <KeyMetric
-                label="Δ vs classical"
-                value={`${((eig - LBA_META.classical) / LBA_META.classical * 100).toFixed(2)}`}
-                unit="%"
-              />
-            </div>
+            {isMode && eig != null && (
+              <>
+                <SectionHeader>eigenvalue</SectionHeader>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <KeyMetric
+                    variant="primary"
+                    label="σ_cr (computed)"
+                    value={eig.toExponential(3)}
+                  />
+                  <KeyMetric
+                    label="σ_cr (classical)"
+                    value={LBA_META.classical.toExponential(3)}
+                  />
+                  <KeyMetric
+                    label="Δ vs classical"
+                    value={`${((eig - LBA_META.classical) / LBA_META.classical * 100).toFixed(2)}`}
+                    unit="%"
+                  />
+                </div>
+              </>
+            )}
+
+            {!isMode && (
+              <>
+                <SectionHeader>validation</SectionHeader>
+                <KeyMetric
+                  variant="primary"
+                  label="σ_cr (finest r=5)"
+                  value={LBA_META.computed.toExponential(3)}
+                />
+                <div style={{ height: 6 }} />
+                <KeyMetric
+                  label="vs classical"
+                  value={`${LBA_META.deviationPct.toFixed(2)}`}
+                  unit="%"
+                />
+              </>
+            )}
+
+            {LBA_META.criticalLoad && (
+              <>
+                <SectionHeader>critical load</SectionHeader>
+                <KeyMetric
+                  variant="primary"
+                  label={`${LBA_META.criticalLoad.kind}_cr (computed)`}
+                  value={LBA_META.criticalLoad.computed.toExponential(3)}
+                />
+                <div style={{ height: 4 }} />
+                <KeyMetric
+                  label={`${LBA_META.criticalLoad.kind}_cr (classical)`}
+                  value={LBA_META.criticalLoad.classical.toExponential(3)}
+                />
+                <div style={{ height: 4 }} />
+                <KeyMetric
+                  label={`applied ${LBA_META.criticalLoad.label}`}
+                  value={LBA_META.criticalLoad.applied.toExponential(3)}
+                />
+              </>
+            )}
           </>
         )}
 
-        {!isMode && (
+        {/* ----- LSA: QoI block (linear static analysis) ----- */}
+        {LBA_META.kind === "static" && LBA_META.qoi && (
           <>
-            <SectionHeader>validation</SectionHeader>
+            <SectionHeader>qoi (linear static)</SectionHeader>
             <KeyMetric
               variant="primary"
-              label="σ_cr (finest r=5)"
-              value={LBA_META.computed.toExponential(3)}
-            />
-            <div style={{ height: 6 }} />
-            <KeyMetric
-              label="vs classical"
-              value={`${LBA_META.deviationPct.toFixed(2)}`}
-              unit="%"
-            />
-          </>
-        )}
-
-        {/* ----- Critical load (only when sidecar carries it) ----- */}
-        {LBA_META.criticalLoad && (
-          <>
-            <SectionHeader>critical load</SectionHeader>
-            <KeyMetric
-              variant="primary"
-              label={`${LBA_META.criticalLoad.kind}_cr (computed)`}
-              value={LBA_META.criticalLoad.computed.toExponential(3)}
+              label={LBA_META.qoi.label ?? "QoI"}
+              value={Number(LBA_META.qoi.qoiAbsValue).toFixed(5)}
             />
             <div style={{ height: 4 }} />
             <KeyMetric
-              label={`${LBA_META.criticalLoad.kind}_cr (classical)`}
-              value={LBA_META.criticalLoad.classical.toExponential(3)}
+              label="u_z (signed)"
+              value={Number(LBA_META.qoi.qoiValue).toFixed(5)}
             />
-            <div style={{ height: 4 }} />
-            <KeyMetric
-              label={`applied ${LBA_META.criticalLoad.label}`}
-              value={LBA_META.criticalLoad.applied.toExponential(3)}
-            />
+            {LBA_META.load && (
+              <>
+                <div style={{ height: 4 }} />
+                <KeyMetric
+                  label={`load · ${LBA_META.load.kind}`}
+                  value={String(LBA_META.load.magnitude)}
+                />
+              </>
+            )}
           </>
         )}
 
         {/* ----- Solver provenance ----- */}
         <SectionHeader>solver</SectionHeader>
-        <ResultRow label="driver" value={LBA_META.driver.replace("buckling_shell_", "…")} />
+        <ResultRow label="driver"
+          value={LBA_META.driver?.replace(/^buckling_shell_|^static_shell_/, "…") ?? "—"} />
         <ResultRow label="coupling" value={LBA_META.coupling} />
-        <ResultRow label="finest r" value={LBA_META.finestR} />
+        <ResultRow label="finest r" value={LBA_META.finestR ?? "—"} />
 
         {/* ----- Loaded patch stats ----- */}
         <SectionHeader>loaded</SectionHeader>
