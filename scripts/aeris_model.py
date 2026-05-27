@@ -78,7 +78,20 @@ DEFAULT_GEOMETRY: Dict[str, Any] = {
     # mathematically equivalent; the new defaults are just a friendlier
     # starting point for the engineering audience.
     "shape": "cylinder",
-    "cylinder": {"R": 33.0, "L": 100.0, "t": 0.1},
+    "cylinder": {
+        "R": 33.0,
+        "L": 100.0,
+        "t": 0.1,
+        # Session 3.4 — axial partitions for stepped wall thickness.
+        # `partitions: [{"z": z1}, {"z": z2}, ...]` (sorted, 0 < zi < L)
+        # creates len(partitions)+1 axial bands. Empty list = homogeneous
+        # cylinder (the validated Session-3.3 path, single MaterialMatrix
+        # in the XML — bit-identical regression preserved).
+        # Each band's thickness comes from its assigned section's
+        # `thickness_source`: `kind:"geometry"` falls back to cylinder.t,
+        # `kind:"constant"` carries `value` directly.
+        "partitions": [],
+    },
 }
 
 # materials[] is a library — any section can reference any material by id.
@@ -307,16 +320,100 @@ class ModelConfig:
         c = self.geometry["cylinder"]
         return CylinderGeom(R=float(c["R"]), L=float(c["L"]), t=float(c["t"]))
 
+    # --- partition / band layout (Session 3.4 stepped wall thickness) -----
+
+    def band_z_ranges(self) -> list[tuple[float, float]]:
+        """Returns the [(z_lo, z_hi), …] axial intervals of each band.
+
+        Single band [(0, L)] when no partitions defined; for partitions at
+        [z1, z2, …] returns [(0, z1), (z1, z2), …, (z_last, L)] sorted and
+        validated (0 < z_i < L, strictly increasing). Bands are ordered
+        bottom-to-top in z.
+        """
+        cyl = self.cylinder()
+        raw = self.geometry["cylinder"].get("partitions", []) or []
+        zs = sorted({float(p["z"]) for p in raw})
+        for z in zs:
+            if not (0.0 < z < cyl.L):
+                raise ValueError(
+                    f"geometry.cylinder.partitions[].z = {z} out of (0, L={cyl.L})"
+                )
+        edges = [0.0] + zs + [cyl.L]
+        return list(zip(edges[:-1], edges[1:]))
+
+    def band_thickness(self, band_index: int) -> float:
+        """Thickness of band `band_index` (0-based, bottom-up).
+
+        Resolution order:
+          1. Look for an assignment with region == f"band_{i}".
+          2. If found, follow section_ref → section → thickness_source:
+               kind == "geometry" → fall back to cylinder.t (the SoT)
+               kind == "constant" → use the explicit value
+          3. If no per-band assignment, fall back to the "shell_full"
+             assignment (the homogeneous-cylinder default).
+          4. Final fallback: cylinder.t.
+
+        This lets a homogeneous model (no partitions, no per-band
+        assignments) keep working with the single "shell_full" assignment,
+        AND lets a stepped model carry distinct constant thicknesses
+        per band without giving up the geometry-as-SoT principle.
+        """
+        cyl = self.cylinder()
+        candidates = (f"band_{band_index}", "shell_full")
+        for region in candidates:
+            try:
+                sec = self.section_for_region(region)
+            except KeyError:
+                continue
+            src = sec.get("thickness_source", {"kind": "geometry"})
+            kind = src.get("kind", "geometry")
+            if kind == "geometry":
+                return cyl.t
+            if kind == "constant":
+                v = src.get("value")
+                if v is None:
+                    return cyl.t
+                return float(v)
+            sys.stderr.write(
+                f"[aeris_model] WARN: unknown thickness_source.kind={kind!r}, "
+                f"falling back to geometry.cylinder.t={cyl.t}\n"
+            )
+            return cyl.t
+        return cyl.t
+
     def case(self) -> Case:
         """Pack geometry + material into the solver-facing 5-tuple.
 
-        Resolves through assignments → section → material, using the
-        "shell_full" region as the single shell-cylinder source. Stiffened
-        shells later add more regions, but the LBA solver still gets one
-        Case at a time (per-patch material later if needed)."""
+        Resolves through assignments → section → material. Uses
+        "shell_full" if present (homogeneous case), otherwise falls back
+        to the first assignment (stepped case where assignments are
+        `band_0`, `band_1`, ...).
+
+        Note: for stepped cylinders with band-varying MATERIAL (not just
+        thickness), the per-band material is plumbed through
+        MaterialMatrixContainer in build_cylinder_xml. case() here is
+        used by the legacy single-Case path and by classical-σ reporting,
+        which assumes E/ν are uniform — true today since the GUI only
+        edits materials[0] and all sections point at it."""
         cyl = self.cylinder()
-        sec = self.section_for_region("shell_full")
-        mat = self.material_by_id(sec["material_ref"])
+        sec = None
+        for region in ("shell_full",):
+            try:
+                sec = self.section_for_region(region)
+                break
+            except KeyError:
+                continue
+        if sec is None and self.assignments:
+            # Fall back to first assignment (stepped case: band_0).
+            first = self.assignments[0]
+            sec = self.section_by_id(first["section_ref"])
+        if sec is None:
+            # No assignments at all → just use materials[0] directly.
+            if not self.materials:
+                raise ValueError("ModelConfig has no materials defined")
+            mat = self.materials[0]
+        else:
+            mat = self.material_by_id(sec["material_ref"])
         if mat.get("model", "linear") != "linear":
             sys.stderr.write(
                 f"[aeris_model] WARN: material.model={mat.get('model')!r} not 'linear';"
@@ -374,7 +471,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.dump_xml:
         # Local import — cylinder_lba.py imports us back, avoid the cycle at top.
         from cylinder_lba import build_cylinder_xml
-        xml = build_cylinder_xml(model.case())
+        xml = build_cylinder_xml(model)
         args.dump_xml.write_text(xml)
         print(f"wrote XML → {args.dump_xml}  ({len(xml):,} bytes)")
 

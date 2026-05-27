@@ -60,8 +60,8 @@ def classical_N_cr(c: Case) -> float:
 # XML construction — 4-patch closed cylinder, mirrors filedata/pde/cylinder_4p.xml
 # ---------------------------------------------------------------------------
 
-def _quarter_coefs(R: float, L: float, quadrant: int) -> str:
-    """Control points for one 90-deg quarter NURBS, 3x3 grid, geoDim=3.
+def _quarter_coefs(R: float, z_lo: float, z_hi: float, quadrant: int) -> str:
+    """Control points for one 90-deg quarter NURBS spanning z ∈ [z_lo, z_hi].
 
     quadrant 0: theta in [0,    pi/2)
     quadrant 1: theta in [pi/2, pi)
@@ -71,22 +71,26 @@ def _quarter_coefs(R: float, L: float, quadrant: int) -> str:
     Corner control points: P0 = (R cos a, R sin a), P2 = (R cos b, R sin b).
     Middle CP is the intersection of the two tangent lines at P0 and P2,
     which for a 90-deg arc is at the corner of the local bounding box.
+
+    For homogeneous cylinders, (z_lo, z_hi) = (0, L); for stepped cylinders
+    one band per axial slice.
     """
     cs = [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)]
     a = cs[quadrant]
     b = cs[(quadrant + 1) % 4]
     p0 = (R * a[0], R * a[1])
     p2 = (R * b[0], R * b[1])
-    # Middle CP for 90-deg quarter at canonical positions:
     p1 = (p0[0] + p2[0], p0[1] + p2[1])
+    z_mid = 0.5 * (z_lo + z_hi)
     rows = []
-    for z in (0.0, 0.5 * L, L):
+    for z in (z_lo, z_mid, z_hi):
         for (x, y) in (p0, p1, p2):
             rows.append(f"    {x} {y} {z}")
     return "\n".join(rows)
 
 
-def _quarter_geometry(patch_id: int, R: float, L: float, quadrant: int) -> str:
+def _quarter_geometry(patch_id: int, R: float, z_lo: float, z_hi: float,
+                      quadrant: int) -> str:
     return f"""<Geometry type="TensorNurbs2" id="{patch_id}">
   <Basis type="TensorNurbsBasis2">
    <Basis type="TensorBSplineBasis2">
@@ -109,52 +113,17 @@ def _quarter_geometry(patch_id: int, R: float, L: float, quadrant: int) -> str:
 </weights>
   </Basis>
   <coefs geoDim="3">
-{_quarter_coefs(R, L, quadrant)}
+{_quarter_coefs(R, z_lo, z_hi, quadrant)}
 </coefs>
 </Geometry>"""
 
 
-def build_cylinder_xml(case: Case) -> str:
-    """Emit a complete bvp XML for buckling_shell_multipatch_XML.
-
-    BCs:
-      - Bottom edge (boundary index 3 = v=0 = z=0 in our parameterisation):
-        fully clamped (Dirichlet, all 3 components = 0).
-      - Top edge (boundary index 4 = v=1 = z=L): laterally locked (x=0, y=0)
-        with prescribed AXIAL SHORTENING (z = -1).
-        This drives a uniform compressive axial membrane state; the LBA
-        eigenvalue lambda_1 is the load factor on this -1 z displacement.
-
-    Material: gsMaterialMatrixLinear<3> (Saint-Venant Kirchhoff for 3D
-    ambient shells), Young's modulus = E, Poisson = nu, thickness = t.
-    """
-    patches = "\n\n".join(
-        _quarter_geometry(9991 + q, case.R, case.L, q) for q in range(4)
-    )
-
-    # MultiPatch with interfaces stitching the four 90-deg patches around
-    # the cylinder. Boundaries 3 & 4 of each patch are the top/bottom edges.
-    multipatch = """<MultiPatch parDim="2" id="0">
-<patches type="id_range">9991 9994</patches>
-  <interfaces>0 1 3 2 0 1 0 1
-0 2 1 1 0 1 0 1
-1 2 2 1 0 1 0 1
-2 2 3 1 0 1 0 1
-</interfaces>
-  <boundary>0 3
-0 4
-1 3
-1 4
-2 3
-2 4
-3 3
-3 4
-</boundary>
-</MultiPatch>"""
-
-    material = f"""<MaterialMatrix type="Linear3" id="10" TFT="false">
+def _material_xml(case: Case, mat_id: int, thickness: float,
+                  extra_attrs: str = "") -> str:
+    """Single <MaterialMatrix type="Linear3"> block, parameterised by t."""
+    return f"""<MaterialMatrix type="Linear3" id="{mat_id}"{extra_attrs} TFT="false">
   <Thickness>
-    <Function type="FunctionExpr" dim="3" index="0">{case.t}</Function>
+    <Function type="FunctionExpr" dim="3" index="0">{thickness}</Function>
   </Thickness>
   <Density>
     <Function type="FunctionExpr" dim="3" index="0">1</Function>
@@ -164,6 +133,125 @@ def build_cylinder_xml(case: Case) -> str:
     <Function type="FunctionExpr" dim="3" index="1">{case.nu}</Function>
   </Parameters>
 </MaterialMatrix>"""
+
+
+def build_cylinder_xml(model) -> str:
+    """Emit a complete bvp XML for buckling_shell_multipatch_XML.
+
+    Geometry is built as `n_bands` axial bands × 4 circumferential quarters
+    = 4·n_bands patches. `n_bands = len(model.geometry.cylinder.partitions) + 1`.
+    For a homogeneous cylinder (no partitions) this is exactly 4 patches —
+    bit-identical to the Session-2.7 validated XML.
+
+    BCs:
+      - Bottom band (band 0), all 4 quarters, boundary side 3 (v=0 = z=0):
+        full Dirichlet clamp + KL `Clamped` (zero normal rotation).
+      - Top band (band n_bands-1), all 4 quarters, boundary side 4 (v=1 = z=L):
+        Neumann line force (0, 0, +t·E)  — E-scaling avoids the K_NL-K_L
+        catastrophic cancellation at large E (see comment below).
+      - All intermediate band boundaries (side 4 of band i, side 3 of band
+        i+1) are INTERNAL interfaces, not boundary edges.
+
+    Material:
+      - Single band → one `<MaterialMatrix id="10">` (legacy path, exactly
+        what Session 2.7 validated).
+      - N+1 bands → one `<MaterialMatrixContainer id="11">` carrying one
+        inline `<MaterialMatrix>` per unique thickness, plus `<group>` rows
+        mapping (band_quarters) → material index.
+
+    Saint-Venant Kirchhoff linear isotropic everywhere (only `model:"linear"`
+    is wired; nonlinear families come later).
+    """
+    case = model.case()
+    bands = model.band_z_ranges()                # [(z_lo, z_hi), ...]
+    n_bands = len(bands)
+    n_patches = 4 * n_bands
+
+    # --- patch geometry: id 9991 + patch_index, ordered band-major --------
+    # patch_index(band b, quadrant q) = 4*b + q
+    # → patches 0..3 = band 0, patches 4..7 = band 1, etc.
+    patches = "\n\n".join(
+        _quarter_geometry(9991 + 4 * b + q, case.R, z_lo, z_hi, q)
+        for b, (z_lo, z_hi) in enumerate(bands)
+        for q in range(4)
+    )
+
+    # --- interfaces -------------------------------------------------------
+    # (a) theta seams within each band: 4 per band (u-direction = circumference).
+    #     The single-band layout `0 1 3 2 / 0 2 1 1 / 1 2 2 1 / 2 2 3 1` is
+    #     reused, just offset by 4*b for each band.
+    # (b) z seams between adjacent bands: 4 per partition (v-direction).
+    #     For each quarter q ∈ {0..3}, stitch (band b, side 4) ↔ (band b+1, side 3).
+    iface_lines = []
+    for b in range(n_bands):
+        off = 4 * b
+        iface_lines.append(f"{off+0} 1 {off+3} 2 0 1 0 1")
+        iface_lines.append(f"{off+0} 2 {off+1} 1 0 1 0 1")
+        iface_lines.append(f"{off+1} 2 {off+2} 1 0 1 0 1")
+        iface_lines.append(f"{off+2} 2 {off+3} 1 0 1 0 1")
+    for b in range(n_bands - 1):
+        lo, hi = 4 * b, 4 * (b + 1)
+        for q in range(4):
+            iface_lines.append(f"{lo+q} 4 {hi+q} 3 0 1 0 1")
+    interfaces = "\n".join(iface_lines)
+
+    # --- boundaries: only outer top + outer bottom ------------------------
+    bnd_lines = []
+    for q in range(4):
+        bnd_lines.append(f"{q} 3")                                 # bottom band, side 3
+        bnd_lines.append(f"{4 * (n_bands - 1) + q} 4")              # top band, side 4
+    boundary = "\n".join(bnd_lines)
+
+    multipatch = (
+        f'<MultiPatch parDim="2" id="0">\n'
+        f'<patches type="id_range">9991 {9991 + n_patches - 1}</patches>\n'
+        f'  <interfaces>{interfaces}\n</interfaces>\n'
+        f'  <boundary>{boundary}\n</boundary>\n'
+        f'</MultiPatch>'
+    )
+
+    # --- material(s) ------------------------------------------------------
+    if n_bands == 1:
+        # Single-thickness legacy path → keep the exact MaterialMatrix id=10
+        # the validated Session-2.7 / 3.3 XML used. Bit-identical regression.
+        material = _material_xml(case, mat_id=10, thickness=case.t)
+    else:
+        # Stepped path → MaterialMatrixContainer id=11 with one MaterialMatrix
+        # per UNIQUE thickness, plus <group> rows mapping patches to material
+        # index. Buckling_shell_multipatch_XML reads id=11 if present (else
+        # falls back to id=10), so it preferentially uses our container.
+        band_t = [model.band_thickness(b) for b in range(n_bands)]
+        unique_t = []
+        for t in band_t:
+            if not any(abs(t - u) < 1e-12 for u in unique_t):
+                unique_t.append(t)
+        # Index map: which material index does each band point at?
+        band_to_mat = [
+            next(i for i, u in enumerate(unique_t) if abs(t - u) < 1e-12)
+            for t in band_t
+        ]
+        # Inventory of inline <MaterialMatrix index="i" ...> blocks
+        inventory = "\n".join(
+            _material_xml(case, mat_id=10 + i, thickness=t,
+                          extra_attrs=f' index="{i}"')
+            for i, t in enumerate(unique_t)
+        )
+        # Patch groups: for each material i, the 4 patches per band in band order
+        groups = []
+        for i in range(len(unique_t)):
+            patches_for_mat = [
+                4 * b + q for b in range(n_bands) if band_to_mat[b] == i
+                for q in range(4)
+            ]
+            groups.append(
+                f'  <group material="{i}">{" ".join(map(str, patches_for_mat))}</group>'
+            )
+        material = (
+            f'<MaterialMatrixContainer id="11" size="{n_patches}">\n'
+            f'{inventory}\n'
+            + "\n".join(groups) + "\n"
+            f'</MaterialMatrixContainer>'
+        )
 
     # BC strategy — modeled on gsStructuralAnalysis/benchmarks/benchmark_Cylinder.cpp
     # (Kiendl et al. 2015):
@@ -197,7 +285,15 @@ def build_cylinder_xml(case: Case) -> str:
     # At E=1 this is bit-identical to the old `T_z = t` convention (since
     # multiplying by 1 is a no-op), so the Session-2.7 validated default
     # case stays at -1.02 % at r=4.
-    neumann_Tz = case.t * case.E
+    # Neumann line force scales with band-local thickness × E. For a stepped
+    # cylinder the TOP band's thickness is what the load sees (it's applied
+    # on the top band's outer edge), so we use the top band's `t` here.
+    # For a homogeneous cylinder that's just `case.t` (= cylinder.t).
+    top_band_thickness = model.band_thickness(n_bands - 1)
+    neumann_Tz = top_band_thickness * case.E
+    bottom_patches = "\n    ".join(f"{q} 3" for q in range(4))
+    top_off = 4 * (n_bands - 1)
+    top_patches = "\n    ".join(f"{top_off + q} 4" for q in range(4))
     bcs = f"""<boundaryConditions id="20" multipatch="0">
   <Function type="FunctionExpr" dim="3" index="0">
   <c> 0 </c>
@@ -211,22 +307,13 @@ def build_cylinder_xml(case: Case) -> str:
   </Function>
 
   <bc type="Dirichlet" function="0" unknown="0" component="-1">
-    0 3
-    1 3
-    2 3
-    3 3
+    {bottom_patches}
   </bc>
   <bc type="Clamped" function="0" unknown="0" component="2">
-    0 3
-    1 3
-    2 3
-    3 3
+    {bottom_patches}
   </bc>
   <bc type="Neumann" function="1" unknown="0">
-    0 4
-    1 4
-    2 4
-    3 4
+    {top_patches}
   </bc>
 </boundaryConditions>"""
 
@@ -499,7 +586,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  recover physical stress as  sigma_cr_computed = |lambda_1| · E.")
     print()
 
-    xml_text = build_cylinder_xml(case)
+    xml_text = build_cylinder_xml(model)
     with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False,
                                      dir="/tmp") as f:
         f.write(xml_text)
