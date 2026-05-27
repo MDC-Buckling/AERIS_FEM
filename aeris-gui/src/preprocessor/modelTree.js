@@ -49,12 +49,22 @@ export const SECTIONS = [
     label: "Shell Construction",
     items: [
       {
+        id: "sectionAssignments",
+        label: "Section Assignments",
+        defaultPreview: "1 region · 1 section",
+        kind: "section-assignments",
+        // Wired Session 3.3. ABAQUS-style sections[] → assignments[] view.
+        // Trivial today (1 row) but structurally the one that holds many
+        // rows when stiffened-shell support adds skin / ring / stringer
+        // regions, each with their own material + thickness source.
+      },
+      {
         id: "thicknessMode",
         label: "Thickness Mode",
-        defaultPreview: "Plain (constant t)",
+        defaultPreview: "Plain (from geometry.t)",
         kind: "selector",
         options: [
-          { value: "plain", label: "Plain (constant t)", enabled: true },
+          { value: "plain", label: "Plain (constant t from geometry)", enabled: true },
           { value: "variable", label: "Variable / function of (θ, z)", enabled: false, note: "later" },
           { value: "composite", label: "Composite layup", enabled: false, note: "later" },
         ],
@@ -75,14 +85,9 @@ export const SECTIONS = [
       {
         id: "base",
         label: "Base Properties",
-        defaultPreview: "E=1.0  ν=0.3  σ_y=—",
-        kind: "fields",
-        fields: [
-          { name: "E", label: "Young's modulus", unit: "–" },
-          { name: "nu", label: "Poisson ratio", unit: "–" },
-          { name: "sigma_y", label: "Yield stress", unit: "–" },
-          { name: "rho", label: "Density (optional)", unit: "–" },
-        ],
+        defaultPreview: "Linear isotropic · E=1.0  ν=0.3",
+        kind: "material-base",
+        // Wired Session 3.3. Edits materials[0] in the v2 schema.
       },
       {
         id: "manufacturing",

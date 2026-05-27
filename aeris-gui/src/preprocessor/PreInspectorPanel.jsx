@@ -6,17 +6,26 @@ import { useUI } from "../store.js";
 import { findItem, SECTIONS } from "./modelTree.js";
 import GeometryShape from "./sections/GeometryShape.jsx";
 import GeometryDimensions from "./sections/GeometryDimensions.jsx";
+import MaterialBase from "./sections/MaterialBase.jsx";
+import SectionAssignments from "./sections/SectionAssignments.jsx";
 
 /** Sub-items that have a real, wired inspector this session.
  * Adding to this set drops the "STUB · NOT WIRED" badge for that item. */
-const WIRED_ITEMS = new Set(["geometry.shape", "geometry.dimensions"]);
+const WIRED_ITEMS = new Set([
+  "geometry.shape",
+  "geometry.dimensions",
+  "material.base",
+  "shellConstruction.sectionAssignments",
+]);
 
 /** Per-item real inspector dispatcher. Returns null if not wired (the
  * caller falls back to the generic StubBody renderer). */
 function WiredInspector({ dottedId }) {
   switch (dottedId) {
-    case "geometry.shape": return <GeometryShape />;
-    case "geometry.dimensions": return <GeometryDimensions />;
+    case "geometry.shape":                          return <GeometryShape />;
+    case "geometry.dimensions":                     return <GeometryDimensions />;
+    case "material.base":                           return <MaterialBase />;
+    case "shellConstruction.sectionAssignments":    return <SectionAssignments />;
     default: return null;
   }
 }
@@ -51,14 +60,19 @@ function StubBadge() {
 /** Live one-liner showing the CURRENT value of a wired item, falling back
  * to the static default preview. */
 function LivePreviewLine({ dottedId, fallback }) {
-  const cyl = useUI((s) => s.model.geometry.cylinder);
-  const shape = useUI((s) => s.model.geometry.shape);
+  const model = useUI((s) => s.model);
+  const cyl = model.geometry.cylinder;
 
   let text = fallback;
   if (dottedId === "geometry.dimensions") {
     text = `R=${cyl.R}  L=${cyl.L}  t=${cyl.t}  ·  R/t=${(cyl.R / cyl.t).toFixed(0)}`;
   } else if (dottedId === "geometry.shape") {
-    text = shape;
+    text = model.geometry.shape;
+  } else if (dottedId === "material.base") {
+    const m = model.materials[0];
+    text = m ? `${m.model} · E=${m.E}  ν=${m.nu}` : fallback;
+  } else if (dottedId === "shellConstruction.sectionAssignments") {
+    text = `${model.assignments.length} region · ${model.sections.length} section`;
   }
   return <>current value: {text}</>;
 }

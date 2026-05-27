@@ -43,17 +43,16 @@ export const useUI = create((set) => ({
     }),
 
   /** Pre-processor: per-section state — "default" | "configured" | "warning".
-   * Session 3.2 flips `geometry` to "configured" as soon as R/L/t are valid.
-   * Later sessions flip the rest as their sections get wired. */
+   * Sessions tick them to "configured" as their sections get wired. */
   sectionStatus: {
-    geometry: "configured",  // wired this session
-    shellConstruction: "default",
-    material: "default",
-    imperfections: "default",
-    mesh: "default",
-    bcsLoads: "default",
-    analysis: "default",
-    run: "default",
+    geometry:          "configured",  // 3.2
+    material:          "configured",  // 3.3
+    shellConstruction: "configured",  // 3.3  (trivial section assignment view)
+    imperfections:     "default",
+    mesh:              "default",
+    bcsLoads:          "default",
+    analysis:          "default",
+    run:               "default",
   },
   setSectionStatus: (sectionId, status) =>
     set((s) => ({
@@ -65,18 +64,41 @@ export const useUI = create((set) => ({
 
   /** ----------------------------------------------------------------------
    *  THE MODEL — in-memory mirror of scripts/aeris_model.py's ModelConfig
-   *  schema. Session 3.2 wires GEOMETRY (Cylinder R/L/t); other sections
-   *  carry the validated Session-2.7 defaults as read-only state until
-   *  their sessions land. Serialised to model.json on Solve.
+   *  schema v2. Session 3.3 introduces the ABAQUS-style materials[] /
+   *  sections[] / assignments[] split, replacing the v1 top-level
+   *  `material: {...}`. Trivial today (one shell, one material, one
+   *  assignment) but extensible for stiffeners / variable thickness.
+   *  Serialised to model.json on EXPORT MODEL / Solve.
    *  --------------------------------------------------------------------*/
   model: {
-    schemaVersion: 1,
+    schemaVersion: 2,
     name: "Cylinder LBA",
     geometry: {
       shape: "cylinder",
       cylinder: { R: 1.0, L: 1.0, t: 0.01 },
     },
-    material: { model: "linear", E: 1.0, nu: 0.3 },
+    materials: [
+      {
+        id: "mat-default",
+        name: "Linear isotropic (default)",
+        model: "linear",
+        E: 1.0,
+        nu: 0.3,
+      },
+    ],
+    sections: [
+      {
+        id: "sec-shell-1",
+        name: "Shell — full cylinder",
+        kind: "shell",
+        material_ref: "mat-default",
+        thickness_source: { kind: "geometry" },
+        offset: "midsurface",
+      },
+    ],
+    assignments: [
+      { region: "shell_full", section_ref: "sec-shell-1" },
+    ],
     mesh: {
       refinement: 5, degree: 3, smoothness: 2,
       coupling: "gsSmoothInterfaces",
@@ -107,7 +129,7 @@ export const useUI = create((set) => ({
       };
     }),
 
-  /** Set the shape family. Only "cylinder" is wired this session. */
+  /** Set the shape family. Only "cylinder" is wired. */
   setShape: (shape) =>
     set((s) => ({
       model: {
@@ -115,6 +137,19 @@ export const useUI = create((set) => ({
         geometry: { ...s.model.geometry, shape },
       },
     })),
+
+  /** Patch a single field on a material by id. Silently rejects non-finite
+   * numbers; positivity for E, [0, 0.5) for nu enforced by the inspector. */
+  setMaterialField: (matId, key, value) =>
+    set((s) => {
+      const materials = s.model.materials.map((m) => {
+        if (m.id !== matId) return m;
+        let v = value;
+        if (typeof v === "number" && !Number.isFinite(v)) return m;
+        return { ...m, [key]: v };
+      });
+      return { model: { ...s.model, materials } };
+    }),
 
   /** Serialise the current model state into the on-disk model.json schema
    * (mirrors scripts/aeris_model.py::ModelConfig.to_dict). JSON.stringify

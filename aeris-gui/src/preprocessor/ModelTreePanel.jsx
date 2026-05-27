@@ -95,8 +95,7 @@ function SectionHeader({ section, expanded, status, sectionIndex, onToggle }) {
 }
 
 /** For wired items, build the small preview line from live store state.
- * Mirrors LivePreviewLine in PreInspectorPanel.jsx (kept tiny — only fields
- * that actually drive the run get a live line here; others stay static). */
+ * Mirrors LivePreviewLine in PreInspectorPanel.jsx. */
 function previewFor(dottedId, model) {
   if (dottedId === "geometry.dimensions") {
     const c = model.geometry.cylinder;
@@ -104,6 +103,13 @@ function previewFor(dottedId, model) {
   }
   if (dottedId === "geometry.shape") {
     return model.geometry.shape;
+  }
+  if (dottedId === "material.base") {
+    const m = model.materials?.[0];
+    return m ? `${m.model} · E=${m.E}  ν=${m.nu}` : null;
+  }
+  if (dottedId === "shellConstruction.sectionAssignments") {
+    return `${model.assignments?.length ?? 0} region · ${model.sections?.length ?? 0} section`;
   }
   return null;
 }
