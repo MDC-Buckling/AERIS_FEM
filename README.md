@@ -20,6 +20,9 @@ aeris/
                             formula; mesh-convergence study; ParaView export
     render_modes.py         Reads output/*.pvd, writes per-mode PNGs to
                             output/renders/ (3 fixed cameras × 7 datasets)
+  aeris-gui/                Desktop GUI (Tauri 2 + React + three.js) — the
+                            interactive post-processor. Reads output/ via dev
+                            server middleware. See aeris-gui/README.md.
   output/                   (gitignored) .pvd / .vts dropped by cylinder_lba.py
                             and renders/*.png dropped by render_modes.py
   .dockerignore  .gitignore  README.md
@@ -241,6 +244,24 @@ modes (visible as exploded localised "spikes" in mode-2 / mode-4 renders).
 The current numbers are physically correct; the old numbers were a happy
 accident in which the seam stiffening canceled some finite-length softening.
 
+## Launching the GUI (Aeris desktop front-end)
+
+`aeris-gui/` is a Tauri 2 + React + three.js post-processor styled to match
+**MDC Codex**. Reads the same `output/` PVD/VTS files this README's earlier
+sections drop, and renders the cylinder + buckling modes in an interactive
+3D viewport.
+
+```powershell
+cd aeris-gui
+npm install              # first time only
+npm run dev              # browser dev, http://localhost:5174
+# — or —
+npm run tauri:dev        # native desktop window (first launch compiles Rust, 3–8 min)
+```
+
+Both load the same UI. See [aeris-gui/README.md](aeris-gui/README.md) for
+the architecture + what's wired today.
+
 ## Pinned versions
 
 | Component                | Pin                                                |
@@ -292,6 +313,14 @@ SHA file printed "bundled-with-v25.07.0" for everything).
   cameras) so you can judge mode shapes without opening ParaView. Renders
   use PyVista + Xvfb in a slim Python image; warp + colour are tuned to
   show both bulk buckling patterns and patch-corner artefacts honestly.
+- **Aeris GUI** (`aeris-gui/`, Session 3.0) — Tauri 2 desktop front-end in
+  the MDC Codex visual language. Shell + interactive three.js viewport
+  reads the multi-patch `.pvd` / `.vts` files directly, rotates with
+  OrbitControls, deforms live via a warp-scale slider, colours by `|u|`
+  with a cyan-tinted ramp + legend, snaps to oblique/side/end-on views.
+  Launch with `cd aeris-gui && npm install && npm run dev` (browser at
+  http://localhost:5174) or `npm run tauri:dev` (native window). No solver
+  wiring yet — pre-processor + Solve-button is next session.
 
 ### Known gaps — next-session candidates (ordered)
 
