@@ -345,6 +345,60 @@ export const useUI = create((set) => ({
     return res.json();
   },
 
+  /** Last-run record. Single-slot for now (Session 3.9 = blocking, one
+   * run at a time); a future job-queue session will turn this into a
+   * list. status transitions: idle → running → success | failed. */
+  lastRun: { status: "idle" },
+  setLastRun: (next) => set({ lastRun: next }),
+
+  /** End-to-end Solve: serialise the model, POST to /save-model so the
+   * server writes model.json to ../output/, then POST to /run-solver
+   * which spawns the docker container. Blocking — awaits the full
+   * docker run before returning. Sets lastRun through its state
+   * machine so the UI can spin a "running" indicator. Never throws:
+   * caller doesn't need a try/catch, errors surface via lastRun.status
+   * = "failed" with the message in .error.
+   *
+   * Picks the refinement from model.mesh.refinement so the single Solve
+   * matches what the inspector is showing — the script's default
+   * --refines [3,4,5] sweep is for benchmarking convergence, not a
+   * one-click Solve. */
+  runSolver: async () => {
+    const state = useUI.getState();
+    state.setLastRun({ status: "running", startedAt: Date.now() });
+    try {
+      const saveRes = await fetch("/save-model", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(state.serializeModel()),
+      });
+      const saveData = await saveRes.json();
+      if (!saveData.ok) throw new Error(`save failed: ${saveData.error}`);
+
+      const runRes = await fetch("/run-solver", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refinement: state.model.mesh.refinement }),
+      });
+      const runData = await runRes.json();
+
+      state.setLastRun({
+        status: runData.ok ? "success" : "failed",
+        ...runData,
+        finishedAt: Date.now(),
+      });
+      return runData;
+    } catch (err) {
+      const errorMsg = err?.message ?? String(err);
+      state.setLastRun({
+        status: "failed",
+        error: errorMsg,
+        finishedAt: Date.now(),
+      });
+      return { ok: false, error: errorMsg };
+    }
+  },
+
   /** Which result is currently loaded into the viewport. */
   selectedResultId: "mode1",
   selectResult: (id) => set({ selectedResultId: id }),

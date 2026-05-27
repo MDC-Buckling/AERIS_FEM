@@ -13,6 +13,7 @@ import BcsKind from "./sections/BcsKind.jsx";
 import LoadCase from "./sections/LoadCase.jsx";
 import AnalysisType from "./sections/AnalysisType.jsx";
 import SolverSettings from "./sections/SolverSettings.jsx";
+import RunSolve from "./sections/RunSolve.jsx";
 
 /** Sub-items that have a real, wired inspector this session.
  * Adding to this set drops the "STUB · NOT WIRED" badge for that item. */
@@ -26,6 +27,7 @@ const WIRED_ITEMS = new Set([
   "bcsLoads.load",
   "analysis.type",
   "analysis.solver",
+  "run.solve",
 ]);
 
 /** Per-item real inspector dispatcher. Returns null if not wired (the
@@ -41,6 +43,7 @@ function WiredInspector({ dottedId }) {
     case "bcsLoads.load":                           return <LoadCase />;
     case "analysis.type":                           return <AnalysisType />;
     case "analysis.solver":                         return <SolverSettings />;
+    case "run.solve":                               return <RunSolve />;
     default: return null;
   }
 }
@@ -76,6 +79,7 @@ function StubBadge() {
  * to the static default preview. */
 function LivePreviewLine({ dottedId, fallback }) {
   const model = useUI((s) => s.model);
+  const lastRun = useUI((s) => s.lastRun);
   const cyl = model.geometry.cylinder;
 
   let text = fallback;
@@ -101,6 +105,11 @@ function LivePreviewLine({ dottedId, fallback }) {
     const a = model.analysis;
     const shiftLbl = a.shift === "auto" ? "auto" : Number(a.shift).toExponential(2);
     text = `${a.solver}  ·  N=${a.nmodes}  ·  σ=${shiftLbl}`;
+  } else if (dottedId === "run.solve") {
+    if (lastRun.status === "idle") text = "ready — click SOLVE";
+    else if (lastRun.status === "running") text = "running…";
+    else if (lastRun.status === "success") text = `last run: success (${(lastRun.durationMs / 1000).toFixed(1)} s)`;
+    else if (lastRun.status === "failed") text = `last run: failed`;
   }
   return <>current value: {text}</>;
 }

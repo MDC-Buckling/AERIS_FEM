@@ -2,9 +2,15 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import fs from "node:fs";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Container image + executable conventions — keep in sync with
+// scripts/cylinder_lba.py and the deploy README.
+const SOLVER_IMAGE = "aeris/gismo:v25.07.0";
+const SOLVE_TIMEOUT_MS = 5 * 60 * 1000;   // 5 min hard cap per run
 
 // Serve ../output/ (the cylinder_lba.py output folder) under /data/ so the
 // browser can fetch the multipatch .pvd / .vts files via plain fetch().
@@ -62,6 +68,107 @@ function aerisOutputServer() {
             res.setHeader("Content-Type", "application/json");
             res.end(JSON.stringify({ ok: false, error: String(e) }));
           }
+        });
+      });
+
+      // POST /run-solver — spawn the docker container, run cylinder_lba.py
+      // against the model.json that /save-model just wrote to ../output/,
+      // wait for completion, return stdout/stderr/exit/duration as JSON.
+      //
+      // Session 3.9: blocking response, no streaming, no job queue. The
+      // GUI's Solve button awaits this directly and shows a spinner while
+      // the docker container runs. A 5-min hard timeout kills runaway
+      // solves; the Verdict block lives near the end of stdout, so the
+      // GUI can render the last N lines as a "results" preview without
+      // any extra parsing — sidecar manifest comes in Session 4.0.
+      server.middlewares.use("/run-solver", (req, res) => {
+        if (req.method !== "POST") {
+          res.statusCode = 405;
+          res.end("POST only");
+          return;
+        }
+        const chunks = [];
+        req.on("data", (c) => chunks.push(c));
+        req.on("end", () => {
+          let opts = {};
+          try {
+            opts = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+          } catch {
+            res.statusCode = 400;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ ok: false, error: "bad JSON body" }));
+            return;
+          }
+
+          const scriptsDir = path.resolve(__dirname, "..", "scripts");
+          const outputDir  = path.resolve(__dirname, "..", "output");
+          const modelPath  = path.join(outputDir, "model.json");
+          if (!fs.existsSync(modelPath)) {
+            res.statusCode = 400;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({
+              ok: false,
+              error: `model.json not found at ${modelPath}; call /save-model first`,
+            }));
+            return;
+          }
+
+          // Build the docker argv. Mount the output dir as /work so the
+          // script reads model.json AND writes its plot output through
+          // the same path — keeps it tidy on the host.
+          const refinement = Number.isFinite(opts.refinement) ? opts.refinement : 5;
+          const args = [
+            "run", "--rm",
+            "-v", `${scriptsDir}:/scripts:ro`,
+            "-v", `${outputDir}:/work:rw`,
+            SOLVER_IMAGE,
+            "python3", "/scripts/cylinder_lba.py",
+            "--model", "/work/model.json",
+            "--refines", String(refinement),
+            "--plot-dir", "/work",
+          ];
+
+          const started = Date.now();
+          let killedByTimeout = false;
+          const child = spawn("docker", args, { windowsHide: true });
+          const stdoutChunks = [];
+          const stderrChunks = [];
+          child.stdout.on("data", (c) => stdoutChunks.push(c));
+          child.stderr.on("data", (c) => stderrChunks.push(c));
+
+          const timer = setTimeout(() => {
+            killedByTimeout = true;
+            try { child.kill("SIGKILL"); } catch {}
+          }, SOLVE_TIMEOUT_MS);
+
+          child.on("error", (err) => {
+            clearTimeout(timer);
+            res.statusCode = 500;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({
+              ok: false,
+              error: `failed to spawn docker: ${err.message}`,
+              hint: "is Docker Desktop running, and is the aeris/gismo image built?",
+            }));
+          });
+
+          child.on("close", (code, signal) => {
+            clearTimeout(timer);
+            const durationMs = Date.now() - started;
+            const stdout = Buffer.concat(stdoutChunks).toString("utf8");
+            const stderr = Buffer.concat(stderrChunks).toString("utf8");
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({
+              ok: code === 0,
+              exitCode: code,
+              signal,
+              killedByTimeout,
+              durationMs,
+              stdout,
+              stderr,
+              command: ["docker", ...args].join(" "),
+            }));
+          });
         });
       });
 
