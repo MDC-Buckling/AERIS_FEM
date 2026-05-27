@@ -11,6 +11,8 @@ import SectionAssignments from "./sections/SectionAssignments.jsx";
 import MeshDiscretisation from "./sections/MeshDiscretisation.jsx";
 import BcsKind from "./sections/BcsKind.jsx";
 import LoadCase from "./sections/LoadCase.jsx";
+import AnalysisType from "./sections/AnalysisType.jsx";
+import SolverSettings from "./sections/SolverSettings.jsx";
 
 /** Sub-items that have a real, wired inspector this session.
  * Adding to this set drops the "STUB · NOT WIRED" badge for that item. */
@@ -22,6 +24,8 @@ const WIRED_ITEMS = new Set([
   "mesh.discretisation",
   "bcsLoads.bcs",
   "bcsLoads.load",
+  "analysis.type",
+  "analysis.solver",
 ]);
 
 /** Per-item real inspector dispatcher. Returns null if not wired (the
@@ -35,6 +39,8 @@ function WiredInspector({ dottedId }) {
     case "mesh.discretisation":                     return <MeshDiscretisation />;
     case "bcsLoads.bcs":                            return <BcsKind />;
     case "bcsLoads.load":                           return <LoadCase />;
+    case "analysis.type":                           return <AnalysisType />;
+    case "analysis.solver":                         return <SolverSettings />;
     default: return null;
   }
 }
@@ -89,6 +95,12 @@ function LivePreviewLine({ dottedId, fallback }) {
     text = model.bcs.kind;
   } else if (dottedId === "bcsLoads.load") {
     text = model.load.kind;
+  } else if (dottedId === "analysis.type") {
+    text = model.analysis.kind.toUpperCase();
+  } else if (dottedId === "analysis.solver") {
+    const a = model.analysis;
+    const shiftLbl = a.shift === "auto" ? "auto" : Number(a.shift).toExponential(2);
+    text = `${a.solver}  ·  N=${a.nmodes}  ·  σ=${shiftLbl}`;
   }
   return <>current value: {text}</>;
 }

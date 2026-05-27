@@ -388,37 +388,54 @@ def build_cylinder_xml(model) -> str:
 <Matrix rows="1" cols="1" id="51" >0</Matrix>
 <Matrix rows="0" cols="0" id="52" ></Matrix>"""
 
-    # Buckling solver options — solver=3 selects Spectra's Buckling mode
-    # (designed for K x = lambda K_g x with K positive-definite).
-    # Spectra GEigsMode::Buckling (3) is the right tool for K_L v = lambda K_geom v
-    # with K_L SPD and K_geom indefinite/negative-definite (compressive prestress).
-    # It DEMANDS a non-zero shift; eigenvalues nearest the shift come back first.
-    # Picking a shift smaller than the expected eigenvalue magnitude (~6e-3 for our
-    # case) keeps us hunting near the smallest physical mode.
-    # NOTE on XML tags: the gsOptionList XML reader uses tag names {int, real, bool,
-    # everything-else-falls-through-to-string} — see gsOptionListXml.cpp:40 — so a
-    # switch option must be written as <bool>, NOT <switch>.
-    # Shift set near the expected eigenvalue magnitude. Spectra GEigsMode::Buckling
-    # finds eigenvalues nearest the shift, so picking shift ~ classical_sigma_cr
-    # tightens the search around the physically interesting band.
-    # Eigenvalues are NORMALISED (the Neumann load was scaled by E above), so
-    # they live in dimensionless O(1) territory regardless of E. Shift to
-    # the normalised classical estimate: classical_sigma_cr / E.
-    expected_normalised = classical_sigma_cr(case) / max(case.E, 1e-30)
-    shift_val = max(expected_normalised, 1e-9)
+    # Buckling solver options — pulled from model.analysis, with sensible
+    # auto-resolution of `shift` (→ classical_sigma_cr / E so we hunt the
+    # smallest physical mode). The schema-level solver name maps onto
+    # Spectra's GEigsMode integer:
+    #   spectra-buckling      → 3  K_L SPD + K_geom indefinite (our default)
+    #   spectra-shift-invert  → 2  generic shift-invert
+    #   spectra-cayley        → 4  Cayley-transform shift-invert
+    # All three demand a non-zero shift; eigenvalues nearest the shift come
+    # back first, so the auto-shift picks the normalised classical estimate.
+    #
+    # NOTE on XML tags: the gsOptionList XML reader uses tag names {int,
+    # real, bool, everything-else-falls-through-to-string} — see
+    # gsOptionListXml.cpp:40 — so a switch option must be written as <bool>.
+    analysis = model.analysis
+    solver_name = str(analysis.get("solver", "spectra-buckling"))
+    if solver_name not in SPECTRA_MODE_MAP:
+        raise SystemExit(
+            f"unknown analysis.solver '{solver_name}'; expected one of "
+            f"{list(SPECTRA_MODE_MAP)}"
+        )
+    spectra_mode = SPECTRA_MODE_MAP[solver_name]
+    shift_setting = analysis.get("shift", "auto")
+    if shift_setting == "auto":
+        expected_normalised = classical_sigma_cr(case) / max(case.E, 1e-30)
+        shift_val = max(expected_normalised, 1e-9)
+    else:
+        shift_val = float(shift_setting)
+    tolerance = float(analysis.get("tolerance", 1e-8))
+    ncv_factor = int(analysis.get("ncv_factor", 3))
+    if ncv_factor < 2:
+        raise SystemExit(
+            f"analysis.ncv_factor ({ncv_factor}) must be ≥ 2 — Spectra requires "
+            "ncv > nev (subspace bigger than the number of wanted eigenvalues)."
+        )
+    ifc_penalty = float(analysis.get("interface_penalty", 1e6))
     bucking_opts = f"""<OptionList id="94">
-<int label="solver" desc="Spectra eigen mode (3 = Buckling)" value="3"/>
+<int label="solver" desc="Spectra eigen mode ({spectra_mode} = {solver_name})" value="{spectra_mode}"/>
 <int label="selectionRule" desc="Spectra::SortRule (0 = LargestMagn — recommended with shift-invert)" value="0"/>
 <int label="sortRule" desc="Spectra::SortRule for output (4 = SmallestMagn)" value="4"/>
 <real label="shift" desc="Spectral shift near classical sigma_cr" value="{shift_val}"/>
-<int label="ncvFac" desc="ncv multiplier" value="3"/>
-<real label="tolerance" desc="Solver tolerance" value="1e-8"/>
+<int label="ncvFac" desc="ncv multiplier" value="{ncv_factor}"/>
+<real label="tolerance" desc="Solver tolerance" value="{tolerance}"/>
 <bool label="verbose" desc="Verbosity" value="0"/>
 </OptionList>
 
 <OptionList id="92">
 <int label="Continuity" desc="Interface continuity" value="0"/>
-<real label="IfcPenalty" desc="Penalty for weak C0/C1 coupling at multipatch interfaces" value="1e6"/>
+<real label="IfcPenalty" desc="Penalty for weak C0/C1 coupling at multipatch interfaces" value="{ifc_penalty}"/>
 </OptionList>"""
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -473,6 +490,17 @@ COUPLING_METHOD = {
     "gsAlmostC1":           1,
     "gsDPatch":             2,
     "gsApproxC1Spline":     3,
+}
+
+# Maps the schema-level `analysis.solver` name onto the Spectra GEigsMode
+# integer the buckling driver puts into <OptionList id="94" label="solver">.
+# Modes 0 (Cholesky) and 1 (RegularInverse) need K_geom SPD which is not
+# our case — we don't expose them. Modes 2/3/4 all support indefinite
+# K_geom with a non-zero shift.
+SPECTRA_MODE_MAP = {
+    "spectra-shift-invert": 2,   # generic shift-invert
+    "spectra-buckling":     3,   # K_L SPD + K_geom indefinite — our default
+    "spectra-cayley":       4,   # Cayley-transform shift-invert
 }
 
 # Solver prints eigenvalues like:
@@ -599,7 +627,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="Mesh refinement levels (-r) to sweep")
     p.add_argument("--elevate", type=int, default=0,
                    help="Degree elevation (-e), same for all runs")
-    p.add_argument("--nmodes", type=int, default=5)
+    p.add_argument("--nmodes", type=int, default=None,
+                   help="Override model.analysis.nmodes (default = pull from model "
+                        "or 5 if not set)")
     # Mesh-block overrides — pulled from model.mesh by default, CLI wins
     # if given. None sentinel preserves "use whatever the model says" so a
     # missing flag never silently downgrades the model's value to a CLI
@@ -666,6 +696,16 @@ def main(argv: list[str] | None = None) -> int:
             "capped at one less than the polynomial degree."
         )
 
+    # Analysis-block resolution: model.json → CLI override → fallback. The
+    # XML solver opts (shift / tolerance / ncv / interface_penalty) are
+    # resolved INSIDE build_cylinder_xml from the same model.analysis dict;
+    # only nmodes is needed up here because it's passed to run_buckling.
+    nmodes = (
+        args.nmodes if args.nmodes is not None
+        else int(model.analysis.get("nmodes", 5))
+    )
+    solver_name = str(model.analysis.get("solver", "spectra-buckling"))
+
     load_kind = model.load.get("kind", "axial")
 
     print("=" * 70)
@@ -676,6 +716,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Mesh     : degree={degree}, smoothness={smoothness}, "
           f"coupling={coupling_name} (-m {method})")
     print(f"Load     : {load_kind}")
+    print(f"Analysis : {model.analysis.get('kind', 'lba')} · "
+          f"solver={solver_name} · nmodes={nmodes}")
     print(f"Slenderness  R/t = {case.R / case.t:.0f}")
     print(f"Aspect ratio L/R = {case.L / case.R:.2f}")
     print()
@@ -717,7 +759,7 @@ def main(argv: list[str] | None = None) -> int:
 
     table: list[tuple[int, float, float, float]] = []
     for r in args.refines:
-        eigs = run_buckling(xml_path, r=r, e=args.elevate, nmodes=args.nmodes,
+        eigs = run_buckling(xml_path, r=r, e=args.elevate, nmodes=nmodes,
                             method=method, degree=degree, smoothness=smoothness)
         lam1 = first_physical_positive(eigs)
         if lam1 is None:
@@ -761,7 +803,7 @@ def main(argv: list[str] | None = None) -> int:
                 xml_path,
                 r=r_finest,
                 e=args.elevate,
-                nmodes=max(args.nmodes, args.plot_modes),
+                nmodes=max(nmodes, args.plot_modes),
                 method=method, degree=degree, smoothness=smoothness,
                 plot_dir=plot_dir,
             )

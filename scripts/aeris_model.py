@@ -181,9 +181,32 @@ def _migrate_load(raw: Dict[str, Any]) -> Dict[str, Any]:
 DEFAULT_ANALYSIS: Dict[str, Any] = {
     "kind": "lba",
     "nmodes": 5,
-    "solver": "spectra-buckling",       # gsBucklingSolver, Spectra GEigsMode::Buckling
-    "shift": "auto",                    # → resolves to classical σ_cr estimate
-    "interface_penalty": 1e6,           # gsThinShellAssembler IfcPenalty
+    # Spectra GEigsMode — one of:
+    #   "spectra-buckling"     → mode 3, K_L SPD + K_geom indefinite (our default)
+    #   "spectra-shift-invert" → mode 2, generic shift-invert
+    #   "spectra-cayley"       → mode 4, Cayley-transform shift-invert
+    # The schema string is the canonical name; cylinder_lba.py maps to the
+    # Spectra integer via SPECTRA_MODE_MAP. Modes 0/1 (Cholesky / Regular-
+    # Inverse) are *not* exposed — they require K_g SPD which is not our case.
+    "solver": "spectra-buckling",
+    # Spectral shift target. "auto" resolves to classical_sigma_cr / E (the
+    # E-scaling makes eigenvalues O(1)). Override with an explicit number
+    # when chasing a specific mode cluster — Spectra finds eigenvalues
+    # nearest the shift first.
+    "shift": "auto",
+    # Convergence tolerance for the Arnoldi iteration. 1e-8 is well-conditioned
+    # for our problems; 1e-6 trades 10–20 % runtime for a quicker first pass,
+    # 1e-10 is paranoia territory.
+    "tolerance": 1e-8,
+    # Krylov subspace size multiplier (ncv = ncv_factor · nmodes). Spectra
+    # recommends ≥ 2 nmodes + 1; 3× is generous, helps convergence on tough
+    # cases at modest extra cost.
+    "ncv_factor": 3,
+    # gsThinShellAssembler interface penalty for weak C0/C1 coupling. The
+    # smooth-basis path (gsSmoothInterfaces) uses this only as a fallback;
+    # 1e6 is the validated default. Bumping helps when bands or partitions
+    # introduce ill-conditioned interfaces.
+    "interface_penalty": 1e6,
 }
 
 

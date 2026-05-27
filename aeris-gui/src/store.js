@@ -51,7 +51,7 @@ export const useUI = create((set) => ({
     imperfections:     "default",
     mesh:              "configured",  // 3.5
     bcsLoads:          "configured",  // 3.6 — bcs + axial/bending load wired
-    analysis:          "default",
+    analysis:          "configured",  // 3.8
     run:               "default",
   },
   setSectionStatus: (sectionId, status) =>
@@ -117,8 +117,25 @@ export const useUI = create((set) => ({
     // independently E-scaled for numerical conditioning.
     load: { kind: "axial", magnitude: 1.0 },
     analysis: {
-      kind: "lba", nmodes: 5,
-      solver: "spectra-buckling", shift: "auto",
+      kind: "lba",
+      nmodes: 5,
+      // schema name (cylinder_lba.py maps to Spectra mode int via
+      // SPECTRA_MODE_MAP). One of:
+      //   spectra-buckling      → mode 3, our default (K_L SPD + K_g indef)
+      //   spectra-shift-invert  → mode 2, generic shift-invert
+      //   spectra-cayley        → mode 4, Cayley-transform shift-invert
+      solver: "spectra-buckling",
+      // "auto" resolves to classical_sigma_cr / E inside the solver, or
+      // pass an explicit number to hunt a specific eigenvalue cluster.
+      shift: "auto",
+      // Arnoldi convergence tolerance. 1e-8 is well-conditioned; loosen
+      // to 1e-6 for ~10–20 % faster runs, tighten to 1e-10 for paranoia.
+      tolerance: 1e-8,
+      // Krylov subspace size multiplier (ncv = ncv_factor · nmodes). Spectra
+      // requires ≥ 2; 3 is generous and helps tough cases at modest cost.
+      ncv_factor: 3,
+      // gsThinShellAssembler IfcPenalty — weak C0/C1 fallback coupling.
+      // 1e6 validated; bumping helps if patches couple poorly.
       interface_penalty: 1e6,
     },
   },
@@ -288,6 +305,22 @@ export const useUI = create((set) => ({
       const v = Number(value);
       if (!Number.isFinite(v) || v <= 0) return {};
       return { model: { ...s.model, load: { ...s.model.load, magnitude: v } } };
+    }),
+
+  /** Set model.analysis.kind. Only "lba" is enabled today; gnia / modal /
+   * static are placeholders for future sessions. */
+  setAnalysisKind: (kind) =>
+    set((s) => ({ model: { ...s.model, analysis: { ...s.model.analysis, kind } } })),
+
+  /** Patch one field on model.analysis (solver / shift / nmodes / tolerance
+   * / ncv_factor / interface_penalty). Strings ("auto", solver names) and
+   * numbers both flow through; numeric validation done by the inspector. */
+  setAnalysisField: (key, value) =>
+    set((s) => {
+      if (typeof value === "number" && !Number.isFinite(value)) return {};
+      return {
+        model: { ...s.model, analysis: { ...s.model.analysis, [key]: value } },
+      };
     }),
 
   /** Serialise the current model state into the on-disk model.json schema
