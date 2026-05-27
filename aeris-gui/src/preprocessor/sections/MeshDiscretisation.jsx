@@ -24,10 +24,19 @@ const COUPLING_OPTIONS = [
   // value matches the schema string in model.mesh.coupling; the GUI never
   // touches the integer -m flag, only the names. The Python side maps
   // names → method ints via COUPLING_METHOD in cylinder_lba.py.
+  //
+  // Only Smooth Interfaces is validated for our regular 4·(N+1)-patch
+  // cylinder topology (Session 2.7). The other three are real G+Smo
+  // options that the multipatch driver accepts, but we haven't pinned a
+  // reference case against them yet — disable here so the user knows
+  // why nothing changes if they click them.
   ["gsSmoothInterfaces", "Smooth Interfaces"],
-  ["gsAlmostC1",         "Almost C1"],
-  ["gsDPatch",           "D-Patch"],
-  ["gsApproxC1Spline",   "Approx C1"],
+  ["gsAlmostC1",         "Almost C1",
+    { disabled: true, title: "needed for extraordinary vertices (cone-cylinder, etc.) — enabled when those geometries land" }],
+  ["gsDPatch",           "D-Patch",
+    { disabled: true, title: "B-spline only; alternative G1 construction. Not validated for this topology yet." }],
+  ["gsApproxC1Spline",   "Approx C1",
+    { disabled: true, title: "approximate-C1 construction. Not validated for this topology yet." }],
 ];
 
 export default function MeshDiscretisation() {
@@ -82,6 +91,7 @@ export default function MeshDiscretisation() {
         max={8}
         step={1}
         precision={0}
+        showRange
         hint="each +1 quadruples the element count per patch (2^r per direction). Session-2.7 validated at r=5"
       />
 
@@ -95,6 +105,7 @@ export default function MeshDiscretisation() {
         max={6}
         step={1}
         precision={0}
+        showRange
         hint="cubic (p=3) is the validated default. Bumping p improves accuracy but costs O(p²) DOFs per patch"
       />
 
@@ -108,6 +119,7 @@ export default function MeshDiscretisation() {
         max={Math.max(0, p - 1)}
         step={1}
         precision={0}
+        showRange
         hint={`must stay strictly < degree (current cap: k ≤ ${p - 1}). Higher k = fewer DOFs and smoother basis`}
       />
 

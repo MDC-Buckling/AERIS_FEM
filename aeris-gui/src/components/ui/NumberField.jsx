@@ -15,6 +15,12 @@ export default function NumberField({
   step = 0.001,
   precision = 4,
   hint,
+  /** Set true to render a small "min..max" badge in the field's right
+   * gutter. Off by default so existing free-form numeric inputs (E, ν,
+   * R, L, t, …) stay clean; opt-in for fields with hard integer bounds
+   * (refinement, degree, smoothness, …) where the user benefits from
+   * seeing the valid window at a glance. */
+  showRange = false,
 }) {
   const [text, setText] = useState(formatVal(value, precision));
   useEffect(() => {
@@ -113,6 +119,25 @@ export default function NumberField({
             }}
           >
             {unit}
+          </span>
+        )}
+        {showRange && (
+          <span
+            style={{
+              color: "var(--text-soft)",
+              fontSize: 10,
+              fontFamily: MONO,
+              fontWeight: 600,
+              paddingLeft: 2,
+              borderLeft: "1px solid var(--control-border)",
+              marginLeft: 1,
+              whiteSpace: "nowrap",
+            }}
+            title={`Valid range: ${min} ≤ value ≤ ${
+              Number.isFinite(max) ? max : "∞"
+            }`}
+          >
+            {min}..{Number.isFinite(max) ? max : "∞"}
           </span>
         )}
       </div>

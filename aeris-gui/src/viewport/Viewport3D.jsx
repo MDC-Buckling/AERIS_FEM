@@ -78,6 +78,11 @@ export default function Viewport3D() {
   // In pre-mode the viewport renders a procedural cylinder driven LIVE
   // by these dimensions — no .vts/.pvd round-trip, no solver involvement.
   const cyl = useUI((s) => s.model.geometry.cylinder);
+  // Mesh refinement drives the edge-overlay density so the user gets
+  // visual feedback when they bump r/p/k in the MESH inspector. We only
+  // care about r here — p and k change DOF count but not the
+  // element-grid layout.
+  const meshRefinement = useUI((s) => s.model.mesh.refinement);
 
   // One-time three.js init.
   useEffect(() => {
@@ -399,9 +404,35 @@ export default function Viewport3D() {
     mesh.userData.kind = "surface";
     st.meshGroup.add(mesh);
 
-    // Edge overlay = rims + meridians, sparser than the surface tessellation.
+    // Edge overlay traces the IGA element grid implied by the current
+    // mesh.refinement value. At r=0 each patch is a single element →
+    // 4 meridians (one per θ-seam) + 1 axial ring per band. Each +1 in
+    // r doubles both counts (2^r elements per patch per direction). We
+    // cap the visible density to keep the viewport readable above ~r=5;
+    // the solver still gets the real value, the viewport just stops
+    // adding more lines than the eye can follow.
+    const nBandsPreview = (cyl.partitions?.length ?? 0) + 1;
+    const elementsPerPatch = Math.pow(2, Math.max(0, meshRefinement));
+    const meridians = Math.min(4 * elementsPerPatch, 64);
+    const ringsPerBand = Math.min(elementsPerPatch, 12);
+    const ringZs = [];
+    for (let b = 0; b < nBandsPreview; b++) {
+      // Skip the very last ring of each band — it's the band boundary
+      // (also the start of the next band / top of the cylinder), drawn
+      // by the band edges below to avoid double-drawing.
+      const z0 = b === 0 ? 0 : Number(cyl.partitions[b - 1].z);
+      const z1 = b < nBandsPreview - 1 ? Number(cyl.partitions[b].z) : cyl.L;
+      const span = z1 - z0;
+      for (let i = 0; i <= ringsPerBand; i++) {
+        const t = i / ringsPerBand;
+        // Skip ring at t=0 except for the very bottom (avoids
+        // double-drawing at band boundaries when partitions land here).
+        if (i === 0 && b > 0) continue;
+        ringZs.push(z0 + t * span);
+      }
+    }
     const edges = new THREE.LineSegments(
-      buildCylinderEdges(cyl.R, cyl.L, 16, 4),
+      buildCylinderEdgesAt(cyl.R, cyl.L, ringZs, meridians, 96),
       st.edgeMaterial
     );
     edges.userData.kind = "edges";
@@ -429,7 +460,7 @@ export default function Viewport3D() {
     return () => {
       // Tear-down handled at next effect run (or on unmount inside init).
     };
-  }, [mode, cyl.R, cyl.L, cyl.t, partitionsKey, showEdges, setStatus]);
+  }, [mode, cyl.R, cyl.L, cyl.t, partitionsKey, meshRefinement, showEdges, setStatus]);
 
   // -------------------------------------------------------------------
   // Post-mode: load + build result on selection change (existing path).
@@ -567,8 +598,36 @@ function tearDownGroups(st) {
   }
 }
 
+/** Edge overlay for the procedural cylinder driven by an explicit list of
+ * ring z-values plus a meridian count. Used to mirror the IGA element
+ * grid implied by the current mesh.refinement: caller supplies one z per
+ * element row, we draw a full circle at each + `meridians` vertical
+ * lines at evenly-spaced θ. Top + bottom rings are always included. */
+function buildCylinderEdgesAt(R, L, ringZs, meridians, segmentsAround = 96) {
+  const pts = [];
+  const zs = [0, ...ringZs.filter((z) => z > 0 && z < L), L];
+  for (const z of zs) {
+    for (let i = 0; i < segmentsAround; i++) {
+      const a0 = (i / segmentsAround) * 2 * Math.PI;
+      const a1 = ((i + 1) / segmentsAround) * 2 * Math.PI;
+      pts.push(R * Math.cos(a0), R * Math.sin(a0), z);
+      pts.push(R * Math.cos(a1), R * Math.sin(a1), z);
+    }
+  }
+  for (let m = 0; m < meridians; m++) {
+    const a = (m / meridians) * 2 * Math.PI;
+    pts.push(R * Math.cos(a), R * Math.sin(a), 0);
+    pts.push(R * Math.cos(a), R * Math.sin(a), L);
+  }
+  const arr = new Float32Array(pts);
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+  return geom;
+}
+
 /** Sparse edge overlay for the procedural cylinder: top + bottom rims +
- * `meridians` axial lines + `axialRings` intermediate rings. */
+ * `meridians` axial lines + `axialRings` intermediate rings. Kept for
+ * any caller that wants the legacy uniform-spacing layout. */
 function buildCylinderEdges(R, L, segmentsAround = 64, axialRings = 4, meridians = 12) {
   const pts = [];
   const ringZ = [];
