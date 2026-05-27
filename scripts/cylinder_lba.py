@@ -181,11 +181,23 @@ def build_cylinder_xml(case: Case) -> str:
     # and gsBucklingSolver returns POSITIVE eigenvalues; the smallest positive
     # is the load factor that drives the corresponding COMPRESSIVE buckling.
     #
-    # The Neumann magnitude is set to `t` (thickness) so that the implied
-    # uniform membrane axial stress is
-    #   N_z / t = (traction * perimeter) / (perimeter * t * t) = ... actually
-    #   N_z (force/length on edge) is the traction directly in KL shells;
-    #   σ_z_mem = N_z / t = t / t = 1.   (so σ_ref = 1 → |λ_1| reads as σ_cr.)
+    # The Neumann magnitude is set to `t * E` (NOT just `t`). Picking
+    # T_z = t makes the implied uniform membrane axial stress σ_z = T_z/t = 1
+    # in E's units — clean for E ~ O(1), but at large E (e.g. steel in MPa
+    # where E ≈ 2e5) the gsBucklingSolver hits CATASTROPHIC CANCELLATION
+    # inside `m_B = K_NL - K_L`:
+    #   K_L = O(E),  K_NL = O(E),  K_geom = K_NL - K_L = O(1)
+    # subtracts away ~log10(E) significant digits, returning garbage
+    # eigenvalues (~1e+28 etc.) — exactly what the Session-3.3 audit caught.
+    #
+    # Fix: set T_z = t · E so the implied σ_ref = E. Then:
+    #   K_geom ∝ σ_ref = E,  same order as K_L, no cancellation.
+    #   Eigenvalues λ' are normalised: σ_cr_physical = |λ'| · E.
+    #
+    # At E=1 this is bit-identical to the old `T_z = t` convention (since
+    # multiplying by 1 is a no-op), so the Session-2.7 validated default
+    # case stays at -1.02 % at r=4.
+    neumann_Tz = case.t * case.E
     bcs = f"""<boundaryConditions id="20" multipatch="0">
   <Function type="FunctionExpr" dim="3" index="0">
   <c> 0 </c>
@@ -195,7 +207,7 @@ def build_cylinder_xml(case: Case) -> str:
   <Function type="FunctionExpr" dim="3" index="1">
   <c> 0 </c>
   <c> 0 </c>
-  <c> {case.t} </c>
+  <c> {neumann_Tz} </c>
   </Function>
 
   <bc type="Dirichlet" function="0" unknown="0" component="-1">
@@ -253,8 +265,11 @@ def build_cylinder_xml(case: Case) -> str:
     # Shift set near the expected eigenvalue magnitude. Spectra GEigsMode::Buckling
     # finds eigenvalues nearest the shift, so picking shift ~ classical_sigma_cr
     # tightens the search around the physically interesting band.
-    expected = classical_sigma_cr(case)
-    shift_val = max(expected, 1e-6)  # search around classical estimate
+    # Eigenvalues are NORMALISED (the Neumann load was scaled by E above), so
+    # they live in dimensionless O(1) territory regardless of E. Shift to
+    # the normalised classical estimate: classical_sigma_cr / E.
+    expected_normalised = classical_sigma_cr(case) / max(case.E, 1e-30)
+    shift_val = max(expected_normalised, 1e-9)
     bucking_opts = f"""<OptionList id="94">
 <int label="solver" desc="Spectra eigen mode (3 = Buckling)" value="3"/>
 <int label="selectionRule" desc="Spectra::SortRule (0 = LargestMagn — recommended with shift-invert)" value="0"/>
@@ -477,11 +492,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Classical N_cr     = 2 pi R t sigma_cr            = {N_cr_ref:.8e}")
     print()
     print("Reference loading state (driving the LBA):")
-    print(f"  Neumann line force on top edge: T = (0, 0, +t) = (0, 0, +{case.t})")
-    print(f"  Implied axial membrane stress sigma_ref = T_z / t = +1 (tensile)")
-    print("  -> LBA eigenvalue lambda is the load factor; compressive critical")
-    print("     stress corresponds to lambda_1 of opposite sign convention,")
-    print("     i.e. sigma_cr_computed = |lambda_1| * sigma_ref = |lambda_1|.")
+    print(f"  Neumann line force on top edge: T = (0, 0, +t·E) = (0, 0, +{case.t * case.E})")
+    print(f"  Implied axial membrane stress sigma_ref = T_z / t = +E = +{case.E}")
+    print( "  E-scaling above keeps K_NL and K_geom of comparable magnitude →")
+    print( "  no catastrophic cancellation at large E. Eigenvalues are NORMALISED,")
+    print(f"  recover physical stress as  sigma_cr_computed = |lambda_1| · E.")
     print()
 
     xml_text = build_cylinder_xml(case)
@@ -505,13 +520,14 @@ def main(argv: list[str] | None = None) -> int:
         if lam1 is None:
             print(f"  {r:>4}  {len(eigs):>6}  NO POSITIVE EIGENVALUE; raw = {eigs}")
             continue
-        # Reference state = Neumann line force T_z = t at the top, so the
-        # implied uniform membrane axial stress σ_ref = T_z / t = 1 (independent
-        # of geometry). λ_1 is the load factor on this reference, so the
-        # critical compressive stress is just |λ_1|.
-        # (Old buggy line did `lam1 * E / L`; that's correct iff E=L=1, which
-        # was the validated default — so the audit caught the bug at L=3.)
-        sigma_computed = abs(lam1)
+        # Reference state = Neumann line force T_z = case.t · case.E at the
+        # top, so the implied uniform membrane axial stress σ_ref = T_z/t = E
+        # (the E-scaling avoids catastrophic cancellation in K_NL - K_L at
+        # large E — see build_cylinder_xml comment). λ_1 from the solver is
+        # NORMALISED, so physical critical stress = |λ_1| · E.
+        # At E=1 this collapses to |λ_1| — bit-identical to the validated
+        # Session-2.7 path.
+        sigma_computed = abs(lam1) * case.E
         pct = 100.0 * (sigma_computed - sigma_cr_ref) / sigma_cr_ref
         print(f"  {r:>4}  {len(eigs):>6}  {lam1:>16.8e}  "
               f"{sigma_computed:>20.8e}  {pct:>+15.2f}%")
