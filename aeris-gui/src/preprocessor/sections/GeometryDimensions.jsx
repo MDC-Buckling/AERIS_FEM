@@ -173,7 +173,7 @@ function SegmentDimensions() {
           marginTop: 8,
           padding: "8px 10px",
           background: "var(--panel-bg-soft)",
-          border: "1px dashed var(--warning-border)",
+          border: "1px dashed var(--accent-muted)",
           borderRadius: 4,
           fontSize: 9.5,
           color: "var(--text-muted)",
@@ -181,15 +181,17 @@ function SegmentDimensions() {
           lineHeight: 1.5,
         }}
       >
-        <span style={{ color: "var(--warning)", fontWeight: 700 }}>
-          Preview-only:{" "}
+        <span style={{ color: "var(--accent)", fontWeight: 700 }}>
+          Solve-ready:{" "}
         </span>
-        The viewport shows the geometry live, but{" "}
-        <code style={{ color: "var(--accent-muted)" }}>SOLVE</code> won't
-        run for cylinder_segment until the static-analysis dispatch lands
-        (planned: Increment 3 of the Scordelis-Lo integration). The CLI
-        benchmark already PASSes — see{" "}
-        <code style={{ color: "var(--accent-muted)" }}>benchmarks/scordelis_lo/</code>.
+        pair with{" "}
+        <code style={{ color: "var(--accent-muted)" }}>analysis.kind = LSA</code>{" "}
+        +{" "}
+        <code style={{ color: "var(--accent-muted)" }}>bcs.kind = scordelis_diaphragm</code>{" "}
+        +{" "}
+        <code style={{ color: "var(--accent-muted)" }}>load.kind = gravity</code>{" "}
+        for the Scordelis-Lo PASS case; the Benchmark Hub card loads exactly
+        that preset with one click.
       </div>
     </>
   );

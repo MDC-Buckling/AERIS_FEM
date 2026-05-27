@@ -25,7 +25,7 @@ export const SECTIONS = [
         options: [
           { value: "cylinder", label: "Cylinder (closed)", enabled: true },
           { value: "cylinder_segment", label: "Cylinder segment (roof)", enabled: true,
-            note: "preview only — solver wires in increment 3" },
+            note: "pairs with LSA + scordelis_diaphragm + gravity" },
           { value: "cone", label: "Cone", enabled: false, note: "coming soon" },
           { value: "sphere", label: "Sphere", enabled: false, note: "coming soon" },
           { value: "torispherical", label: "Torispherical", enabled: false, note: "coming soon" },

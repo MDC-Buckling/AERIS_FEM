@@ -551,10 +551,19 @@ export default function Viewport3D() {
     // /data/jobs/<jobId>/, so we prepend that here when the manifest
     // carries a jobId — keeps the sidecar paths clean (just "modes/…").
     const prefix = currentResults?.jobId ? `jobs/${currentResults.jobId}/` : "";
+    // LBA manifests carry files.linearPrestress (pre-buckling solve).
+    // LSA manifests carry files.solution (the deformed shape from the
+    // static solve). Both map to id="linear" so the post-mode default
+    // selector + the ResultsPanel can route to whichever the active
+    // manifest has — without this branch the LSA case falls back to
+    // KNOWN_RESULTS and loads a stale linearSolution.pvd from the
+    // flat output/ (= a previous LBA run's closed-cylinder mesh).
+    const linearPvd = currentResults?.files?.linearPrestress
+                       ?? currentResults?.files?.solution;
     const fromManifest = currentResults
       ? [
           currentResults.files?.geometry && { id: "geometry", pvd: prefix + currentResults.files.geometry, kind: "geometry" },
-          currentResults.files?.linearPrestress && { id: "linear", pvd: prefix + currentResults.files.linearPrestress, kind: "displacement" },
+          linearPvd && { id: "linear", pvd: prefix + linearPvd, kind: "displacement" },
           ...((currentResults.modes ?? []).map((m) => ({ id: m.id, pvd: prefix + m.pvd, kind: "mode" }))),
         ].filter(Boolean)
       : null;
