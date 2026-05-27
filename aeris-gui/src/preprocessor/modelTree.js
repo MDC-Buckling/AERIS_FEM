@@ -220,13 +220,13 @@ export const SECTIONS = [
       {
         id: "type",
         label: "Analysis Type",
-        defaultPreview: "LBA (linear buckling eigenvalue)",
+        defaultPreview: "LBA",
         kind: "selector",
         options: [
           { value: "lba", label: "LBA · linear buckling eigenvalue (Session-2.7)", enabled: true },
+          { value: "static", label: "LSA · linear static analysis (Scordelis-Lo PASS)", enabled: true },
           { value: "gnia", label: "GNIA · geometrically nonlinear (arc-length)", enabled: false, note: "later — gsALMBase / Riks / Crisfield" },
           { value: "modal", label: "Modal (vibration eigenvalue)", enabled: false, note: "later" },
-          { value: "static", label: "Static (linear elastic)", enabled: false, note: "later" },
         ],
       },
       {

@@ -95,9 +95,16 @@ function SectionHeader({ section, expanded, status, sectionIndex, onToggle }) {
 }
 
 /** For wired items, build the small preview line from live store state.
- * Mirrors LivePreviewLine in PreInspectorPanel.jsx. */
-function previewFor(dottedId, model) {
+ * Mirrors LivePreviewLine in PreInspectorPanel.jsx — must be kept in sync
+ * with the WIRED_ITEMS set there; missing a case here means the tree
+ * shows the static defaultPreview from modelTree.js even after the
+ * user edits the live value. */
+function previewFor(dottedId, model, lastRun) {
   if (dottedId === "geometry.dimensions") {
+    if (model.geometry.shape === "cylinder_segment") {
+      const s = model.geometry.cylinder_segment;
+      return `R=${s.R}  L=${s.L}  t=${s.t}  φ=${s.phi_deg}°`;
+    }
     const c = model.geometry.cylinder;
     return `R=${c.R}  L=${c.L}  t=${c.t}`;
   }
@@ -111,12 +118,42 @@ function previewFor(dottedId, model) {
   if (dottedId === "shellConstruction.sectionAssignments") {
     return `${model.assignments?.length ?? 0} region · ${model.sections?.length ?? 0} section`;
   }
+  if (dottedId === "mesh.discretisation") {
+    const m = model.mesh;
+    return `r=${m.refinement}  p=${m.degree}  s=${m.smoothness}`;
+  }
+  if (dottedId === "bcsLoads.bcs") {
+    return model.bcs?.kind;
+  }
+  if (dottedId === "bcsLoads.load") {
+    return `${model.load?.kind}  ·  mag=${model.load?.magnitude ?? 1}`;
+  }
+  if (dottedId === "analysis.type") {
+    const k = model.analysis?.kind;
+    // Match the human-readable label users see in AnalysisType.jsx.
+    const LABEL = { lba: "LBA", static: "LSA", gnia: "GNIA", modal: "MODAL" };
+    return LABEL[k] ?? k;
+  }
+  if (dottedId === "analysis.solver") {
+    const a = model.analysis;
+    if (a?.kind === "static") return "linear K·u=F · no eigensolver";
+    const shiftLbl = a?.shift === "auto" ? "auto" : Number(a?.shift).toExponential(2);
+    return `${a?.solver}  ·  N=${a?.nmodes}  ·  σ=${shiftLbl}`;
+  }
+  if (dottedId === "run.solve") {
+    if (!lastRun || lastRun.status === "idle") return "ready — click SOLVE";
+    if (lastRun.status === "running") return "running…";
+    if (lastRun.status === "success") return `last run: success (${(lastRun.durationMs / 1000).toFixed(1)} s)`;
+    if (lastRun.status === "failed") return "last run: failed";
+    return null;
+  }
   return null;
 }
 
 function SubItem({ section, item, active, onClick, dottedId }) {
   const model = useUI((s) => s.model);
-  const live = previewFor(dottedId, model);
+  const lastRun = useUI((s) => s.lastRun);
+  const live = previewFor(dottedId, model, lastRun);
   return (
     <button
       type="button"

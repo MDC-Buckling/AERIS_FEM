@@ -167,7 +167,7 @@ export default function LoadCase() {
               lineHeight: 1.45,
             }}
           >
-            For static analysis the magnitude IS the actual applied
+            For LSA (linear static) the magnitude IS the actual applied
             force-per-area — no E-scaling trick, displacements scale linearly
             with{" "}
             <span style={{ color: "var(--accent-muted)" }}>{meta.symbol}</span>.

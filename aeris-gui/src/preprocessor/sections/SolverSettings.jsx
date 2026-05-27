@@ -93,7 +93,7 @@ export default function SolverSettings() {
           }}
         >
           <span style={{ color: "var(--accent)", fontWeight: 700 }}>
-            Static analysis active.
+            LSA (Linear Static Analysis) active.
           </span>{" "}
           Eigenvalue-only knobs (Spectra mode, nmodes, spectral shift) are
           hidden because they don't apply to a direct K · u = F solve. The

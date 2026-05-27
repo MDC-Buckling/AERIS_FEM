@@ -19,7 +19,7 @@ import { useUI } from "../../store.js";
 
 const KIND_OPTIONS = [
   ["lba", "LBA"],
-  ["static", "Static"],
+  ["static", "LSA"],
   ["gnia", "GNIA · Arc-Length",
     { disabled: true,
       title: "geometrically nonlinear / arc-length (Riks-Crisfield) — needs gsALMBase driver, post-buckling sweep, separate verdict pipeline. Not wired yet." }],
@@ -30,7 +30,7 @@ const KIND_OPTIONS = [
 
 /** Per-kind explainer copy. Switching kind in the toggle swaps the panel
  * below so the user sees what the picked analysis actually solves +
- * which solver settings apply. Static intentionally calls out the
+ * which solver settings apply. LSA intentionally calls out the
  * Scordelis-Lo benchmark since that's the validated CLI reference. */
 const KIND_INFO = {
   lba: {
@@ -49,7 +49,7 @@ const KIND_INFO = {
     settingsHint: "Use SOLVER SETTINGS below to pick the Spectra eigenvalue mode, eigenvalue count and convergence knobs.",
   },
   static: {
-    title: "Static = Linear Elastic Single Solve",
+    title: "LSA = Linear Static Analysis",
     body: (
       <>
         Solve{" "}
