@@ -13,17 +13,20 @@ export default function App() {
   const mode = useUI((s) => s.mode);
   const selectedResultId = useUI((s) => s.selectedResultId);
   const loadResultsManifest = useUI((s) => s.loadResultsManifest);
+  const loadJobs = useUI((s) => s.loadJobs);
   // The pre-mode viewport now builds its own procedural cylinder from
   // store.model.geometry.cylinder, so we no longer need to force
   // selectedResultId to "geometry" on mode switch (Session 3.0's hack).
   // selectedResultId is purely a post-mode concept now.
 
-  // On startup, try to pick up any run.json already on disk so the
-  // post-processor reflects the previous solve without forcing a re-run.
-  // No-op if the file doesn't exist.
+  // On startup: pull the on-disk jobs index, then try to load the legacy
+  // flat run.json (Session 3.10 results) so a pre-jobs user's previous
+  // solve still appears in the post-processor. New per-job results
+  // surface via the Jobs panel + loadResultsManifest(jobId).
   React.useEffect(() => {
+    loadJobs();
     loadResultsManifest();
-  }, [loadResultsManifest]);
+  }, [loadJobs, loadResultsManifest]);
 
   return (
     <div

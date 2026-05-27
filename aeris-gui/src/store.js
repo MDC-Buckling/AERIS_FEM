@@ -345,11 +345,51 @@ export const useUI = create((set) => ({
     return res.json();
   },
 
-  /** Last-run record. Single-slot for now (Session 3.9 = blocking, one
-   * run at a time); a future job-queue session will turn this into a
-   * list. status transitions: idle → running → success | failed. */
+  /** Jobs registry — mirrors the on-disk index at output/jobs/index.json.
+   * Each entry: { id, name, createdAt, threads, lastRunStatus, lastRunAt,
+   * lastDurationMs }. Most-recent first. activeJobId picks which one the
+   * monitor + post-processor track; null means "no job selected yet". */
+  jobs: [],
+  activeJobId: null,
+  setJobs: (jobs) => set({ jobs }),
+  setActiveJob: (id) => set({ activeJobId: id }),
+
+  /** Last-run record for the ACTIVE job. Single-slot for now (Session
+   * 4.1 — one in-flight run at a time); a Phase-3 queue will turn this
+   * into a per-job map keyed by id. */
   lastRun: { status: "idle" },
   setLastRun: (next) => set({ lastRun: next }),
+
+  /** Fetch the server's job index. Called at startup + after every
+   * create / delete / solve so the GUI list stays fresh. */
+  loadJobs: async () => {
+    try {
+      const res = await fetch("/jobs");
+      const data = await res.json();
+      if (!data.ok) return [];
+      set({ jobs: data.jobs ?? [] });
+      return data.jobs;
+    } catch {
+      return [];
+    }
+  },
+
+  /** Create (or overwrite) a job on the server with the given name +
+   * threads. Saves the CURRENT serialised model into the job's folder
+   * so a subsequent runSolver picks it up. Auto-selects the new job. */
+  createJob: async ({ name, threads = 1, overwrite = false } = {}) => {
+    const model = useUI.getState().serializeModel();
+    const res = await fetch("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, threads, overwrite, model }),
+    });
+    const data = await res.json();
+    if (!data.ok) return { ok: false, error: data.error, hint: data.hint };
+    await useUI.getState().loadJobs();
+    set({ activeJobId: data.job.id, lastRun: { status: "idle" } });
+    return { ok: true, job: data.job };
+  },
 
   /** Parsed sidecar manifest (output/run.json) from the most recent
    * successful solve. null until the first run completes. Drives the
@@ -363,46 +403,68 @@ export const useUI = create((set) => ({
   currentResults: null,
   setCurrentResults: (next) => set({ currentResults: next }),
 
-  /** Fetch /data/run.json (vite middleware serves output/) and store as
-   * currentResults. Called automatically after a successful runSolver;
-   * can also be called manually to re-sync if the file changed on disk.
-   * Returns the parsed manifest or null on failure. */
-  loadResultsManifest: async () => {
+  /** Fetch a job's run.json sidecar (output/jobs/<id>/run.json via
+   * /data middleware) and store as currentResults. If no jobId given,
+   * falls back to the legacy flat output/run.json so pre-jobs runs are
+   * still visible. Cache-busted to dodge proxy caching. */
+  loadResultsManifest: async (jobId) => {
+    const path = jobId
+      ? `/data/jobs/${jobId}/run.json?t=${Date.now()}`
+      : `/data/run.json?t=${Date.now()}`;
     try {
-      // Cache-bust because the dev server sets Cache-Control no-store
-      // for /data, but some proxies still cache aggressively.
-      const res = await fetch(`/data/run.json?t=${Date.now()}`);
+      const res = await fetch(path);
       if (!res.ok) return null;
       const data = await res.json();
-      set({ currentResults: data });
-      return data;
+      // Stash the jobId alongside so consumers know which job this is.
+      const tagged = { ...data, jobId };
+      set({ currentResults: tagged });
+      return tagged;
     } catch {
       return null;
     }
   },
 
-  /** End-to-end Solve: serialise the model, POST to /save-model, then POST
-   * to /run-solver to async-start the docker container. The solver returns
-   * a runId immediately; we then poll /run-status every POLL_INTERVAL_MS
-   * until the run terminates (success / failed), updating lastRun on every
-   * tick so the GUI's live monitor can show current phase + elapsed time
-   * + tail of stdout while the docker container is running.
+  /** End-to-end Solve for a job. Saves the model into the job's folder,
+   * spawns the docker container with the job's thread count, polls
+   * /run-status, and on success auto-loads the job's run.json + flips
+   * into post-mode with the first mode preselected.
    *
-   * Never throws — errors surface via lastRun.status = "failed". Picks the
-   * refinement from model.mesh.refinement so the Solve matches what the
-   * inspector shows (not the script's default [3,4,5] sweep). */
-  runSolver: async () => {
+   * If no jobId is given, defaults to the active job. If there's no
+   * active job either, creates an auto-named one on the fly (the
+   * "Just Solve" Quick path — same UX as before jobs existed). */
+  runSolver: async ({ jobId } = {}) => {
     const POLL_INTERVAL_MS = 500;
     const state = useUI.getState();
+    let effectiveJobId = jobId || state.activeJobId;
+    let threads = 1;
+    if (!effectiveJobId) {
+      // Auto-create a job so the run always has somewhere to land.
+      const created = await state.createJob({
+        name: `quick-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`,
+        threads: 1,
+      });
+      if (!created.ok) {
+        state.setLastRun({ status: "failed", error: `auto-create failed: ${created.error}` });
+        return { ok: false, error: created.error };
+      }
+      effectiveJobId = created.job.id;
+      threads = created.job.threads;
+    } else {
+      const j = state.jobs.find((x) => x.id === effectiveJobId);
+      threads = j?.threads ?? 1;
+    }
+
     state.setLastRun({
       status: "running",
       phase: "starting",
+      jobId: effectiveJobId,
+      threads,
       startedAt: Date.now(),
       elapsedMs: 0,
     });
     try {
-      // 1) Save model
-      const saveRes = await fetch("/save-model", {
+      // 1) Save model into the job's folder
+      const saveRes = await fetch(`/save-model?jobId=${encodeURIComponent(effectiveJobId)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(state.serializeModel()),
@@ -410,41 +472,45 @@ export const useUI = create((set) => ({
       const saveData = await saveRes.json();
       if (!saveData.ok) throw new Error(`save failed: ${saveData.error}`);
 
-      // 2) Async-start solver — returns immediately with runId
+      // 2) Async-start solver in the job's folder with its threads
       const startRes = await fetch("/run-solver", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refinement: state.model.mesh.refinement }),
+        body: JSON.stringify({
+          jobId: effectiveJobId,
+          threads,
+          refinement: state.model.mesh.refinement,
+        }),
       });
       const startData = await startRes.json();
       if (!startData.ok) throw new Error(`start failed: ${startData.error}`);
       const { runId } = startData;
 
-      // 3) Poll loop — patches lastRun on each tick until terminal status
+      // 3) Poll loop
       while (true) {
         await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
         const statusRes = await fetch(`/run-status?id=${encodeURIComponent(runId)}`);
         const statusData = await statusRes.json();
         if (!statusData.ok) throw new Error(`poll failed: ${statusData.error}`);
-        useUI.getState().setLastRun({ ...statusData, runId });
+        useUI.getState().setLastRun({
+          ...statusData,
+          runId,
+          jobId: effectiveJobId,
+          threads,
+        });
         if (statusData.status === "success" || statusData.status === "failed") {
-          // On success: pull the sidecar manifest the script just wrote,
-          // pre-load the first mode so the post-processor renders something
-          // immediately, and flip into post mode. The user can flip back
-          // to pre-mode any time via the top-chrome toggle.
           if (statusData.status === "success") {
-            const manifest = await useUI.getState().loadResultsManifest();
+            const manifest = await useUI.getState().loadResultsManifest(effectiveJobId);
             const firstMode = manifest?.modes?.[0]?.id;
             useUI.setState((s) => ({
               ...s,
               selectedResultId: firstMode ?? s.selectedResultId,
               mode: "post",
-              // Invalidate result cache so the post-processor reloads .vts
-              // files from disk (a previous run's bytes might still live
-              // in memory under the same mode-id).
               resultCache: {},
             }));
           }
+          // Refresh jobs list so the row's lastRunStatus badge updates.
+          await useUI.getState().loadJobs();
           return statusData;
         }
       }
@@ -453,6 +519,7 @@ export const useUI = create((set) => ({
       useUI.getState().setLastRun({
         status: "failed",
         error: errorMsg,
+        jobId: effectiveJobId,
         finishedAt: Date.now(),
       });
       return { ok: false, error: errorMsg };

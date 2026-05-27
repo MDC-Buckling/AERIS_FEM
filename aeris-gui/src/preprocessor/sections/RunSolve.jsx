@@ -2,21 +2,25 @@ import React from "react";
 import { MONO } from "../../constants.js";
 import { useUI } from "../../store.js";
 
-/** Wired inspector for RUN > Solve.
+/** Wired inspector for RUN > Solve — the Jobs panel.
  *
- * Session 3.10: live solver monitor. /run-solver is async — returns a
- * runId, the GUI polls /run-status every 500 ms. cylinder_lba.py emits
- * [AERIS-PHASE] <name> markers at each transition (setup → solving →
- * solving_r3 → solving_r4 → solving_r5 → verdict → plot_export → done),
- * the server tails stdout for the latest marker and the GUI renders it
- * as a phase badge + progress bar + elapsed time + rolling stdout tail.
+ * Session 4.1: ABAQUS-style jobs. Each Solve lands in its own
+ * output/jobs/<id>/ folder so results stack up instead of overwriting.
+ * The panel is split top-to-bottom into three blocks:
  *
- * The list of expected phases drives the progress percentage — at
- * "solving_r5" with --refines 5 we know we're ~70 % through, etc. */
+ *   1. Jobs list   — every job on disk, status + threads + age. Click a
+ *                    row to make it active.
+ *   2. New job     — inline form: name + threads → POST /jobs which
+ *                    mkdirs the folder, saves the current model into it,
+ *                    and selects it as the new active job.
+ *   3. Active SOLVE — big run button + live monitor (phase + progress +
+ *                    elapsed + stdout tail) for the active job. Phase 2
+ *                    will add re-loading past results into the post-
+ *                    processor; today only the current run is observable.
+ *
+ * If no job exists yet, clicking SOLVE auto-creates a `quick-<timestamp>`
+ * job so the existing one-click flow still works for tinkering. */
 
-/** Phases the solver walks through, in order. Includes the per-refinement
- * substeps so a single-r Solve at r=5 shows a smooth bar. The list is
- * derived from the [AERIS-PHASE] markers emitted by cylinder_lba.py. */
 const PHASE_SEQUENCE = [
   { id: "starting",    label: "Starting docker" },
   { id: "setup",       label: "Building XML + classical reference" },
@@ -43,18 +47,248 @@ function phaseLabel(phase) {
   const p = PHASE_SEQUENCE.find((p) => p.id === phase);
   return p?.label ?? phase;
 }
+
+function statusColor(s) {
+  if (s === "success") return "var(--success)";
+  if (s === "failed")  return "var(--error)";
+  if (s === "running") return "var(--accent)";
+  return "var(--text-muted)";
+}
+
+function relTime(iso) {
+  if (!iso) return "—";
+  const diffSec = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diffSec < 60)      return `${Math.round(diffSec)} s ago`;
+  if (diffSec < 3600)    return `${Math.round(diffSec / 60)} min ago`;
+  if (diffSec < 86400)   return `${Math.round(diffSec / 3600)} h ago`;
+  return `${Math.round(diffSec / 86400)} d ago`;
+}
+
 export default function RunSolve() {
+  const jobs = useUI((s) => s.jobs);
+  const activeJobId = useUI((s) => s.activeJobId);
+  const setActiveJob = useUI((s) => s.setActiveJob);
   const lastRun = useUI((s) => s.lastRun);
   const runSolver = useUI((s) => s.runSolver);
-  const setMode = useUI((s) => s.setMode);
+  const loadJobs = useUI((s) => s.loadJobs);
+  const createJob = useUI((s) => s.createJob);
   const model = useUI((s) => s.model);
 
+  // Pull the latest jobs index on mount so the list always reflects disk.
+  React.useEffect(() => {
+    loadJobs();
+  }, [loadJobs]);
+
+  const [newName, setNewName] = React.useState("");
+  const [newThreads, setNewThreads] = React.useState(1);
+  const [createErr, setCreateErr] = React.useState(null);
+
   const running = lastRun.status === "running";
-  const success = lastRun.status === "success";
-  const failed  = lastRun.status === "failed";
+  const activeJob = jobs.find((j) => j.id === activeJobId);
+
+  const handleCreate = async () => {
+    setCreateErr(null);
+    const res = await createJob({
+      name: newName,
+      threads: newThreads,
+    });
+    if (!res.ok) {
+      setCreateErr(res.error + (res.hint ? ` — ${res.hint}` : ""));
+      return;
+    }
+    setNewName("");
+  };
 
   return (
     <>
+      {/* ----- Jobs list ----- */}
+      <SectionLabel>Jobs ({jobs.length})</SectionLabel>
+      {jobs.length === 0 && (
+        <div
+          style={{
+            padding: "8px 10px",
+            background: "var(--panel-bg-soft)",
+            border: "1px dashed var(--line-soft)",
+            borderRadius: 4,
+            fontSize: 10,
+            color: "var(--text-muted)",
+            fontFamily: MONO,
+            lineHeight: 1.5,
+          }}
+        >
+          No jobs yet — create one below, or click SOLVE to auto-create a
+          quick-named job from the current model.
+        </div>
+      )}
+      {jobs.length > 0 && (
+        <div
+          style={{
+            border: "1px solid var(--line-soft)",
+            borderRadius: 5,
+            background: "var(--panel-bg-soft)",
+            overflow: "hidden",
+            maxHeight: 220,
+            overflowY: "auto",
+          }}
+        >
+          {jobs.map((j) => {
+            const active = j.id === activeJobId;
+            return (
+              <button
+                key={j.id}
+                type="button"
+                onClick={() => setActiveJob(j.id)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  width: "100%",
+                  padding: "6px 8px",
+                  borderBottom: "1px solid var(--line-faint)",
+                  border: "none",
+                  background: active ? "var(--control-active-bg)" : "transparent",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  fontFamily: MONO,
+                }}
+              >
+                <span
+                  style={{
+                    width: 8, height: 8, borderRadius: 999,
+                    background: statusColor(j.lastRunStatus),
+                    boxShadow: j.lastRunStatus === "running"
+                      ? "0 0 6px var(--accent)" : "none",
+                    flexShrink: 0,
+                  }}
+                />
+                <span
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    fontSize: 11,
+                    color: active ? "var(--accent)" : "var(--text-primary)",
+                    fontWeight: active ? 700 : 500,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                  title={j.id}
+                >
+                  {j.name}
+                </span>
+                <span style={{ fontSize: 9, color: "var(--text-soft)" }}>
+                  {j.threads}×
+                </span>
+                <span style={{ fontSize: 9, color: "var(--text-muted)", minWidth: 60, textAlign: "right" }}>
+                  {relTime(j.lastRunAt ?? j.createdAt)}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ----- New-job form ----- */}
+      <SectionLabel style={{ marginTop: 12 }}>New job</SectionLabel>
+      <div
+        style={{
+          padding: "8px 10px",
+          background: "var(--panel-bg-soft)",
+          border: "1px solid var(--line-soft)",
+          borderRadius: 5,
+          fontFamily: MONO,
+        }}
+      >
+        <SmallLabel>Name (slug)</SmallLabel>
+        <input
+          type="text"
+          value={newName}
+          placeholder="e.g. steel-r5-axial"
+          onChange={(e) => setNewName(e.target.value)}
+          style={{
+            width: "100%",
+            background: "var(--control-bg)",
+            border: "1px solid var(--control-border)",
+            borderRadius: 3,
+            color: "var(--text-primary)",
+            fontFamily: MONO,
+            fontSize: 11,
+            padding: "5px 7px",
+            marginBottom: 6,
+            outline: "none",
+            boxSizing: "border-box",
+          }}
+        />
+        <SmallLabel>
+          Threads (OMP_NUM_THREADS) ·{" "}
+          <span style={{ color: "var(--text-muted)" }}>
+            G+Smo uses OpenMP for matrix assembly + Spectra eigenvalue iteration
+          </span>
+        </SmallLabel>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input
+            type="number"
+            min={1}
+            max={64}
+            value={newThreads}
+            onChange={(e) => setNewThreads(Math.max(1, Math.min(64, Number(e.target.value) || 1)))}
+            style={{
+              width: 70,
+              background: "var(--control-bg)",
+              border: "1px solid var(--control-border)",
+              borderRadius: 3,
+              color: "var(--text-primary)",
+              fontFamily: MONO,
+              fontSize: 11,
+              fontWeight: 700,
+              padding: "5px 7px",
+              textAlign: "right",
+              fontVariantNumeric: "tabular-nums",
+              outline: "none",
+            }}
+          />
+          <input
+            type="range"
+            min={1}
+            max={16}
+            value={newThreads}
+            onChange={(e) => setNewThreads(Number(e.target.value))}
+            style={{ flex: 1 }}
+          />
+        </div>
+        <button
+          type="button"
+          className="codex-action-button"
+          onClick={handleCreate}
+          style={{
+            marginTop: 8,
+            width: "100%",
+            padding: "6px 10px",
+            fontSize: 11,
+            letterSpacing: 0.08,
+            textTransform: "uppercase",
+          }}
+        >
+          + Create job
+        </button>
+        {createErr && (
+          <div
+            style={{
+              marginTop: 6,
+              fontSize: 10,
+              color: "var(--error)",
+              lineHeight: 1.4,
+            }}
+          >
+            {createErr}
+          </div>
+        )}
+      </div>
+
+      {/* ----- Active SOLVE + monitor ----- */}
+      <SectionLabel style={{ marginTop: 12 }}>
+        Submit  {activeJob ? `· ${activeJob.name}` : "· (auto-create on SOLVE)"}
+      </SectionLabel>
       <button
         type="button"
         className={`codex-action-button codex-action-button--primary${running ? " codex-action-button--busy" : ""}`}
@@ -82,40 +316,67 @@ export default function RunSolve() {
         }}
       >
         Runs <code style={{ color: "var(--accent-muted)" }}>cylinder_lba.py</code>{" "}
-        inside the <code style={{ color: "var(--accent-muted)" }}>aeris/gismo</code>{" "}
-        container at refinement{" "}
-        <span style={{ color: "var(--accent)" }}>r={model.mesh.refinement}</span>{" "}
-        with the current model. Wall time depends on r (typically 10–60 s at
-        r=5, faster at lower r). The dev server pipes stdout/stderr back here
-        when the run finishes — no streaming yet.
+        in <code style={{ color: "var(--accent-muted)" }}>aeris/gismo</code> with{" "}
+        <span style={{ color: "var(--accent)" }}>
+          r={model.mesh.refinement} · {activeJob ? `${activeJob.threads} thread${activeJob.threads === 1 ? "" : "s"}` : "1 thread (default)"}
+        </span>
+        . Results land in{" "}
+        <code style={{ color: "var(--accent-muted)" }}>
+          output/jobs/{activeJobId ?? "<auto>"}/
+        </code>.
       </div>
 
-      {/* ----- status panel ----- */}
       {lastRun.status !== "idle" && (
-        <RunStatusPanel lastRun={lastRun} onOpenPostMode={() => setMode("post")} />
+        <RunStatusPanel lastRun={lastRun} />
       )}
     </>
   );
 }
 
-function RunStatusPanel({ lastRun, onOpenPostMode }) {
+function SectionLabel({ children, style }) {
+  return (
+    <div
+      style={{
+        fontSize: 10,
+        color: "var(--text-secondary)",
+        fontFamily: MONO,
+        textTransform: "uppercase",
+        letterSpacing: 0.08,
+        marginBottom: 4,
+        ...style,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function SmallLabel({ children }) {
+  return (
+    <div
+      style={{
+        fontSize: 10,
+        color: "var(--text-secondary)",
+        fontFamily: MONO,
+        marginBottom: 3,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function RunStatusPanel({ lastRun }) {
   const { status } = lastRun;
   const running = status === "running";
   const success = status === "success";
   const failed  = status === "failed";
 
-  // While running we use stdoutTail from the /run-status poll (server
-  // truncates to last 4 KB). When done, we have the full stdout in
-  // lastRun.stdout. Either way pull the last ~25 lines.
   const stdout = lastRun.stdout ?? lastRun.stdoutTail ?? "";
   const stderr = lastRun.stderr ?? "";
   const stdoutTail = stdout.split("\n").slice(-25).join("\n");
   const [showFull, setShowFull] = React.useState(false);
 
-  // Elapsed time refresh — while running the server's elapsedMs is stale
-  // between polls (up to 500 ms behind). Tick a local clock at 100 ms so
-  // the displayed time looks smooth, fall back to the server value once
-  // the run is terminal.
   const [, tick] = React.useState(0);
   React.useEffect(() => {
     if (!running) return;
@@ -126,10 +387,6 @@ function RunStatusPanel({ lastRun, onOpenPostMode }) {
     ? Date.now() - lastRun.startedAt
     : (lastRun.durationMs ?? lastRun.elapsedMs ?? 0);
 
-  // Progress fraction = current phase index / (last phase index − 1).
-  // "done" maps to 100 %; "starting" maps to 0 %. The intermediate
-  // solving_rN steps spread linearly in between so the bar moves
-  // visibly as the script logs each refinement.
   const phase = lastRun.phase ?? "starting";
   const pIndex = phaseIndex(phase);
   const pMax = PHASE_SEQUENCE.length - 1;
@@ -169,10 +426,14 @@ function RunStatusPanel({ lastRun, onOpenPostMode }) {
         </span>
         <span style={{ color: "var(--text-muted)", fontSize: 10 }}>
           {(elapsedMs / 1000).toFixed(1)} s
+          {lastRun.threads != null && lastRun.threads > 1 && (
+            <span style={{ marginLeft: 6, color: "var(--accent-muted)" }}>
+              · {lastRun.threads}×
+            </span>
+          )}
         </span>
       </div>
 
-      {/* Live monitor: phase label + progress bar, only while running. */}
       {running && (
         <div style={{ marginBottom: 8 }}>
           <div
@@ -311,24 +572,6 @@ function RunStatusPanel({ lastRun, onOpenPostMode }) {
 {stderr}
           </pre>
         </>
-      )}
-
-      {success && (
-        <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-          <button
-            type="button"
-            className="codex-action-button"
-            onClick={onOpenPostMode}
-            style={{
-              padding: "6px 12px",
-              fontSize: 10,
-              letterSpacing: 0.08,
-              textTransform: "uppercase",
-            }}
-          >
-            Open Post-Processor →
-          </button>
-        </div>
       )}
 
       {stdout.length > stdoutTail.length && (

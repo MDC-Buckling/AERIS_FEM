@@ -17,7 +17,9 @@ import { parseVts, buildStructuredIndices } from "./parseVts.js";
  * — they're wireframe-only PolyData and don't have SolutionField).
  */
 export async function loadResult(pvdRelPath, dataBase = "/data") {
-  const pvdUrl = `${dataBase}/${pvdRelPath}`.replace(/\/{2,}/g, "/");
+  // Strip any leading "/" so the join below doesn't double up.
+  const cleanRel = String(pvdRelPath).replace(/^\/+/, "");
+  const pvdUrl = `${dataBase}/${cleanRel}`.replace(/\/{2,}/g, "/");
   const pvdText = await (await fetch(pvdUrl)).text();
   // Build a proper base URL so relative refs in the .pvd resolve correctly.
   const base = new URL(pvdUrl, window.location.origin);

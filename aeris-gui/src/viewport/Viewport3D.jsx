@@ -499,13 +499,15 @@ export default function Viewport3D() {
 
     // Look up the selected result. Manifest entries take priority because
     // they reflect what's actually on disk after the last solve; fallback
-    // to KNOWN_RESULTS for the pre-run case. The shape (id, pvd, kind) is
-    // the same so the downstream loader doesn't care which one wins.
+    // to KNOWN_RESULTS for the pre-run case. Per-job results live under
+    // /data/jobs/<jobId>/, so we prepend that here when the manifest
+    // carries a jobId — keeps the sidecar paths clean (just "modes/…").
+    const prefix = currentResults?.jobId ? `jobs/${currentResults.jobId}/` : "";
     const fromManifest = currentResults
       ? [
-          currentResults.files?.geometry && { id: "geometry", pvd: currentResults.files.geometry, kind: "geometry" },
-          currentResults.files?.linearPrestress && { id: "linear", pvd: currentResults.files.linearPrestress, kind: "displacement" },
-          ...((currentResults.modes ?? []).map((m) => ({ id: m.id, pvd: m.pvd, kind: "mode" }))),
+          currentResults.files?.geometry && { id: "geometry", pvd: prefix + currentResults.files.geometry, kind: "geometry" },
+          currentResults.files?.linearPrestress && { id: "linear", pvd: prefix + currentResults.files.linearPrestress, kind: "displacement" },
+          ...((currentResults.modes ?? []).map((m) => ({ id: m.id, pvd: prefix + m.pvd, kind: "mode" }))),
         ].filter(Boolean)
       : null;
     const result =

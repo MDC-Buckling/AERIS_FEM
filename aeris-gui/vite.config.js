@@ -12,13 +12,50 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SOLVER_IMAGE = "aeris/gismo:v25.07.0";
 const SOLVE_TIMEOUT_MS = 5 * 60 * 1000;   // 5 min hard cap per run
 
-// Single-slot run registry. The dev server is local and one user → at most
-// one in-flight solve at a time, so we don't need a real job queue yet. The
-// next live run replaces this slot (the previous run's stdout stays available
-// until then via the same /run-status response). A multi-user / cloud version
-// will swap this for a keyed map + auth.
-const RUNS = new Map();   // runId → { status, phase, child, started, stdout, stderr, ... }
+// Session 4.1: jobs replace the single-slot run registry. Each job owns a
+// folder under output/jobs/<job-id>/ (model.json, run.json, mp.pvd, modes/).
+// In-flight RUNS still indexed by runId so the existing /run-status polling
+// keeps working; each entry now also carries jobId so the GUI can find
+// "which job is currently running" without a separate query.
+const RUNS = new Map();   // runId → { status, phase, jobId, ... }
 let RUN_COUNTER = 0;
+
+// Slug an arbitrary user-supplied job name into a path-safe folder name.
+// Accepts letters / digits / dash / underscore; everything else collapses
+// to a single dash. Empty input → "job-<timestamp>" so the dialog can
+// "Just Submit" without forcing the user to type a name.
+function slugifyJobName(name) {
+  const s = String(name || "").trim().toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return s || `job-${Date.now()}`;
+}
+
+function jobsRoot(outputRoot) {
+  return path.join(outputRoot, "jobs");
+}
+
+function jobDir(outputRoot, jobId) {
+  return path.join(jobsRoot(outputRoot), jobId);
+}
+
+function readJobsIndex(outputRoot) {
+  const indexPath = path.join(jobsRoot(outputRoot), "index.json");
+  if (!fs.existsSync(indexPath)) return { jobs: [] };
+  try {
+    return JSON.parse(fs.readFileSync(indexPath, "utf8"));
+  } catch {
+    return { jobs: [] };
+  }
+}
+
+function writeJobsIndex(outputRoot, idx) {
+  const root = jobsRoot(outputRoot);
+  if (!fs.existsSync(root)) fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(path.join(root, "index.json"),
+                   JSON.stringify(idx, null, 2));
+}
 
 // Picks the latest phase marker out of the rolling stdout. Lines look like:
 //   [AERIS-PHASE] solving_r5
@@ -62,34 +99,103 @@ function aerisOutputServer() {
         });
       });
 
-      // POST /save-model — write the GUI's serialised model into
-      // ../output/model.json so the Python side (cylinder_lba.py --model
-      // .../output/model.json) can consume it. Used by the GUI's Export
-      // Model button. Pure dev-server convenience — when the Solve button
-      // lands in a later session it'll go through the same endpoint.
+      // POST /save-model[?jobId=<id>] — write the GUI's serialised model
+      // into the job's folder (output/jobs/<id>/model.json) when jobId is
+      // given, else the legacy flat output/model.json path. Lets the GUI
+      // pre-save a model under a job ID before /run-solver picks it up.
       server.middlewares.use("/save-model", (req, res) => {
         if (req.method !== "POST") {
           res.statusCode = 405;
           res.end("POST only");
           return;
         }
+        const url = new URL(req.url, "http://x");
+        const jobId = url.searchParams.get("jobId");
         const chunks = [];
         req.on("data", (c) => chunks.push(c));
         req.on("end", () => {
           try {
             const text = Buffer.concat(chunks).toString("utf8");
-            const obj = JSON.parse(text);   // round-trip to validate JSON
-            if (!fs.existsSync(ROOT)) fs.mkdirSync(ROOT, { recursive: true });
-            const out = path.join(ROOT, "model.json");
+            const obj = JSON.parse(text);   // validate JSON
+            const targetDir = jobId
+              ? jobDir(ROOT, slugifyJobName(jobId))
+              : ROOT;
+            if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+            const out = path.join(targetDir, "model.json");
             fs.writeFileSync(out, JSON.stringify(obj, null, 2));
             res.setHeader("Content-Type", "application/json");
-            res.end(JSON.stringify({ ok: true, path: out, bytes: text.length }));
+            res.end(JSON.stringify({ ok: true, path: out, bytes: text.length, jobId }));
           } catch (e) {
             res.statusCode = 400;
             res.setHeader("Content-Type", "application/json");
             res.end(JSON.stringify({ ok: false, error: String(e) }));
           }
         });
+      });
+
+      // GET /jobs — return the on-disk job index (output/jobs/index.json).
+      // POST /jobs — create a new job: { name, threads?, model? } →
+      //   slugifies name, mkdirs output/jobs/<id>/, optionally writes
+      //   model.json, prepends to index, returns the new job record.
+      server.middlewares.use("/jobs", (req, res, next) => {
+        // Sub-paths like /jobs/<id> handled elsewhere (Phase 2).
+        const rest = (req.url || "/").split("?")[0].replace(/^\/+/, "");
+        if (rest.length > 0) return next();
+
+        if (req.method === "GET") {
+          const idx = readJobsIndex(ROOT);
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ ok: true, ...idx }));
+          return;
+        }
+        if (req.method === "POST") {
+          const chunks = [];
+          req.on("data", (c) => chunks.push(c));
+          req.on("end", () => {
+            let body = {};
+            try { body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); }
+            catch {
+              res.statusCode = 400;
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ ok: false, error: "bad JSON body" }));
+              return;
+            }
+            const id = slugifyJobName(body.name);
+            const dir = jobDir(ROOT, id);
+            const idx = readJobsIndex(ROOT);
+            const existing = idx.jobs.find((j) => j.id === id);
+            if (existing && !body.overwrite) {
+              res.statusCode = 409;
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({
+                ok: false, error: `job '${id}' already exists`,
+                hint: "POST { name, overwrite: true } to replace, or pick a different name",
+              }));
+              return;
+            }
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+            if (body.model) {
+              fs.writeFileSync(path.join(dir, "model.json"),
+                               JSON.stringify(body.model, null, 2));
+            }
+            const record = {
+              id,
+              name: body.name || id,
+              createdAt: new Date().toISOString(),
+              threads: Math.max(1, Math.min(64, Number(body.threads) || 1)),
+              lastRunStatus: "idle",     // updated when /run-solver completes
+              lastRunAt: null,
+            };
+            // Prepend so newest is first in the GUI list.
+            idx.jobs = [record, ...idx.jobs.filter((j) => j.id !== id)];
+            writeJobsIndex(ROOT, idx);
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ ok: true, job: record }));
+          });
+          return;
+        }
+        res.statusCode = 405;
+        res.end("GET or POST");
       });
 
       // POST /run-solver — async start. Spawns the docker container, returns
@@ -118,7 +224,13 @@ function aerisOutputServer() {
 
           const scriptsDir = path.resolve(__dirname, "..", "scripts");
           const outputDir  = path.resolve(__dirname, "..", "output");
-          const modelPath  = path.join(outputDir, "model.json");
+          const jobId = opts.jobId ? slugifyJobName(opts.jobId) : null;
+          // Per-job folder if jobId given (the GUI flow always sets it now),
+          // else legacy flat output/ for back-compat with older /save-model
+          // callers. Either way the host-mounted dir becomes /work in
+          // the container.
+          const workDir = jobId ? jobDir(outputDir, jobId) : outputDir;
+          const modelPath = path.join(workDir, "model.json");
           if (!fs.existsSync(modelPath)) {
             res.statusCode = 400;
             res.setHeader("Content-Type", "application/json");
@@ -129,11 +241,16 @@ function aerisOutputServer() {
             return;
           }
 
+          // Threads: 1 by default (single-thread, deterministic). G+Smo
+          // wrapped in OpenMP picks up OMP_NUM_THREADS, so this is the
+          // simplest way to surface parallelisation to the user.
+          const threads = Math.max(1, Math.min(64, Number(opts.threads) || 1));
           const refinement = Number.isFinite(opts.refinement) ? opts.refinement : 5;
           const args = [
             "run", "--rm",
+            "-e", `OMP_NUM_THREADS=${threads}`,
             "-v", `${scriptsDir}:/scripts:ro`,
-            "-v", `${outputDir}:/work:rw`,
+            "-v", `${workDir}:/work:rw`,
             SOLVER_IMAGE,
             "python3", "-u",                  // -u: unbuffered, so phase
                                               // markers flush in real time
@@ -148,6 +265,8 @@ function aerisOutputServer() {
           const child = spawn("docker", args, { windowsHide: true });
           const record = {
             runId,
+            jobId,
+            threads,
             status: "running",
             phase: "starting",
             started,
@@ -190,6 +309,21 @@ function aerisOutputServer() {
             record.status = code === 0 ? "success" : "failed";
             if (record.status === "success") record.phase = "done";
             record.child = null;
+            // Persist last-run status onto the job index so the GUI's
+            // jobs list reflects "success / failed" without polling
+            // /run-status for every past job.
+            if (jobId) {
+              try {
+                const idx = readJobsIndex(outputDir);
+                const j = idx.jobs.find((e) => e.id === jobId);
+                if (j) {
+                  j.lastRunStatus = record.status;
+                  j.lastRunAt = new Date().toISOString();
+                  j.lastDurationMs = record.durationMs;
+                  writeJobsIndex(outputDir, idx);
+                }
+              } catch { /* index race — non-fatal */ }
+            }
           });
 
           res.setHeader("Content-Type", "application/json");
