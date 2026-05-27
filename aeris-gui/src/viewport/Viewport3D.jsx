@@ -407,14 +407,16 @@ export default function Viewport3D() {
     // Edge overlay traces the IGA element grid implied by the current
     // mesh.refinement value. At r=0 each patch is a single element →
     // 4 meridians (one per θ-seam) + 1 axial ring per band. Each +1 in
-    // r doubles both counts (2^r elements per patch per direction). We
-    // cap the visible density to keep the viewport readable above ~r=5;
-    // the solver still gets the real value, the viewport just stops
-    // adding more lines than the eye can follow.
+    // r doubles both counts (the solver sees 2^r elements per patch per
+    // direction). Visual count = real count, with a soft cap that only
+    // kicks in at the very top of the supported r range (NumberField
+    // max=8) so r=5/6 still visibly densify before saturation. Costs
+    // ~O(meridians × segmentsAround + rings × segmentsAround) line
+    // segments, still trivial for three.js at the cap.
     const nBandsPreview = (cyl.partitions?.length ?? 0) + 1;
     const elementsPerPatch = Math.pow(2, Math.max(0, meshRefinement));
-    const meridians = Math.min(4 * elementsPerPatch, 64);
-    const ringsPerBand = Math.min(elementsPerPatch, 12);
+    const meridians = Math.min(4 * elementsPerPatch, 256);
+    const ringsPerBand = Math.min(elementsPerPatch, 96);
     const ringZs = [];
     for (let b = 0; b < nBandsPreview; b++) {
       // Skip the very last ring of each band — it's the band boundary
@@ -431,8 +433,12 @@ export default function Viewport3D() {
         ringZs.push(z0 + t * span);
       }
     }
+    // Ring segment count tracks meridian count so the ring → meridian
+    // intersections land cleanly without visible kinks at the corners.
+    // 96 minimum keeps low-r rings round-looking.
+    const ringSegmentsAround = Math.max(96, meridians);
     const edges = new THREE.LineSegments(
-      buildCylinderEdgesAt(cyl.R, cyl.L, ringZs, meridians, 96),
+      buildCylinderEdgesAt(cyl.R, cyl.L, ringZs, meridians, ringSegmentsAround),
       st.edgeMaterial
     );
     edges.userData.kind = "edges";
