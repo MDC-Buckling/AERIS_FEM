@@ -515,6 +515,16 @@ export default function Viewport3D() {
       KNOWN_RESULTS.find((r) => r.id === selectedId);
     if (!result) return;
 
+    // Cache key includes jobId because different jobs can have the same
+    // result id (mode0 of job A and mode0 of job B are different .vts
+    // files). Without this prefix the cache short-circuits the load when
+    // the user picks a different job in the post-processor — numbers
+    // update (they come from currentResults) but the mesh stays stuck
+    // on the previous job's mode shape.
+    const cacheKey = currentResults?.jobId
+      ? `${currentResults.jobId}:${selectedId}`
+      : selectedId;
+
     let cancelled = false;
 
     const apply = (data) => {
@@ -581,8 +591,8 @@ export default function Viewport3D() {
       }
     };
 
-    if (resultCache[selectedId]) {
-      apply(resultCache[selectedId]);
+    if (resultCache[cacheKey]) {
+      apply(resultCache[cacheKey]);
       return () => {
         cancelled = true;
       };
@@ -602,7 +612,7 @@ export default function Viewport3D() {
           }
         }
         if (cancelled) return;
-        cacheResult(selectedId, data);
+        cacheResult(cacheKey, data);
         apply(data);
         setStatus(`loaded ${data.patches.length} patch(es) — |u|_max=${data.magMax.toExponential(3)}`);
       } catch (e) {
