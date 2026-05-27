@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { useUI } from "../store.js";
 import { MONO } from "../constants.js";
 
@@ -140,8 +140,10 @@ export default function TopChrome() {
           letterSpacing: 0.05,
         }}
       >
-        Session 3.1
+        Session 3.2
       </span>
+
+      <ExportModelButton />
 
       <button
         type="button"
@@ -152,5 +154,42 @@ export default function TopChrome() {
         {theme === "dark" ? "LIGHT" : "DARK"}
       </button>
     </header>
+  );
+}
+
+/** Writes the current in-memory model to ../output/model.json via the
+ * dev-server's POST /save-model. Provides the GUI-to-disk link until
+ * the Solve button lands and runs it implicitly. */
+function ExportModelButton() {
+  const exportModel = useUI((s) => s.exportModel);
+  const [status, setStatus] = React.useState(null);
+
+  const onClick = async () => {
+    setStatus("…");
+    try {
+      const reply = await exportModel();
+      if (reply.ok) {
+        setStatus(`saved ${reply.bytes}B`);
+        setTimeout(() => setStatus(null), 2200);
+      } else {
+        setStatus("err");
+        console.error("export failed:", reply);
+      }
+    } catch (e) {
+      setStatus("err");
+      console.error(e);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      className="codex-action-button"
+      onClick={onClick}
+      title="Write current model state to ../output/model.json"
+      style={{ minWidth: 110 }}
+    >
+      EXPORT MODEL{status && ` · ${status}`}
+    </button>
   );
 }

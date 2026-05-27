@@ -35,6 +35,36 @@ function aerisOutputServer() {
         });
       });
 
+      // POST /save-model — write the GUI's serialised model into
+      // ../output/model.json so the Python side (cylinder_lba.py --model
+      // .../output/model.json) can consume it. Used by the GUI's Export
+      // Model button. Pure dev-server convenience — when the Solve button
+      // lands in a later session it'll go through the same endpoint.
+      server.middlewares.use("/save-model", (req, res) => {
+        if (req.method !== "POST") {
+          res.statusCode = 405;
+          res.end("POST only");
+          return;
+        }
+        const chunks = [];
+        req.on("data", (c) => chunks.push(c));
+        req.on("end", () => {
+          try {
+            const text = Buffer.concat(chunks).toString("utf8");
+            const obj = JSON.parse(text);   // round-trip to validate JSON
+            if (!fs.existsSync(ROOT)) fs.mkdirSync(ROOT, { recursive: true });
+            const out = path.join(ROOT, "model.json");
+            fs.writeFileSync(out, JSON.stringify(obj, null, 2));
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ ok: true, path: out, bytes: text.length }));
+          } catch (e) {
+            res.statusCode = 400;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ ok: false, error: String(e) }));
+          }
+        });
+      });
+
       // /data-index : tiny JSON manifest of what's actually on disk, so the
       // ResultsPanel can populate itself without hard-coding filenames.
       server.middlewares.use("/data-index", (req, res) => {

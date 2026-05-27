@@ -116,6 +116,28 @@ export const useUI = create((set) => ({
       },
     })),
 
+  /** Serialise the current model state into the on-disk model.json schema
+   * (mirrors scripts/aeris_model.py::ModelConfig.to_dict). JSON.stringify
+   * always emits decimal POINTS for numbers regardless of browser locale,
+   * so the German-comma display in <input type=number> never leaks into
+   * the saved JSON. */
+  serializeModel: () => {
+    const s = useUI.getState();
+    return JSON.parse(JSON.stringify(s.model));   // deep clone, no live refs
+  },
+
+  /** POST the current model to the dev server's /save-model endpoint, which
+   * writes ../output/model.json. Returns the server's reply. */
+  exportModel: async () => {
+    const body = useUI.getState().serializeModel();
+    const res = await fetch("/save-model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  },
+
   /** Which result is currently loaded into the viewport. */
   selectedResultId: "mode1",
   selectResult: (id) => set({ selectedResultId: id }),
