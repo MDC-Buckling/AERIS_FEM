@@ -23,6 +23,8 @@ const LOAD_OPTIONS = [
   ["axial",   "Axial Compression"],
   ["bending", "Bending"],
   ["gravity", "Gravity (body force)"],
+  ["point_load", "Point load (concentrated)",
+    { title: "concentrated load(s) at specified node(s). Positions set per-benchmark in the catalog." }],
   ["torsion", "Torsion",
     { disabled: true, title: "needs an N·t shear-Neumann pattern on the top edge and a Donnell-style classical reference — not wired yet" }],
   ["extpress", "External Pressure",
@@ -40,6 +42,7 @@ const LOAD_DESCRIPTIONS = {
   axial:    "Uniform Tz on top edge → uniform tensile membrane (σ_ref = E). Smallest +λ_1 = compressive buckling load factor.",
   bending:  "Cos(θ) Tz on top edge via Tz(x) = E·t·x/R → tension on +x, compression on -x. Buckle localises on -x half.",
   gravity:  "Uniform body force per unit shell area, vertical-downward. Used by static analyses (e.g. Scordelis-Lo dead-load, q = 90/area).",
+  point_load: "Concentrated force at specified node(s). Positions and directions determined by the benchmark definition.",
   torsion:  "Shear traction tangent to the top edge.",
   extpress: "Uniform external pressure on the shell surface.",
   intpress: "Uniform internal pressure (stabilising).",
@@ -69,15 +72,38 @@ const MAGNITUDE_META = {
     step: 1.0,
     hint: "force-per-area in your consistent unit system. Scordelis-Lo literature uses q = 90; for self-weight q = ρ·t·g.",
   },
+  point_load: {
+    symbol: "F",
+    label: "Concentrated load per point  (F)",
+    step: 0.1,
+    hint: "force magnitude at each load point in your consistent unit system. Positions set by the benchmark; see the catalog entry for which nodes are loaded.",
+  },
 };
 
 export default function LoadCase() {
   const load = useUI((s) => s.model.load);
+  const analysisKind = useUI((s) => s.model.analysis.kind);
   const setKind = useUI((s) => s.setLoadKind);
   const setMagnitude = useUI((s) => s.setLoadMagnitude);
+  const setControlMode = useUI((s) => s.setLoadControlMode);
 
   const desc = LOAD_DESCRIPTIONS[load.kind] ?? "?";
   const meta = MAGNITUDE_META[load.kind] ?? MAGNITUDE_META.axial;
+  // Control mode is only meaningful for cylinder GNA today — LBA is
+  // eigenvalue-only, LSA is single direct K·u=F, segment static uses a
+  // body force (no top-edge dual). For force-control or any non-GNA
+  // case the magnitude reads as F; for disp-control GNA it reads as d.
+  const isControllable = analysisKind === "gna" && load.kind === "axial";
+  const controlMode = load.controlMode ?? "force";
+  const isDispControl = isControllable && controlMode === "displacement";
+  const effectiveMeta = isDispControl
+    ? {
+        symbol: "d",
+        label: "Prescribed top-edge axial displacement  (d)",
+        step: 0.01,
+        hint: "Target axial compression at the top edge in your consistent length unit (mm if you used mm + MPa). The solver searches for the F that produces this u_z via secant iteration on F — 1-2 inner solves per load step at small d, more as the cylinder approaches its bifurcation point.",
+      }
+    : meta;
 
   return (
     <>
@@ -100,16 +126,76 @@ export default function LoadCase() {
         />
       </div>
 
+      {/* GNA-only: pick force vs displacement control. For force control
+          (default) you specify F, the solver computes u. For displacement
+          control you specify the target u_z at the top edge, the script
+          does an outer secant search over F per load step. Hidden for
+          LBA / LSA / non-axial cases — they don't have the dual-quantity
+          inversion. */}
+      {isControllable && (
+        <div style={{ marginBottom: 9 }}>
+          <div
+            style={{
+              color: "var(--text-secondary)",
+              fontSize: 10.5,
+              fontFamily: MONO,
+              marginBottom: 4,
+            }}
+          >
+            Control mode
+          </div>
+          <ToggleGroup
+            options={[
+              ["force", "Force control"],
+              ["displacement", "Displacement control"],
+            ]}
+            value={controlMode}
+            onChange={setControlMode}
+            fullWidth
+          />
+        </div>
+      )}
+
+      {/* GNIA doesn't show a force/displacement toggle on purpose: the
+          arc-length continuation IS its own control method (it couples
+          load + displacement and traces through the limit point, which
+          neither pure force- nor pure displacement-control can do
+          robustly). Explain that here so the toggle vanishing when you
+          switch GNA→GNIA isn't a mystery. */}
+      {analysisKind === "gnia" && load.kind === "axial" && (
+        <div
+          style={{
+            marginBottom: 9, padding: "8px 10px",
+            background: "rgba(0,200,255,0.06)",
+            border: "1px dashed var(--accent-muted)",
+            borderRadius: 4, fontSize: 10, color: "var(--text-secondary)",
+            fontFamily: MONO, lineHeight: 1.5,
+          }}
+        >
+          <span style={{ color: "var(--accent)", fontWeight: 700 }}>
+            GNIA uses arc-length control.
+          </span>{" "}
+          No separate force/displacement toggle — arc-length couples both and
+          traces THROUGH the buckling limit point (where force-control NR
+          diverges and displacement-control can miss snap-back). The
+          magnitude below is the reference load; it's auto-scaled so the peak
+          load factor reads as the knockdown. Step size lives in{" "}
+          <span style={{ color: "var(--accent-muted)" }}>
+            SOLVER SETTINGS → Arc-length
+          </span>.
+        </div>
+      )}
+
       <NumberField
-        label={meta.label}
-        symbol={meta.symbol}
+        label={effectiveMeta.label}
+        symbol={effectiveMeta.symbol}
         unit="–"
         value={load.magnitude ?? 1.0}
         onChange={setMagnitude}
         min={1e-12}
-        step={meta.step}
+        step={effectiveMeta.step}
         precision={6}
-        hint={meta.hint}
+        hint={effectiveMeta.hint}
       />
 
       <div

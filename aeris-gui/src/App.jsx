@@ -51,7 +51,7 @@ export default function App() {
             flex: 1,
             display: "flex",
             flexDirection: "column",
-            padding: 12,
+            padding: 16,
             minHeight: 0,
           }}
         >
@@ -74,10 +74,10 @@ export default function App() {
           style={{
             flex: 1,
             display: "grid",
-            gridTemplateColumns: "320px minmax(640px, 1fr) 340px",
+            gridTemplateColumns: "400px minmax(640px, 1.15fr) 400px",
             gridTemplateRows: "1fr",
-            gap: 12,
-            padding: 12,
+            gap: 18,
+            padding: 16,
             minHeight: 0,
           }}
         >
@@ -106,17 +106,17 @@ export default function App() {
                 position: "absolute",
                 top: 10,
                 left: 12,
-                padding: "3px 9px",
-                background: "rgba(0, 15, 40, 0.65)",
-                border: "1px solid var(--control-border)",
+                padding: "4px 10px",
+                background: "rgba(0, 15, 40, 0.5)",
+                border: "1px solid rgba(100, 180, 220, 0.1)",
                 borderRadius: 999,
                 fontSize: 9.5,
                 fontFamily: "'JetBrains Mono', monospace",
                 color: "var(--accent-muted)",
                 textTransform: "uppercase",
-                letterSpacing: 0.08,
+                letterSpacing: 0.05,
                 pointerEvents: "none",
-                backdropFilter: "blur(4px)",
+                backdropFilter: "blur(6px)",
               }}
             >
               {mode === "pre"

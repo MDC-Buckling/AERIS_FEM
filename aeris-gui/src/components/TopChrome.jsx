@@ -45,18 +45,10 @@ export default function TopChrome() {
         padding: "0 16px",
         background: "var(--chrome-bg)",
         borderBottom: "1px solid var(--line-steel)",
-        gap: 16,
+        gap: 18,
       }}
     >
-      <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-        <span className="codex-brand-title">AERIS</span>
-        <span
-          className="codex-case-line"
-          style={{ borderLeft: "1px solid var(--line-steel-soft)", paddingLeft: 10 }}
-        >
-          shell-buckling FEM
-        </span>
-      </div>
+      <span className="codex-brand-title">AERIS</span>
 
       <div
         style={{
@@ -138,17 +130,6 @@ export default function TopChrome() {
       </div>
 
       <div style={{ flex: 1 }} />
-
-      <span
-        style={{
-          fontSize: 9.5,
-          color: "var(--text-soft)",
-          fontFamily: MONO,
-          letterSpacing: 0.05,
-        }}
-      >
-        Session 3.2
-      </span>
 
       <ExportModelButton />
 

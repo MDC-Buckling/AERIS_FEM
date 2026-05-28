@@ -10,7 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Container image + executable conventions — keep in sync with
 // scripts/cylinder_lba.py and the deploy README.
 const SOLVER_IMAGE = "aeris/gismo:v25.07.0";
-const SOLVE_TIMEOUT_MS = 5 * 60 * 1000;   // 5 min hard cap per run
+const SOLVE_TIMEOUT_MS = 60 * 60 * 1000;   // 60 min hard cap per run
 
 // Session 4.1: jobs replace the single-slot run registry. Each job owns a
 // folder under output/jobs/<job-id>/ (model.json, run.json, mp.pvd, modes/).
@@ -20,28 +20,29 @@ const SOLVE_TIMEOUT_MS = 5 * 60 * 1000;   // 5 min hard cap per run
 const RUNS = new Map();   // runId → { status, phase, jobId, ... }
 let RUN_COUNTER = 0;
 
-// Session 4.3: FIFO job queue. Only one docker run executes at a time
-// (single dev machine, no real point in oversubscribing); subsequent
-// requests get a "queued" record and start when the head completes.
+// Session 4.3: FIFO job queue. Up to MAX_PARALLEL_RUNS docker solvers
+// execute in parallel; subsequent requests get queued.
 // Items: { runId, jobId, kickoff } where kickoff is a 0-arg fn that
 // flips the record to "running" + spawns the child.
+const MAX_PARALLEL_RUNS = 3;
 const QUEUE = [];
-let QUEUE_DRAINING = false;
+let ACTIVE_RUNS = 0;
 function enqueueRun(kickoff) {
   QUEUE.push(kickoff);
   drainQueue();
 }
 function drainQueue() {
-  if (QUEUE_DRAINING) return;
-  const next = QUEUE.shift();
-  if (!next) return;
-  QUEUE_DRAINING = true;
-  // The kickoff fn must invoke onDone when its child exits so the next
-  // queued run gets picked up — wired in /run-solver below.
-  next(() => {
-    QUEUE_DRAINING = false;
-    drainQueue();
-  });
+  while (ACTIVE_RUNS < MAX_PARALLEL_RUNS && QUEUE.length > 0) {
+    const next = QUEUE.shift();
+    if (!next) return;
+    ACTIVE_RUNS++;
+    // The kickoff fn must invoke onDone when its child exits so the next
+    // queued run gets picked up — wired in /run-solver below.
+    next(() => {
+      ACTIVE_RUNS--;
+      drainQueue();
+    });
+  }
 }
 
 // Slug an arbitrary user-supplied job name into a path-safe folder name.
@@ -330,12 +331,14 @@ function aerisOutputServer() {
             return;
           }
 
-          // Dispatch on (geometry.shape, analysis.kind) so the right solver
+          // Dispatch on (geometry.shape, analysis.kind, load.kind) so the right solver
           // script runs. cylinder_lba.py owns the closed-cylinder + LBA
-          // pipeline (proven path); scordelis_static.py owns the
+          // pipeline (proven path); cylinder_static.py owns the
+          // cylinder + static/gna with distributed loads; pinched_cylinder_static.py
+          // owns point_load cases; scordelis_static.py owns the
           // cylinder_segment + static linear pipeline (Inc 3 of the
-          // Scordelis-Lo integration). The script file lives in scripts/
-          // for both — same /scripts mount, different entry points.
+          // Scordelis-Lo integration); hemisphere_static.py owns the
+          // hemispherical shell geometry with point loads.
           // Unknown combinations get a 400 with a hint, so the user knows
           // which sections to tweak instead of seeing a cryptic solver
           // error 600 ms later.
@@ -344,19 +347,56 @@ function aerisOutputServer() {
             const modelPeek = JSON.parse(fs.readFileSync(modelPath, "utf8"));
             const shape = modelPeek?.geometry?.shape ?? "cylinder";
             const akind = modelPeek?.analysis?.kind ?? "lba";
+            const loadKind = modelPeek?.load?.kind ?? "axial";
             if (shape === "cylinder" && akind === "lba") {
               solverScript = "/scripts/cylinder_lba.py";
               solverPaysAttentionToRefines = true;
-            } else if (shape === "cylinder_segment" && akind === "static") {
+            } else if (shape === "cylinder" && loadKind === "point_load"
+                       && (akind === "static" || akind === "gna")) {
+              // Pinched cylinder: point-load case (MacNeal-Harder benchmark).
+              // pinched_cylinder_static.py handles the parametric load
+              // positioning and QoI extraction.
+              solverScript = "/scripts/pinched_cylinder_static.py";
+              solverPaysAttentionToRefines = true;
+            } else if (shape === "cylinder"
+                       && (akind === "static" || akind === "gna")) {
+              // LSA/GNA on the closed cylinder with distributed loads
+              // (axial, bending, gravity). cylinder_static.py owns
+              // the load-step sweep + AERIS-PROGRESS protocol that feeds
+              // the live load-deflection chart in the monitor.
+              solverScript = "/scripts/cylinder_static.py";
+              solverPaysAttentionToRefines = true;
+            } else if (shape === "cylinder" && akind === "gnia") {
+              // GNIA on the closed cylinder — arc-length continuation
+              // through the buckling limit point with radial imperfection.
+              // cylinder_arclength.py drives the custom
+              // arclength_shell_multipatch_XML C++ blackbox; same
+              // AERIS-PROGRESS protocol (L / u / Dmin / bif) feeds the
+              // monitor's load-deflection chart + bifurcation flag.
+              solverScript = "/scripts/cylinder_arclength.py";
+              solverPaysAttentionToRefines = true;
+            } else if (shape === "cylinder_segment"
+                       && (akind === "static" || akind === "gna")) {
+              // Both LSA (static) and GNA dispatch to the same script —
+              // internally it adds --NR to static_shell_XML when kind=gna,
+              // chaining a Newton-Raphson iteration after the linear solve.
               solverScript = "/scripts/scordelis_static.py";
+              solverPaysAttentionToRefines = true;
+            } else if (shape === "hemisphere"
+                       && (akind === "static" || akind === "gna")) {
+              // Pinched hemisphere: single-patch NURBS sphere with four
+              // equatorial point loads (MacNeal-Harder benchmark).
+              // hemisphere_static.py owns the geometry NURBS generation
+              // and point-load positioning.
+              solverScript = "/scripts/hemisphere_static.py";
               solverPaysAttentionToRefines = true;
             } else {
               res.statusCode = 400;
               res.setHeader("Content-Type", "application/json");
               res.end(JSON.stringify({
                 ok: false,
-                error: `no solver wired for (shape=${shape}, analysis.kind=${akind})`,
-                hint: "supported today: (cylinder, lba), (cylinder_segment, static)",
+                error: `no solver wired for (shape=${shape}, analysis.kind=${akind}, load.kind=${loadKind})`,
+                hint: "supported today: (cylinder, lba|static|gna|gnia), (cylinder_segment, static|gna), (hemisphere, static|gna)",
               }));
               return;
             }
@@ -388,20 +428,32 @@ function aerisOutputServer() {
           } else {
             refines = [5];
           }
-          // The two scripts share --model + --refines but cylinder_lba.py
-          // also takes --plot-dir (writes mode shapes there); scordelis_
-          // static.py writes its single solution.pvd into /work directly.
+          // Script args: all static scripts take --model + --refines + --work-dir.
+          // cylinder_lba.py also takes --plot-dir (writes mode shapes).
+          // cylinder_arclength.py, cylinder_static.py, pinched_cylinder_static.py,
+          // and hemisphere_static.py also take --threads.
           const scriptArgs = [
             "--model", "/work/model.json",
+            "--work-dir", "/work",
             "--refines", ...refines.map(String),
           ];
           if (solverScript === "/scripts/cylinder_lba.py") {
             scriptArgs.push("--plot-dir", "/work");
-          } else if (solverScript === "/scripts/scordelis_static.py") {
+          } else if (solverScript === "/scripts/scordelis_static.py"
+                  || solverScript === "/scripts/cylinder_static.py"
+                  || solverScript === "/scripts/cylinder_arclength.py"
+                  || solverScript === "/scripts/pinched_cylinder_static.py"
+                  || solverScript === "/scripts/hemisphere_static.py") {
             scriptArgs.push("--threads", String(threads));
           }
+          // Create the record immediately in "queued" state so the GUI
+          // can show queue position while waiting. The actual spawn
+          // happens inside kickoff() when the queue drains to this run.
+          const runId = `run-${Date.now()}-${++RUN_COUNTER}`;
+          const containerName = runId;
           const args = [
             "run", "--rm",
+            "--name", containerName,
             "-e", `OMP_NUM_THREADS=${threads}`,
             "-v", `${scriptsDir}:/scripts:ro`,
             // benchmarks/ mounted so scordelis_static.py can import the
@@ -415,15 +467,11 @@ function aerisOutputServer() {
             solverScript,
             ...scriptArgs,
           ];
-
-          // Create the record immediately in "queued" state so the GUI
-          // can show queue position while waiting. The actual spawn
-          // happens inside kickoff() when the queue drains to this run.
-          const runId = `run-${Date.now()}-${++RUN_COUNTER}`;
           const queuedAt = Date.now();
           const record = {
             runId,
             jobId,
+            containerName,
             threads,
             status: "queued",
             phase: "queued",
@@ -553,6 +601,9 @@ function aerisOutputServer() {
         r.cancelled = true;
         if (r.child) {
           try { r.child.kill("SIGKILL"); } catch {}
+        }
+        if (r.containerName) {
+          try { spawn("docker", ["kill", r.containerName], { windowsHide: true }); } catch {}
         }
         res.end(JSON.stringify({ ok: true, runId, status: "cancelling" }));
       });

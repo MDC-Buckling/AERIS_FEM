@@ -1,6 +1,7 @@
 import React from "react";
 import GlassPanel from "../components/ui/GlassPanel.jsx";
 import SectionHeader from "../components/ui/SectionHeader.jsx";
+import PhysicsInsightsCard from "../components/PhysicsInsightsCard.jsx";
 import { MONO } from "../constants.js";
 import { useUI } from "../store.js";
 import { findItem, SECTIONS } from "./modelTree.js";
@@ -11,6 +12,7 @@ import SectionAssignments from "./sections/SectionAssignments.jsx";
 import MeshDiscretisation from "./sections/MeshDiscretisation.jsx";
 import BcsKind from "./sections/BcsKind.jsx";
 import LoadCase from "./sections/LoadCase.jsx";
+import Imperfections from "./sections/Imperfections.jsx";
 import AnalysisType from "./sections/AnalysisType.jsx";
 import SolverSettings from "./sections/SolverSettings.jsx";
 import RunSolve from "./sections/RunSolve.jsx";
@@ -25,6 +27,7 @@ const WIRED_ITEMS = new Set([
   "mesh.discretisation",
   "bcsLoads.bcs",
   "bcsLoads.load",
+  "imperfections.definition",
   "analysis.type",
   "analysis.solver",
   "run.solve",
@@ -41,6 +44,7 @@ function WiredInspector({ dottedId }) {
     case "mesh.discretisation":                     return <MeshDiscretisation />;
     case "bcsLoads.bcs":                            return <BcsKind />;
     case "bcsLoads.load":                           return <LoadCase />;
+    case "imperfections.definition":               return <Imperfections />;
     case "analysis.type":                           return <AnalysisType />;
     case "analysis.solver":                         return <SolverSettings />;
     case "run.solve":                               return <RunSolve />;
@@ -104,6 +108,13 @@ function LivePreviewLine({ dottedId, fallback }) {
     text = model.bcs.kind;
   } else if (dottedId === "bcsLoads.load") {
     text = model.load.kind;
+  } else if (dottedId === "imperfections.definition") {
+    const im = model.imperfections ?? {};
+    text = im.kind === "none"
+      ? "none (perfect)"
+      : im.kind === "eigenmode"
+        ? `eigenmode · mode ${im.mode} · w=${im.amplitude}`
+        : `random · w=${im.amplitude}`;
   } else if (dottedId === "analysis.type") {
     text = model.analysis.kind.toUpperCase();
   } else if (dottedId === "analysis.solver") {
@@ -485,6 +496,14 @@ export default function PreInspectorPanel() {
             </>
           );
         })()}
+
+        {/* Physics Copilot placeholder — future insights based on model state */}
+        <PhysicsInsightsCard
+          insights={[
+            "Mesh may underresolve local buckling if r < 3 at high L/R",
+            "Eigenmode imperfection tracking recommended for post-buckling",
+          ]}
+        />
       </div>
 
       <div
@@ -502,7 +521,7 @@ export default function PreInspectorPanel() {
         <span style={{ color: "var(--accent-muted)" }}>
           {WIRED_ITEMS.size} wired
         </span>{" "}
-        · session 3.5
+        · AERIS 2026 redesign
       </div>
     </GlassPanel>
   );

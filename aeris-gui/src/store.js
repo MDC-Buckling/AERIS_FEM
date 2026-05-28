@@ -82,7 +82,18 @@ export const useUI = create((set) => ({
     // build_cylinder_xml comment about the E-scaling fix for large E).
     geometry: {
       shape: "cylinder",
-      cylinder: { R: 33.0, L: 100.0, t: 0.1, partitions: [] },
+      // imperfectionForce: radial point-load perturbation at the
+      // midheight + mid-quadrant point of patch 0 (parametric (0.5,
+      // 0.5)). 0 = symmetric (no perturbation; classical LBA/LSA
+      // path). Non-zero seeds the GNA load path off the trivial
+      // symmetric branch so the Newton-Raphson actually traces the
+      // bifurcation instead of converging to the trivial axisymmetric
+      // solution past F_cr. Functional equivalent of ABAQUS's
+      // "Pin radial DOF at midpoint" trick — a force imperfection
+      // instead of a displacement one, but seeds the same modes.
+      // Recommended starting value: 0.001 × F_applied.
+      cylinder: { R: 33.0, L: 100.0, t: 0.1, partitions: [],
+                  imperfectionForce: 0 },
       // Cylindrical-segment "roof" geometry (Increment 1 of the
       // Scordelis-Lo integration). Single biquadratic NURBS patch
       // swung ±phi_deg about the apex; axis along x. Solver wiring
@@ -93,6 +104,18 @@ export const useUI = create((set) => ({
       // Scordelis-Lo case (Belytschko 1985).
       cylinder_segment: { R: 25.0, L: 50.0, t: 0.25, phi_deg: 40.0 },
     },
+    // Imperfection definition (used by GNIA). The textbook workflow: run
+    // LBA first, take the chosen buckling mode, scale it to `amplitude`,
+    // superimpose on the perfect geometry, THEN run the nonlinear
+    // arc-length. All inside one solver pass (cylinder_arclength.py →
+    // arclength_shell_multipatch_XML with -K/-M/-P).
+    //   kind "none"      → perfect shell (sharp bifurcation; arc-length
+    //                      may stall at the singular tangent)
+    //   kind "eigenmode" → LBA mode `mode` scaled to `amplitude` (length
+    //                      units; ≈ t/100 classical) — the gold standard
+    //   kind "random"    → random radial CP perturbation of `amplitude`
+    //                      (quick symmetry-breaker, not code-compliant)
+    imperfections: { kind: "eigenmode", mode: 1, amplitude: 0.001 },
     materials: [
       {
         id: "mat-default",
@@ -125,7 +148,19 @@ export const useUI = create((set) => ({
     // reads as the critical load directly (multiply by your real applied
     // load to get the safety factor). The solver's internal Neumann is
     // independently E-scaled for numerical conditioning.
-    load: { kind: "axial", magnitude: 1.0 },
+    //
+    // controlMode (cylinder GNA only, for now):
+    //   "force"        — magnitude is the applied force F [N or your unit];
+    //                    solver computes the resulting displacement.
+    //   "displacement" — magnitude is the prescribed top-edge axial
+    //                    displacement d [length]; solver iterates to find
+    //                    the force F that produces that displacement.
+    //                    Useful for the "ich gebe 1 mm vor, was sind die N?"
+    //                    workflow + for tracing past peak load on softening
+    //                    paths (where force-control would jump).
+    // LSA / LBA ignore controlMode (LBA is eigenvalue-only; LSA is single
+    // direct K·u=F).
+    load: { kind: "axial", magnitude: 1.0, controlMode: "force" },
     analysis: {
       kind: "lba",
       nmodes: 5,
@@ -135,6 +170,13 @@ export const useUI = create((set) => ({
       //   spectra-shift-invert  → mode 2, generic shift-invert
       //   spectra-cayley        → mode 4, Cayley-transform shift-invert
       solver: "spectra-buckling",
+      // Per-analysis solver method (named by method in the GUI):
+      //   LBA  → `solver` above (Lanczos transform: buckling/shift-invert/cayley)
+      //   LSA  → `lsaSolver`  (linear backend: "ldlt" direct, "cg" iterative)
+      //   GNA  → `gnaSolver`  ("newton" Newton-Raphson, "dr" Dynamic Relaxation)
+      //   GNIA → `almMethod`  (0 Load-control/NR, 1 Riks, 2 Crisfield)
+      lsaSolver: "ldlt",
+      gnaSolver: "newton",
       // "auto" resolves to classical_sigma_cr / E inside the solver, or
       // pass an explicit number to hunt a specific eigenvalue cluster.
       shift: "auto",
@@ -147,6 +189,52 @@ export const useUI = create((set) => ({
       // gsThinShellAssembler IfcPenalty — weak C0/C1 fallback coupling.
       // 1e6 validated; bumping helps if patches couple poorly.
       interface_penalty: 1e6,
+      // -------- GNA load-step adaptation (ABAQUS-style) --------
+      // Mirrors the ABAQUS *STATIC / *DYNAMIC card semantics so the
+      // mental model carries over cleanly. Adaptive walker uses these:
+      //   maxIncrements : hard cap on total step attempts (retries + ok).
+      //                   Halts when reached; bump if the run truncates
+      //                   short of λ=1 with maxIncrements exhausted.
+      //   initIncrement : Δλ at the start of the walk. ABAQUS default
+      //                   is 1/maxIncrements; we default to 0.01 (= one
+      //                   percent of total load per step), giving fine
+      //                   resolution near the origin where most paths
+      //                   are linear and grow-back kicks in quickly.
+      //   maxIncrement  : ceiling for grow-back. Δλ never exceeds this
+      //                   even after long stable runs — useful so the
+      //                   curve stays detailed enough to capture
+      //                   softening when it appears.
+      //   minIncrement  : floor for bisection. If a bisect would drop
+      //                   below this the walker halts with
+      //                   verdict.haltedReason set, indicating the
+      //                   solver couldn't get past that load level.
+      // LSA + LBA ignore all four (LSA is single direct solve; LBA is
+      // eigenvalue-only).
+      maxIncrements: 100,
+      initIncrement: 0.01,
+      maxIncrement: 0.1,
+      minIncrement: 1e-5,
+      // -------- GNIA arc-length (cylinder only) --------
+      // Drives cylinder_arclength.py → arclength_shell_multipatch_XML.
+      //   arcLength    : Δs per Crisfield step (load+displacement coupled).
+      //                  Smaller = finer path resolution near the limit
+      //                  point; the reference load is auto-scaled so
+      //                  λ=1 == classical F_cr (peak λ = knockdown factor).
+      //   maxSteps     : arc-length steps (the solver traces past the
+      //                  limit point into post-buckling, so this caps the
+      //                  softening tail length too).
+      //   imperfection : radial control-point perturbation amplitude
+      //                  (length units; ≈ t/100 classical). 0 = perfect
+      //                  shell — but then the limit point is a sharp
+      //                  bifurcation the arc-length can't smoothly trace,
+      //                  so a small value is recommended. Larger ⇒ deeper
+      //                  knockdown.
+      //   almMethod    : 0 load-control, 1 Riks, 2 Crisfield (default —
+      //                  most robust through limit points).
+      arcLength: 0.05,
+      maxSteps: 60,
+      imperfection: 0.001,
+      almMethod: 2,
     },
   },
 
@@ -155,7 +243,11 @@ export const useUI = create((set) => ({
   setCylinderDim: (key, value) =>
     set((s) => {
       const v = Number(value);
-      if (!Number.isFinite(v) || v <= 0) return {};
+      if (!Number.isFinite(v)) return {};
+      // imperfectionForce is allowed to be exactly zero (= disabled);
+      // R/L/t must stay strictly positive.
+      if (key !== "imperfectionForce" && v <= 0) return {};
+      if (key === "imperfectionForce" && v < 0) return {};
       return {
         model: {
           ...s.model,
@@ -325,6 +417,15 @@ export const useUI = create((set) => ({
   setLoadKind: (kind) =>
     set((s) => ({ model: { ...s.model, load: { ...s.model.load, kind } } })),
 
+  /** Switch between force-control and displacement-control. Only
+   * affects cylinder GNA today (LBA is eigenvalue-only; LSA is
+   * single K·u=F; segment static uses gravity body force, no
+   * top-edge control to invert). */
+  setLoadControlMode: (mode) =>
+    set((s) => ({
+      model: { ...s.model, load: { ...s.model.load, controlMode: mode } },
+    })),
+
   /** Set the applied-load magnitude (model.load.magnitude). Cosmetic for
    * LBA — the eigenvalue is invariant under this scaling — but it lets
    * the user read the verdict's critical-load number in their own units
@@ -482,10 +583,22 @@ export const useUI = create((set) => ({
     }
   },
 
-  /** Set model.analysis.kind. Only "lba" is enabled today; gnia / modal /
-   * static are placeholders for future sessions. */
+  /** Set model.analysis.kind. lba / static / gna / gnia all wired. */
   setAnalysisKind: (kind) =>
     set((s) => ({ model: { ...s.model, analysis: { ...s.model.analysis, kind } } })),
+
+  /** Patch one field on model.imperfections (kind / mode / amplitude).
+   * Used by the Imperfections inspector section; consumed by GNIA. */
+  setImperfectionField: (key, value) =>
+    set((s) => {
+      if (typeof value === "number" && !Number.isFinite(value)) return {};
+      return {
+        model: {
+          ...s.model,
+          imperfections: { ...(s.model.imperfections ?? {}), [key]: value },
+        },
+      };
+    }),
 
   /** Patch one field on model.analysis (solver / shift / nmodes / tolerance
    * / ncv_factor / interface_penalty). Strings ("auto", solver names) and
@@ -759,6 +872,14 @@ export const useUI = create((set) => ({
   setShowEdges: (b) => set({ showEdges: b }),
   showUndeformed: false,
   setShowUndeformed: (b) => set({ showUndeformed: b }),
+  /** When on, the viewport draws a magenta arrow pointing at the vertex
+   * where the currently-displayed scalar field reaches its maximum (in
+   * the warped/deformed configuration). Re-located automatically when
+   * displayField / warpScale / result change. Off by default — useful
+   * for quickly answering "where on the model is the peak" without
+   * having to orbit and eyeball the color. */
+  showMaxArrow: false,
+  setShowMaxArrow: (b) => set({ showMaxArrow: b }),
 
   /** Colormap for the post-mode result shader. "aeris-auto" tracks the
    * theme (dark/light) and keeps the on-brand look; otherwise it's one

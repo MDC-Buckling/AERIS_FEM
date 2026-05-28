@@ -69,6 +69,42 @@ function resultsFromManifest(r) {
         : "eigenvalue not separately captured (see Mode 1 for λ_1)",
     });
   }
+
+  // Stress / strain fields — surface only the ones the C++ driver
+  // actually wrote (the python sidecar omits the key when the .pvd is
+  // missing, so older jobs without --stress don't get broken-link
+  // entries here). σ_vm is a true 1-component scalar; the Principal*
+  // entries are 3-vec eigenvalue triplets that the GUI's loader
+  // projects to max(|component|) per vertex (see Viewport3D's
+  // `stressEntries`). All renders on the undeformed shell — bringing
+  // them onto the deformed configuration needs solver-side sampling
+  // at the displacement mesh's resolution.
+  const stressManifest = [
+    { id: "stress-vm",         key: "stressVonMises",
+      label: "Stress · σ_vm (membrane, von Mises)",
+      desc:  "Von Mises membrane stress on the undeformed shell · ABAQUS-style scalar contour" },
+    { id: "stress-princ-mem",  key: "principalMembraneStress",
+      label: "Stress · σ_p,mem (max principal membrane)",
+      desc:  "Largest |σ_i| of the principal membrane stress triplet — peak fibre stress" },
+    { id: "stress-princ-flex", key: "principalFlexuralStress",
+      label: "Stress · σ_p,flex (max principal flexural)",
+      desc:  "Largest |σ_i| of the principal bending stress triplet — peak surface bending" },
+    { id: "strain-princ-mem",  key: "principalMembraneStrain",
+      label: "Strain · ε_p,mem (max principal membrane)",
+      desc:  "Largest |ε_i| of the principal membrane strain triplet" },
+    { id: "strain-princ-flex", key: "principalFlexuralStrain",
+      label: "Strain · ε_p,flex (max principal flexural)",
+      desc:  "Largest |ε_i| of the principal flexural strain triplet" },
+  ];
+  for (const e of stressManifest) {
+    if (r.files?.[e.key]) {
+      items.push({
+        id: e.id, label: e.label, pvd: r.files[e.key],
+        kind: e.id.startsWith("strain") ? "strain" : "stress",
+        description: e.desc,
+      });
+    }
+  }
   return items;
 }
 
@@ -181,10 +217,16 @@ export default function ResultsPanel() {
     const firstMode = manifest?.modes?.[0]?.id;
     const hasLinear = !!(manifest?.files?.linearPrestress
                           || manifest?.files?.solution);
+    const files = manifest?.files ?? {};
     const validIds = new Set([
       "geometry",
       ...(hasLinear ? ["linear"] : []),
       ...((manifest?.modes ?? []).map((m) => m.id)),
+      ...(files.stressVonMises          ? ["stress-vm"]         : []),
+      ...(files.principalMembraneStress ? ["stress-princ-mem"]  : []),
+      ...(files.principalFlexuralStress ? ["stress-princ-flex"] : []),
+      ...(files.principalMembraneStrain ? ["strain-princ-mem"]  : []),
+      ...(files.principalFlexuralStrain ? ["strain-princ-flex"] : []),
     ]);
     if (!validIds.has(selected)) {
       const fallbackId = firstMode ?? (hasLinear ? "linear" : "geometry");
@@ -193,9 +235,11 @@ export default function ResultsPanel() {
   };
 
   const groups = [
-    { id: "geom", title: "Geometry", items: items.filter((r) => r.kind === "geometry") },
-    { id: "pre", title: "Pre-buckling", items: items.filter((r) => r.kind === "displacement") },
-    { id: "modes", title: "Eigenmodes", items: items.filter((r) => r.kind === "mode") },
+    { id: "geom",   title: "Geometry",    items: items.filter((r) => r.kind === "geometry") },
+    { id: "pre",    title: "Pre-buckling", items: items.filter((r) => r.kind === "displacement") },
+    { id: "modes",  title: "Eigenmodes",  items: items.filter((r) => r.kind === "mode") },
+    { id: "stress", title: "Stress",      items: items.filter((r) => r.kind === "stress") },
+    { id: "strain", title: "Strain",      items: items.filter((r) => r.kind === "strain") },
   ];
 
   return (

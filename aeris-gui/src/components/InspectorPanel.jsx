@@ -43,18 +43,26 @@ function metaFromResults(r) {
   if (!r) return LBA_META_FALLBACK;
   const analysisKind = r.analysisKind ?? "lba";
 
-  // ---- LSA (Linear Static Analysis) ----
-  if (analysisKind === "static") {
+  // ---- LSA (Linear Static Analysis) / GNA (Newton-Raphson) ----
+  // Both run through static_shell_XML and produce the same sidecar shape
+  // (qois[], deformed mesh + stress files) — only difference is whether
+  // --NR was passed. We keep the inspector kind as "static" so all the
+  // downstream renders work unchanged; the driver field below carries
+  // the actual nonlinearity flag for the provenance block.
+  if (analysisKind === "static" || analysisKind === "gna") {
     const qoi = (r.qois && r.qois[0]) || null;
     const segCase = r.case ?? {};
     return {
       kind: "static",
+      analysisKind,
       // Geometry/material fields used by the "case" block. Segment cases
       // carry phi_deg too (rendered alongside R/L/t when present).
       R: segCase.R, L: segCase.L, t: segCase.t,
       phi_deg: segCase.phi_deg,
       E: segCase.E, nu: segCase.nu,
-      driver: "static_shell_XML",
+      driver: analysisKind === "gna"
+        ? "static_shell_XML --NR"
+        : "static_shell_XML",
       coupling: r.mesh?.coupling ?? "—",
       qoi,                                     // { name, label, qoiValue, qoiAbsValue, ... }
       finestR: r.mesh?.refinement,
@@ -62,6 +70,29 @@ function metaFromResults(r) {
       bcs: r.bcs,
       // Mode list is empty for static — keep an empty modeEigs map so
       // the "isMode && eig" guard short-circuits cleanly.
+      modeEigs: {},
+      generatedAt: r.generatedAt,
+      isFallback: false,
+    };
+  }
+
+  // ---- GNIA (arc-length knockdown) ----
+  if (analysisKind === "gnia") {
+    const c = r.case ?? {};
+    const v = r.verdict ?? {};
+    return {
+      kind: "gnia",
+      analysisKind,
+      R: c.R, L: c.L, t: c.t, E: c.E, nu: c.nu,
+      driver: "arclength_shell_multipatch_XML",
+      coupling: r.mesh?.coupling ?? "—",
+      finestR: r.mesh?.refinement,
+      lambdaCritical: v.lambdaCritical,
+      knockdownFactor: v.knockdownFactor,
+      criticalLoadComputed: v.criticalLoadComputed,
+      criticalLoadClassical: v.criticalLoadClassical,
+      bifurcationStep: v.bifurcationStep,
+      imperfection: r.imperfections ?? null,
       modeEigs: {},
       generatedAt: r.generatedAt,
       isFallback: false,
@@ -98,6 +129,8 @@ export default function InspectorPanel() {
   const setShowEdges = useUI((s) => s.setShowEdges);
   const showUndeformed = useUI((s) => s.showUndeformed);
   const setShowUndeformed = useUI((s) => s.setShowUndeformed);
+  const showMaxArrow = useUI((s) => s.showMaxArrow);
+  const setShowMaxArrow = useUI((s) => s.setShowMaxArrow);
   const viewPreset = useUI((s) => s.viewPreset);
   const setViewPreset = useUI((s) => s.setViewPreset);
   const status = useUI((s) => s.status);
@@ -110,8 +143,19 @@ export default function InspectorPanel() {
   const setDisplayField = useUI((s) => s.setDisplayField);
 
   const LBA_META = metaFromResults(currentResults);
-  const cached = resultCache[selectedId];
+  // resultCache is keyed by `${jobId}:${id}` in post-mode (Viewport3D
+  // prefixes the jobId to avoid cross-job collisions), so look up the
+  // cached patches under that same composite key when we have a jobId.
+  // Falls back to the bare selectedId for the pre-job legacy path.
+  const cacheKey = currentResults?.jobId
+    ? `${currentResults.jobId}:${selectedId}`
+    : selectedId;
+  const cached = resultCache[cacheKey];
   const isMode = selectedId.startsWith("mode");
+  // Treat stress AND strain results the same — both are scalar fields
+  // on the undeformed mesh, no displacement-component projection
+  // applies, and the warp slider has nothing to scale.
+  const isStress = selectedId.startsWith("stress") || selectedId.startsWith("strain");
   const eig = LBA_META.modeEigs[selectedId];
 
   return (
@@ -173,13 +217,16 @@ export default function InspectorPanel() {
 
         {/* ----- Warp + display controls ----- */}
         <SectionHeader>display</SectionHeader>
+        {/* Stress fields are written on the undeformed shell — no displacement
+            vector to warp by, so we disable the slider and grey it out to make
+            the lack of a deformed configuration obvious. */}
         <Slider
-          label="Warp scale"
-          value={warpScale}
+          label={isStress ? "Warp scale (n/a for stress)" : "Warp scale"}
+          value={isStress ? 0 : warpScale}
           min={0}
           max={isMode ? 5 : 0.5}
           step={isMode ? 0.05 : 0.005}
-          onChange={setWarpScale}
+          onChange={isStress ? () => {} : setWarpScale}
           fmt={(v) => v.toFixed(2)}
         />
         <div
@@ -204,38 +251,51 @@ export default function InspectorPanel() {
           >
             {showUndeformed ? "UNDEF OVERLAY ON" : "UNDEF OVERLAY OFF"}
           </button>
+          <button
+            type="button"
+            className={`codex-action-button ${showMaxArrow ? "is-active" : ""}`}
+            onClick={() => setShowMaxArrow(!showMaxArrow)}
+            title="Show a magenta arrow pointing at the vertex where the currently-displayed field reaches its maximum value (in the deformed configuration)."
+          >
+            {showMaxArrow ? "MAX ARROW ON" : "MAX ARROW OFF"}
+          </button>
         </div>
 
         {/* Field selector — pick the scalar projection of the displacement
             vector to colour by. magnitude (= |u|, always positive) works
             with every colormap; the components (u_x / u_y / u_z) are
             signed but rendered as |component| with the signed range
-            surfaced separately in the viewport legend. */}
-        <div style={{ marginTop: 10 }}>
-          <div
-            style={{
-              color: "var(--text-secondary)",
-              fontSize: 10,
-              fontFamily: MONO,
-              textTransform: "uppercase",
-              letterSpacing: 0.08,
-              marginBottom: 4,
-            }}
-          >
-            field
+            surfaced separately in the viewport legend.
+            Hidden for stress results: the .vts ships a 1-component scalar
+            field already (σ_vm has no x/y/z direction), so showing the
+            displacement-component picker would just confuse the user. */}
+        {!isStress && (
+          <div style={{ marginTop: 10 }}>
+            <div
+              style={{
+                color: "var(--text-secondary)",
+                fontSize: 10,
+                fontFamily: MONO,
+                textTransform: "uppercase",
+                letterSpacing: 0.08,
+                marginBottom: 4,
+              }}
+            >
+              field
+            </div>
+            <ToggleGroup
+              fullWidth
+              value={displayField}
+              onChange={setDisplayField}
+              options={[
+                ["magnitude", "|u|"],
+                ["ux", "u_x"],
+                ["uy", "u_y"],
+                ["uz", "u_z"],
+              ]}
+            />
           </div>
-          <ToggleGroup
-            fullWidth
-            value={displayField}
-            onChange={setDisplayField}
-            options={[
-              ["magnitude", "|u|"],
-              ["ux", "u_x"],
-              ["uy", "u_y"],
-              ["uz", "u_z"],
-            ]}
-          />
-        </div>
+        )}
 
         {/* Colormap picker — one row per option with a real gradient swatch
             so the user picks by EYE, not by name. The active row is
@@ -374,10 +434,14 @@ export default function InspectorPanel() {
           </>
         )}
 
-        {/* ----- LSA: QoI block (linear static analysis) ----- */}
+        {/* ----- LSA / GNA: QoI block ----- */}
         {LBA_META.kind === "static" && LBA_META.qoi && (
           <>
-            <SectionHeader>qoi (linear static)</SectionHeader>
+            <SectionHeader>
+              qoi ({LBA_META.analysisKind === "gna"
+                      ? "geometrically nonlinear"
+                      : "linear static"})
+            </SectionHeader>
             <KeyMetric
               variant="primary"
               label={LBA_META.qoi.label ?? "QoI"}
@@ -400,10 +464,66 @@ export default function InspectorPanel() {
           </>
         )}
 
+        {/* ----- GNIA: knockdown verdict ----- */}
+        {LBA_META.kind === "gnia" && (
+          <>
+            <SectionHeader>knockdown (GNIA)</SectionHeader>
+            <KeyMetric
+              variant="primary"
+              label="knockdown factor  λ_cr"
+              value={LBA_META.knockdownFactor != null
+                ? Number(LBA_META.knockdownFactor).toFixed(4) : "—"}
+            />
+            <div style={{ height: 4 }} />
+            <KeyMetric
+              label="F_cr (computed)"
+              value={LBA_META.criticalLoadComputed != null
+                ? Number(LBA_META.criticalLoadComputed).toExponential(3) : "—"}
+            />
+            <div style={{ height: 4 }} />
+            <KeyMetric
+              label="F_cr (classical)"
+              value={LBA_META.criticalLoadClassical != null
+                ? Number(LBA_META.criticalLoadClassical).toExponential(3) : "—"}
+            />
+            {LBA_META.bifurcationStep != null && (
+              <>
+                <div style={{ height: 4 }} />
+                <KeyMetric
+                  label="bifurcation at step"
+                  value={String(LBA_META.bifurcationStep)}
+                />
+              </>
+            )}
+            {LBA_META.imperfection && (
+              <>
+                <div style={{ height: 6 }} />
+                <ResultRow label="imperfection"
+                  value={LBA_META.imperfection.kind === "eigenmode"
+                    ? `eigenmode ${LBA_META.imperfection.lbaMode ?? LBA_META.imperfection.mode ?? "?"}`
+                    : (LBA_META.imperfection.kind ?? "—")} />
+                {LBA_META.imperfection.amplitude != null && LBA_META.t != null && (
+                  <ResultRow label="w / t"
+                    value={(LBA_META.imperfection.amplitude / LBA_META.t).toFixed(3)} />
+                )}
+                {LBA_META.imperfection.lbaEigenvalue != null && (
+                  <ResultRow label="LBA eig (λ₁)"
+                    value={Number(LBA_META.imperfection.lbaEigenvalue).toFixed(3)} />
+                )}
+              </>
+            )}
+            <div style={{ marginTop: 6, fontSize: 9.5, color: "var(--text-muted)",
+                          fontFamily: MONO, lineHeight: 1.4 }}>
+              λ_cr = imperfect ÷ classical buckling load. Reference auto-scaled
+              so λ=1 ≡ classical F_cr. Arc-length traced through the limit point.
+            </div>
+          </>
+        )}
+
         {/* ----- Solver provenance ----- */}
         <SectionHeader>solver</SectionHeader>
         <ResultRow label="driver"
-          value={LBA_META.driver?.replace(/^buckling_shell_|^static_shell_/, "…") ?? "—"} />
+          value={LBA_META.driver?.replace(/^buckling_shell_|^static_shell_|^arclength_shell_/, "…") ?? "—"} />
         <ResultRow label="coupling" value={LBA_META.coupling} />
         <ResultRow label="finest r" value={LBA_META.finestR ?? "—"} />
 
@@ -414,7 +534,7 @@ export default function InspectorPanel() {
           value={cached ? cached.patches.length : "—"}
         />
         <ResultRow
-          label="|u|_max"
+          label={isStress ? "field_max" : "|u|_max"}
           value={cached ? cached.magMax.toExponential(2) : "—"}
         />
         <ResultRow

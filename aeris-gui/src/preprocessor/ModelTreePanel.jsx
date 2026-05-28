@@ -66,7 +66,7 @@ function SectionHeader({ section, expanded, status, sectionIndex, onToggle }) {
         marginTop: 4,
         background: "transparent",
         border: "none",
-        borderBottom: "1px solid var(--line-faint)",
+        borderBottom: "1px solid transparent",
         cursor: "pointer",
         color: "var(--text-primary)",
         fontFamily: MONO,
@@ -74,7 +74,10 @@ function SectionHeader({ section, expanded, status, sectionIndex, onToggle }) {
         fontWeight: 700,
         textTransform: "uppercase",
         letterSpacing: 0.08,
+        transition: "border-color 0.18s ease, color 0.18s ease",
       }}
+      onMouseEnter={(e) => (e.currentTarget.style.borderBottomColor = "var(--line-steel-soft)")}
+      onMouseLeave={(e) => (e.currentTarget.style.borderBottomColor = "transparent")}
     >
       <Chevron open={expanded} />
       <span
@@ -131,12 +134,14 @@ function previewFor(dottedId, model, lastRun) {
   if (dottedId === "analysis.type") {
     const k = model.analysis?.kind;
     // Match the human-readable label users see in AnalysisType.jsx.
-    const LABEL = { lba: "LBA", static: "LSA", gnia: "GNIA", modal: "MODAL" };
+    const LABEL = { lba: "LBA", static: "LSA", gna: "GNA", gnia: "GNIA", modal: "MODAL" };
     return LABEL[k] ?? k;
   }
   if (dottedId === "analysis.solver") {
     const a = model.analysis;
     if (a?.kind === "static") return "linear K·u=F · no eigensolver";
+    if (a?.kind === "gna")    return "Newton-Raphson · K(u)·Δu = r(u) · no eigensolver";
+    if (a?.kind === "gnia")   return `arc-length (Crisfield) · Δs=${a?.arcLength ?? 0.05} · imperf=${a?.imperfection ?? 0.001}`;
     const shiftLbl = a?.shift === "auto" ? "auto" : Number(a?.shift).toExponential(2);
     return `${a?.solver}  ·  N=${a?.nmodes}  ·  σ=${shiftLbl}`;
   }
@@ -164,18 +169,15 @@ function SubItem({ section, item, active, onClick, dottedId }) {
         textAlign: "left",
         padding: "6px 10px 6px 32px",
         marginBottom: 2,
-        background: active ? "rgba(0, 200, 255, 0.10)" : "transparent",
-        border: active
-          ? "1px solid rgba(0, 229, 255, 0.34)"
-          : "1px solid transparent",
-        borderLeft: active
-          ? "2px solid var(--accent)"
-          : "2px solid transparent",
-        borderRadius: 3,
+        background: active ? "rgba(100, 180, 220, 0.08)" : "transparent",
+        border: "1px solid transparent",
+        borderLeft: active ? "2px solid var(--accent)" : "2px solid transparent",
+        borderRadius: 4,
         cursor: "pointer",
         color: active ? "var(--accent)" : "var(--text-secondary)",
         fontFamily: MONO,
         position: "relative",
+        transition: "background 0.18s ease, color 0.18s ease",
       }}
     >
       <div
@@ -314,9 +316,9 @@ export default function ModelTreePanel() {
           lineHeight: 1.45,
         }}
       >
-        Structure locked Session 3.1.{" "}
-        <span style={{ color: "var(--accent-muted)" }}>Geometry</span> fills first;
-        then up the list.
+        Structure locked. Fill order:{" "}
+        <span style={{ color: "var(--accent-muted)" }}>Geometry</span> first, then
+        up the tree. AERIS 2026.
       </div>
     </GlassPanel>
   );

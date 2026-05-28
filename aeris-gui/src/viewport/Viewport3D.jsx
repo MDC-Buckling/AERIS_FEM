@@ -71,6 +71,7 @@ export default function Viewport3D() {
   const warpScale = useUI((s) => s.warpScale);
   const showEdges = useUI((s) => s.showEdges);
   const showUndeformed = useUI((s) => s.showUndeformed);
+  const showMaxArrow = useUI((s) => s.showMaxArrow);
   const viewPreset = useUI((s) => s.viewPreset);
   const resultCache = useUI((s) => s.resultCache);
   const cacheResult = useUI((s) => s.cacheResult);
@@ -153,6 +154,18 @@ export default function Viewport3D() {
     const wireGroup = new THREE.Group();
     wireGroup.visible = false;
     scene.add(wireGroup);
+
+    // Persistent "max field value" pointer arrow — lives in the scene from
+    // startup, hidden until apply() has an anchor + the user toggles it on.
+    // Updating its position via setDirection/setLength/position.copy avoids
+    // any geometry rebuild when the warp slider is scrubbed.
+    const maxArrow = new THREE.ArrowHelper(
+      new THREE.Vector3(0, 0, 1),
+      new THREE.Vector3(0, 0, 0),
+      1, 0xff3070, 0.3, 0.18,
+    );
+    maxArrow.visible = false;
+    scene.add(maxArrow);
 
     // Ambient backdrop ring for visual depth in the dark theme.
     const grid = new THREE.GridHelper(8, 16, 0x00a0c8, 0x004060);
@@ -300,6 +313,8 @@ export default function Viewport3D() {
       wireMaterial,
       seamMaterial,
       grid,
+      maxArrow,
+      maxAnchor: null,     // {posUndef, dispVec, value, diag, center} | null
     };
 
     return () => {
@@ -314,6 +329,10 @@ export default function Viewport3D() {
       seamMaterial.dispose();
       rampTex.dispose();
       gizmo.dispose();
+      maxArrow.line.geometry.dispose();
+      maxArrow.line.material.dispose();
+      maxArrow.cone.geometry.dispose();
+      maxArrow.cone.material.dispose();
       while (meshGroup.children.length) {
         const c = meshGroup.children.pop();
         c.geometry?.dispose();
@@ -333,7 +352,20 @@ export default function Viewport3D() {
     const st = stateRef.current;
     if (!st.uniforms) return;
     st.uniforms.uWarp.value = warpScale;
+    // Reposition the max-field arrow against the new warp without rebuilding
+    // any mesh — the anchor (vertex of max) stays the same, only the warped
+    // world-position shifts. Cheap (3 vec ops + setLength).
+    updateMaxArrow(st, warpScale, useUI.getState().showMaxArrow);
   }, [warpScale]);
+
+  // Show/hide the max-field arrow. The anchor is set by apply(); flipping
+  // the toggle here just changes visibility (and re-runs the position
+  // update in case warp moved between renders).
+  useEffect(() => {
+    const st = stateRef.current;
+    if (!st.maxArrow) return;
+    updateMaxArrow(st, useUI.getState().warpScale, showMaxArrow);
+  }, [showMaxArrow]);
 
   useEffect(() => {
     const st = stateRef.current;
@@ -420,6 +452,9 @@ export default function Viewport3D() {
 
     tearDownGroups(st);
     st.uniforms.uMagMax.value = 1.0;
+    // No deformation field in pre-mode — drop the anchor + hide the arrow.
+    st.maxAnchor = null;
+    if (st.maxArrow) st.maxArrow.visible = false;
 
     // Dispatch on shape. For cylinder_segment we draw the surface + a
     // u/v wireframe driven by mesh.refinement, then BC edge highlights
@@ -614,11 +649,29 @@ export default function Viewport3D() {
     // flat output/ (= a previous LBA run's closed-cylinder mesh).
     const linearPvd = currentResults?.files?.linearPrestress
                        ?? currentResults?.files?.solution;
+    // Stress / strain files written by static_shell_XML --stress. σ_vm is
+    // a true 1-component scalar (no projection needed); the Principal*
+    // entries are 3-vec eigenvalue triplets that the loader projects to
+    // max(|component|) per vertex via opts.projection.
+    const files = currentResults?.files ?? {};
+    const stressEntries = [
+      { id: "stress-vm",         pvdKey: "stressVonMises",          projection: null,      field: "vmStress" },
+      { id: "stress-princ-mem",  pvdKey: "principalMembraneStress", projection: "max-abs", field: "principalMembraneStress" },
+      { id: "stress-princ-flex", pvdKey: "principalFlexuralStress", projection: "max-abs", field: "principalFlexuralStress" },
+      { id: "strain-princ-mem",  pvdKey: "principalMembraneStrain", projection: "max-abs", field: "principalMembraneStrain" },
+      { id: "strain-princ-flex", pvdKey: "principalFlexuralStrain", projection: "max-abs", field: "principalFlexuralStrain" },
+    ];
     const fromManifest = currentResults
       ? [
           currentResults.files?.geometry && { id: "geometry", pvd: prefix + currentResults.files.geometry, kind: "geometry" },
           linearPvd && { id: "linear", pvd: prefix + linearPvd, kind: "displacement" },
           ...((currentResults.modes ?? []).map((m) => ({ id: m.id, pvd: prefix + m.pvd, kind: "mode" }))),
+          ...stressEntries
+            .filter((e) => files[e.pvdKey])
+            .map((e) => ({
+              id: e.id, pvd: prefix + files[e.pvdKey],
+              kind: "stress", projection: e.projection, field: e.field,
+            })),
         ].filter(Boolean)
       : null;
     const result =
@@ -654,18 +707,44 @@ export default function Viewport3D() {
       // user picked in the inspector (|u| / u_x / u_y / u_z). For
       // signed components we use abs() for the color lookup because
       // the shipped colormaps are sequential 0..1; cool-warm diverging
-      // around 0 is a follow-up.
+      // around 0 is a follow-up. For scalar fields (e.g. stress) the
+      // projectField helper ignores displayField and returns the raw
+      // scalar's per-vertex magnitudes.
       const proj = projectField(data.patches, displayField);
       st.uniforms.uMagMax.value = Math.max(proj.fieldMaxAbs, 1e-9);
       // Push stats to the store so ViewportLegend can draw min / max /
-      // mid ticks against whatever's actually being rendered. Signed
-      // min/max preserved separately from the abs-based shader cap.
+      // mid ticks against whatever's actually being rendered. For
+      // scalar-only patches we override the field label using the
+      // manifest entry's own `field` (e.g. "vmStress" /
+      // "principalMembraneStress"); ViewportLegend has FIELD_META
+      // entries for each, so the bar gets the right symbol (σ_vm /
+      // σ_p,mem / ε_p,flex / …) instead of the stale "|u|".
+      const isScalar = data.patches.length > 0 && !!data.patches[0].scalar;
       setDisplayFieldStats({
-        field: displayField,
+        field: isScalar ? (result.field ?? "scalar") : displayField,
         min: proj.fieldMin,
         max: proj.fieldMax,
         maxAbs: proj.fieldMaxAbs,
       });
+
+      // Anchor the max-field arrow on the vertex with the largest |field|
+      // value across all patches. Position is recomputed each frame against
+      // the live warp scale via updateMaxArrow().
+      const maxInfo = findMaxFieldVertex(data.patches, proj.perPatch);
+      if (maxInfo) {
+        const bb = bboxOfPatches(data.patches);
+        st.maxAnchor = {
+          posUndef: maxInfo.posUndef,
+          dispVec: maxInfo.dispVec,
+          value: maxInfo.value,
+          diag: bb.diag,
+          center: bb.center,
+        };
+      } else {
+        st.maxAnchor = null;
+      }
+      const liveState = useUI.getState();
+      updateMaxArrow(st, liveState.warpScale, liveState.showMaxArrow);
 
       for (let i = 0; i < data.patches.length; i++) {
         const p = data.patches[i];
@@ -726,11 +805,12 @@ export default function Viewport3D() {
     (async () => {
       try {
         let data;
+        const loadOpts = { projection: result.projection ?? null };
         try {
-          data = await loadResult(result.pvd);
+          data = await loadResult(result.pvd, "/data", loadOpts);
         } catch (e) {
           if (result.pvdFallback) {
-            data = await loadResult(result.pvdFallback);
+            data = await loadResult(result.pvdFallback, "/data", loadOpts);
           } else {
             throw e;
           }
@@ -875,11 +955,38 @@ function buildRoofSegmentEdges(R, L, phi_deg, uSegs = 16, vSegs = 16) {
  * sign. We keep the signed numbers around so the legend can show the
  * real min/max ticks (which matter for a u_z that goes from -0.30 to
  * +0.05 in Scordelis-Lo — you want to read both endpoints, not just
- * 0.30 either way). */
+ * 0.30 either way).
+ *
+ * Special case: when patches carry a 1-component `scalar` (stress field
+ * like von Mises), the `field` argument is ignored — there's no x/y/z
+ * direction to project — and the per-patch output is just the scalar
+ * itself. fieldMin/Max/MaxAbs report the scalar's signed range. */
 function projectField(patches, field) {
   let fieldMin = Infinity;
   let fieldMax = -Infinity;
   let fieldMaxAbs = 0;
+
+  // Scalar-field path: stress, strain, anything written by the C++
+  // driver as a 1-component .vts. Loader put the values in p.scalar.
+  if (patches.length > 0 && patches[0].scalar) {
+    const perPatch = patches.map((p) => {
+      if (!p.scalar) return new Float32Array(p.positions.length / 3);
+      const out = new Float32Array(p.scalar.length);
+      for (let i = 0; i < p.scalar.length; i++) {
+        const v = p.scalar[i];
+        out[i] = Math.abs(v);
+        if (v < fieldMin) fieldMin = v;
+        if (v > fieldMax) fieldMax = v;
+        const a = Math.abs(v);
+        if (a > fieldMaxAbs) fieldMaxAbs = a;
+      }
+      return out;
+    });
+    if (!Number.isFinite(fieldMin)) fieldMin = 0;
+    if (!Number.isFinite(fieldMax)) fieldMax = 0;
+    return { perPatch, fieldMin, fieldMax, fieldMaxAbs };
+  }
+
   const perPatch = patches.map((p) => {
     const n = p.positions.length / 3;
     const out = new Float32Array(n);
@@ -1241,6 +1348,94 @@ function buildPartitionRings(R, zs, segmentsAround = 96) {
   const geom = new THREE.BufferGeometry();
   geom.setAttribute("position", new THREE.BufferAttribute(arr, 3));
   return geom;
+}
+
+/** Walk the per-patch scalar arrays produced by projectField and return the
+ * (patch, vertex) where the value peaks, along with its undeformed position
+ * and displacement vector. updateMaxArrow then combines those with the
+ * current warp scale to place the pointer. Returns null when no patches
+ * carry any data (very early frames before loadResult resolves). */
+function findMaxFieldVertex(patches, perPatch) {
+  let best = -Infinity;
+  let bestPatchIdx = -1;
+  let bestVertIdx = -1;
+  for (let pi = 0; pi < patches.length; pi++) {
+    const arr = perPatch[pi];
+    if (!arr) continue;
+    for (let i = 0; i < arr.length; i++) {
+      if (arr[i] > best) {
+        best = arr[i];
+        bestPatchIdx = pi;
+        bestVertIdx = i;
+      }
+    }
+  }
+  if (bestPatchIdx < 0) return null;
+  const p = patches[bestPatchIdx];
+  const k = bestVertIdx;
+  const posUndef = new THREE.Vector3(
+    p.positions[k * 3], p.positions[k * 3 + 1], p.positions[k * 3 + 2],
+  );
+  const dispVec = p.displacement
+    ? new THREE.Vector3(
+        p.displacement[k * 3],
+        p.displacement[k * 3 + 1],
+        p.displacement[k * 3 + 2],
+      )
+    : new THREE.Vector3(0, 0, 0);
+  return { posUndef, dispVec, value: best };
+}
+
+/** Axis-aligned bounding box (undeformed) across all patches — returns
+ * {diag, center}. Used to scale the max-arrow length (so it stays
+ * proportionally readable on tiny cylinders AND big silos) and to give
+ * the arrow a sensible "outside" direction to point inward from. */
+function bboxOfPatches(patches) {
+  let xmin = Infinity, ymin = Infinity, zmin = Infinity;
+  let xmax = -Infinity, ymax = -Infinity, zmax = -Infinity;
+  for (const p of patches) {
+    const pos = p.positions;
+    for (let i = 0; i < pos.length; i += 3) {
+      const x = pos[i], y = pos[i + 1], z = pos[i + 2];
+      if (x < xmin) xmin = x; if (x > xmax) xmax = x;
+      if (y < ymin) ymin = y; if (y > ymax) ymax = y;
+      if (z < zmin) zmin = z; if (z > zmax) zmax = z;
+    }
+  }
+  if (!Number.isFinite(xmin)) {
+    return { diag: 1, center: new THREE.Vector3(0, 0, 0) };
+  }
+  const dx = xmax - xmin, dy = ymax - ymin, dz = zmax - zmin;
+  return {
+    diag: Math.sqrt(dx * dx + dy * dy + dz * dz),
+    center: new THREE.Vector3((xmin + xmax) / 2, (ymin + ymax) / 2, (zmin + zmax) / 2),
+  };
+}
+
+/** Reposition + resize the persistent ArrowHelper so its tip lands on the
+ * warped position of the max-field vertex. Direction = inward from the
+ * model bounding-box centre, so the arrow comes from OUTSIDE the geometry
+ * and points at the peak. Length scales with the bbox diagonal so the
+ * pointer reads as the same visual size across geometries (a Scordelis
+ * roof and a 100 m silo both get a sensibly-sized arrow). */
+function updateMaxArrow(st, warpScale, visible) {
+  if (!st.maxArrow) return;
+  if (!st.maxAnchor || !visible) {
+    st.maxArrow.visible = false;
+    return;
+  }
+  const a = st.maxAnchor;
+  const warped = a.posUndef.clone().addScaledVector(a.dispVec, warpScale);
+  const radial = warped.clone().sub(a.center);
+  if (radial.lengthSq() < 1e-12) radial.set(0, 0, 1);
+  radial.normalize();
+  const arrowLen = Math.max(a.diag * 0.18, 1e-6);
+  const origin = warped.clone().addScaledVector(radial, arrowLen);
+  st.maxArrow.position.copy(origin);
+  // Arrow points from the outside (origin) back inward toward the peak.
+  st.maxArrow.setDirection(radial.clone().negate());
+  st.maxArrow.setLength(arrowLen, arrowLen * 0.32, arrowLen * 0.18);
+  st.maxArrow.visible = true;
 }
 
 /** Build a line-segment geometry tracing the (nx × ny) structured grid edges. */

@@ -19,12 +19,12 @@ import { useUI } from "../../store.js";
  * shift-invert family. */
 
 const SOLVER_OPTIONS = [
-  // schema name → human label. Disabled options carry a tooltip explaining
-  // why they're greyed out (Cholesky / RegularInverse only work for K_g SPD
-  // which is not our LBA case).
-  ["spectra-buckling",     "Buckling"],
-  ["spectra-shift-invert", "Shift-Invert"],
-  ["spectra-cayley",       "Cayley"],
+  // schema name → method label. All three are Spectra (Krylov-Schur =
+  // Lanczos-family) eigen-transforms; named by method so the user reads
+  // the algorithm, not an internal id.
+  ["spectra-buckling",     "Lanczos · Buckling"],
+  ["spectra-shift-invert", "Lanczos · Shift-Invert"],
+  ["spectra-cayley",       "Lanczos · Cayley"],
 ];
 
 /** Per-mode descriptive block — title + one-liner + when to pick + caveat
@@ -68,17 +68,26 @@ export default function SolverSettings() {
 
   const info = SOLVER_INFO[analysis.solver] ?? SOLVER_INFO["spectra-buckling"];
 
-  // Static analysis = single linear solve (K · u = F) — no eigenvalue
-  // iteration, so the Spectra mode + nmodes + spectral-shift knobs are
-  // physically meaningless and get hidden. tolerance + ncv_factor +
-  // interface_penalty stay visible because the static path still uses
-  // the same gsThinShellAssembler infrastructure (tolerance applies to
-  // the linear solver, ifc penalty to the patch-coupling fallback).
+  // Static / GNA analysis = no eigenvalue iteration, so Spectra mode +
+  // nmodes + spectral-shift are physically meaningless and get hidden.
+  // tolerance + ncv_factor + interface_penalty stay visible because both
+  // paths still use the same gsThinShellAssembler infrastructure
+  // (tolerance applies to the linear solver inside each NR step,
+  // ifc penalty to the patch-coupling fallback).
   const isStatic = analysis.kind === "static";
+  const isGNA    = analysis.kind === "gna";
+  const isGNIA   = analysis.kind === "gnia";
+  // GNIA also hides the Spectra eigenvalue knobs (it's an arc-length
+  // continuation, not an eigenproblem) — fold it into the linear-banner
+  // path and give it its own arc-length parameter block below.
+  const isLinear = isStatic || isGNA || isGNIA;
+  const analysisLabel = isGNIA ? "GNIA (Geometrically Nonlinear Imperfection Analysis)"
+                      : isGNA  ? "GNA (Geometrically Nonlinear Analysis)"
+                               : "LSA (Linear Static Analysis)";
 
   return (
     <>
-      {isStatic && (
+      {isLinear && (
         <div
           style={{
             marginBottom: 12,
@@ -93,16 +102,218 @@ export default function SolverSettings() {
           }}
         >
           <span style={{ color: "var(--accent)", fontWeight: 700 }}>
-            LSA (Linear Static Analysis) active.
+            {analysisLabel} active.
           </span>{" "}
           Eigenvalue-only knobs (Spectra mode, nmodes, spectral shift) are
-          hidden because they don't apply to a direct K · u = F solve. The
-          advanced solver knobs below still affect the linear solver
-          (tolerance) and patch-coupling fallback (interface penalty).
+          hidden because they don't apply to{" "}
+          {isGNIA ? "an arc-length continuation"
+            : isGNA ? "a Newton-Raphson on K(u)·Δu = r(u)"
+            : "a direct K · u = F"}{" "}
+          solve. The advanced solver knobs below still affect the linear
+          solver (tolerance) and patch-coupling fallback (interface penalty).
         </div>
       )}
 
-      {!isStatic && (<>
+      {/* LSA solver method — a single direct K·u=F solve. The linear
+          backend (sparse LDLT) isn't user-tunable yet (iterative CG is a
+          follow-up), so we show it as fixed info rather than a 1-option
+          dropdown. */}
+      {isStatic && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ color: "var(--text-secondary)", fontSize: 10.5,
+                        fontFamily: MONO, marginBottom: 4 }}>
+            Solver method
+          </div>
+          <div style={{ padding: "6px 10px", background: "var(--control-bg)",
+                        border: "1px solid var(--control-border)",
+                        borderRadius: 4, fontFamily: MONO, fontSize: 11,
+                        color: "var(--text-primary)" }}>
+            Direct · sparse LDLT
+            <span style={{ color: "var(--text-muted)", marginLeft: 6, fontSize: 9.5 }}>
+              (iterative CG — later)
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* GNA-only: ABAQUS-style increment controls. Adaptive walker
+          starts at initIncrement, bisects /2 on Newton divergence (floor
+          minIncrement → halt below), grows ×1.5 after 3 ok steps
+          (cap maxIncrement). maxIncrements is the hard cap on total
+          attempts (retries + ok) — match ABAQUS's "MAXIMUM NUMBER OF
+          INCREMENTS" semantics so the mental model carries over. Hidden
+          for LSA (single direct solve, nothing to ramp). */}
+      {/* GNA solver method — Newton-Raphson (default) or Dynamic
+          Relaxation. Both drive static_shell_XML's composite solver;
+          DR is explicit/robust for very unstable transients, NR is the
+          standard implicit choice. */}
+      {isGNA && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ color: "var(--text-secondary)", fontSize: 10.5,
+                        fontFamily: MONO, marginBottom: 4 }}>
+            Solver method
+          </div>
+          <ToggleGroup
+            options={[["newton", "Newton-Raphson"], ["dr", "Dynamic Relaxation"]]}
+            value={analysis.gnaSolver ?? "newton"}
+            onChange={(v) => setField("gnaSolver", v)}
+            fullWidth
+          />
+          <div style={{ fontSize: 9.5, color: "var(--text-muted)", fontFamily: MONO,
+                        marginTop: 4, lineHeight: 1.4 }}>
+            Newton-Raphson — implicit, quadratic convergence, the default.
+            Dynamic Relaxation — pseudo-transient explicit, slower but
+            robust when NR diverges on strongly snapping paths.
+          </div>
+        </div>
+      )}
+
+      {isGNA && (
+        <div
+          style={{
+            marginTop: 6, marginBottom: 12,
+            padding: "10px 12px",
+            background: "var(--panel-bg-soft)",
+            border: "1px solid var(--line-soft)",
+            borderRadius: 4,
+          }}
+        >
+          <div
+            style={{
+              color: "var(--accent)", fontSize: 10.5,
+              fontWeight: 700, marginBottom: 8,
+              textTransform: "uppercase", letterSpacing: 0.08,
+              textShadow: "var(--shadow-accent)",
+            }}
+          >
+            Load increment control · ABAQUS-style
+          </div>
+          <NumberField
+            label="Maximum number of increments"
+            value={analysis.maxIncrements ?? 100}
+            min={1}
+            max={10000}
+            step={10}
+            onChange={(v) => setField("maxIncrements", Math.max(1, Math.round(v)))}
+            hint="Hard cap on TOTAL step attempts (retries + ok). The walker halts when reached even if λ < 1.0; bump if your run truncates short. ABAQUS default is 100."
+          />
+          <NumberField
+            label="Initial increment  (Δλ_init)"
+            value={analysis.initIncrement ?? 0.01}
+            min={1e-9}
+            max={1.0}
+            step={0.01}
+            precision={6}
+            onChange={(v) => setField("initIncrement", Math.max(1e-9, v))}
+            hint="Δλ at the start of the walk, as a fraction of full load (0.01 = 1 % per step). Smaller = better Newton starting guess on stiff problems; larger = faster on linear regions (adaptive grows back to maxIncrement anyway)."
+          />
+          <NumberField
+            label="Maximum increment  (Δλ_max)"
+            value={analysis.maxIncrement ?? 0.1}
+            min={1e-9}
+            max={1.0}
+            step={0.01}
+            precision={6}
+            onChange={(v) => setField("maxIncrement", Math.max(1e-9, v))}
+            hint="Ceiling for grow-back. Δλ never exceeds this even after long stable runs, so the curve stays detailed enough to catch softening. 0.1 = 10 % per step (max 10 points on a fully-linear path)."
+          />
+          <NumberField
+            label="Minimum increment  (Δλ_min)"
+            value={analysis.minIncrement ?? 1e-5}
+            min={1e-12}
+            max={1.0}
+            step={1e-5}
+            precision={9}
+            onChange={(v) => setField("minIncrement", Math.max(1e-12, v))}
+            hint="Floor for bisection. If a bisect would drop Δλ below this the walker halts and verdict.haltedReason records the load level it couldn't get past. Tight floor (1e-5) lets the walker hunt deep before giving up."
+          />
+        </div>
+      )}
+
+      {/* GNIA-only: arc-length continuation params. The reference load is
+          auto-scaled so λ=1 == classical F_cr, so the peak λ the walk
+          reaches reads directly as the knockdown factor. */}
+      {isGNIA && (
+        <div
+          style={{
+            marginTop: 6, marginBottom: 12,
+            padding: "10px 12px",
+            background: "var(--panel-bg-soft)",
+            border: "1px solid var(--line-soft)",
+            borderRadius: 4,
+          }}
+        >
+          <div
+            style={{
+              color: "var(--accent)", fontSize: 10.5,
+              fontWeight: 700, marginBottom: 8,
+              textTransform: "uppercase", letterSpacing: 0.08,
+              textShadow: "var(--shadow-accent)",
+            }}
+          >
+            Arc-length continuation · GNIA
+          </div>
+          <NumberField
+            label="Arc-length step  (Δs)"
+            value={analysis.arcLength ?? 0.05}
+            min={1e-4}
+            max={1.0}
+            step={0.01}
+            precision={5}
+            onChange={(v) => setField("arcLength", Math.max(1e-4, v))}
+            hint="Arc length per step (couples load + displacement). Smaller = finer path resolution near the limit point but more steps. 0.05 is a good start; drop it if the walk stalls bisecting at the limit point."
+          />
+          <NumberField
+            label="Max steps"
+            value={analysis.maxSteps ?? 60}
+            min={1}
+            max={500}
+            step={10}
+            onChange={(v) => setField("maxSteps", Math.max(1, Math.round(v)))}
+            hint="Arc-length steps. The solver traces PAST the limit point into post-buckling, so this also caps the softening-tail length. ~50 reaches well past the cylinder limit point."
+          />
+          <div style={{ color: "var(--text-secondary)", fontSize: 10.5,
+                        fontFamily: MONO, marginBottom: 4 }}>
+            Solver method
+          </div>
+          <ToggleGroup
+            options={[
+              ["0", "Newton-Raphson (Load control)"],
+              ["1", "Riks"],
+              ["2", "Crisfield"],
+            ]}
+            value={String(analysis.almMethod ?? 2)}
+            onChange={(v) => setField("almMethod", Number(v))}
+            fullWidth
+          />
+          <div style={{ fontSize: 9.5, color: "var(--text-muted)", fontFamily: MONO,
+                        marginTop: 4, lineHeight: 1.4 }}>
+            ALM method — Riks (cylindrical) is most robust through limit
+            points with imperfections; Crisfield (spherical) can hit complex
+            roots at the first step for larger imperfections; Load control
+            can't pass a load limit point.
+          </div>
+          {/* The imperfection (kind / mode / amplitude) lives in its OWN
+              section — IMPERFECTIONS → Definition — so there's a single
+              source of truth. Pointer here to avoid the earlier duplicate
+              amplitude field that lived in two places. */}
+          <div style={{ marginTop: 8, padding: "7px 9px",
+                        background: "rgba(0,200,255,0.06)",
+                        border: "1px dashed var(--accent-muted)",
+                        borderRadius: 4, fontSize: 9.5,
+                        color: "var(--text-secondary)", fontFamily: MONO,
+                        lineHeight: 1.45 }}>
+            Imperfection shape + amplitude (eigenmode / random, mode #, w/t)
+            are set in{" "}
+            <span style={{ color: "var(--accent-muted)" }}>
+              IMPERFECTIONS → Definition
+            </span>{" "}
+            — not here. This block is just the arc-length numerics.
+          </div>
+        </div>
+      )}
+
+      {!isLinear && (<>
       <div style={{ marginBottom: 9 }}>
         <div
           style={{
@@ -112,7 +323,7 @@ export default function SolverSettings() {
             marginBottom: 4,
           }}
         >
-          Spectra mode
+          Solver method  ·  eigenvalue (Lanczos / Spectra)
         </div>
         <ToggleGroup
           options={SOLVER_OPTIONS}

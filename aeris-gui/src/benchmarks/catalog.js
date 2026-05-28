@@ -44,6 +44,7 @@ const DEFAULT_MESH = {
  * the GUI after loading doesn't lose the dimensions of the OTHER kind. */
 const DEFAULT_CYLINDER = { R: 33.0, L: 100.0, t: 0.1, partitions: [] };
 const DEFAULT_SEGMENT  = { R: 25.0, L: 50.0, t: 0.25, phi_deg: 40.0 };
+const DEFAULT_HEMISPHERE = { R: 10.0, t: 0.04 };
 
 /** Helper: build a cylinder-LBA preset with sensible defaults. Each
  * benchmark only has to specify what's special (R / L / t / E / nu /
@@ -120,6 +121,30 @@ function cylinderLbaInterpret(manifest, pct_tolerance) {
  * Also enriches each convergence row with `pct` = (|u_z| - ref) / ref
  * so the Hub's formatConvergenceRow can render the per-r deviation
  * trend without the script having to know the reference. */
+function staticPointLoadInterpret(manifest, pct_tolerance, refDisplacement, qoiLabel = "|u|") {
+  if (!manifest || !manifest.qois || manifest.qois.length === 0) {
+    return { status: "no-data", text: "no run yet" };
+  }
+  const q = manifest.qois[0];
+  const computed = Number(q.qoiAbsValue ?? Math.abs(q.qoiValue));
+  const dev = 100.0 * (computed - refDisplacement) / refDisplacement;
+  const passed = Math.abs(dev) <= pct_tolerance;
+  const conv = (manifest.convergence ?? []).map((row) => {
+    const v = Number(row.qoiAbsValue ?? Math.abs(row.qoiValue));
+    return {
+      ...row,
+      pct: 100.0 * (v - refDisplacement) / refDisplacement,
+    };
+  });
+  return {
+    status: passed ? "pass" : "fail",
+    deviationPct: dev,
+    headline: `${qoiLabel} = ${computed.toExponential(4)}  (reference ${refDisplacement.toExponential(4)})`,
+    tolerance: pct_tolerance,
+    convergence: conv,
+  };
+}
+
 function scordelisLoInterpret(manifest, pct_tolerance, refAbsUz) {
   if (!manifest || !manifest.qois || manifest.qois.length === 0) {
     return { status: "no-data", text: "no run yet" };
@@ -147,6 +172,65 @@ function scordelisLoInterpret(manifest, pct_tolerance, refAbsUz) {
 /** Preset for the Scordelis-Lo roof. Mirrors store.js's defaults so the
  * "load into model" flow doesn't churn unused fields; only what's
  * actually different for this benchmark is overridden. */
+function pinchedCylinderPreset() {
+  // MacNeal-Harder benchmark: closed cylinder with two opposing point loads
+  // at mid-span. Reference: |u| = 1.8248e-5 at the load (KL shell).
+  return {
+    schemaVersion: 2,
+    name: "Pinched cylinder",
+    geometry: {
+      shape: "cylinder",
+      cylinder: { R: 6.3, L: 12.6, t: 0.03, partitions: [] },
+      cylinder_segment: { ...DEFAULT_SEGMENT },
+      hemisphere: { ...DEFAULT_HEMISPHERE },
+    },
+    materials: [
+      { id: "mat-default", name: "MacNeal-Harder isotropic",
+        model: "linear", E: 207000, nu: 0.3 },
+    ],
+    sections: [
+      { id: "sec-shell-1", name: "Shell — full cylinder",
+        kind: "shell", material_ref: "mat-default",
+        thickness_source: { kind: "geometry" }, offset: "midsurface" },
+    ],
+    assignments: [{ region: "shell_full", section_ref: "sec-shell-1" }],
+    mesh:     { ...DEFAULT_MESH },
+    bcs:      { kind: "clamped_neumann" },
+    load:     { kind: "point_load", magnitude: 1.0 },
+    analysis: { ...DEFAULT_ANALYSIS, kind: "static" },
+  };
+}
+
+function pinchedHemispherePreset() {
+  // MacNeal-Harder benchmark: hemispherical shell with four alternating
+  // ±F point loads at the equator (90° apart). Reference: u_x = 0.0924
+  // at the load (KL shell). Classic inextensional-bending test.
+  return {
+    schemaVersion: 2,
+    name: "Pinched hemisphere",
+    geometry: {
+      shape: "hemisphere",
+      cylinder: { ...DEFAULT_CYLINDER },
+      cylinder_segment: { ...DEFAULT_SEGMENT },
+      hemisphere: { R: 10.0, t: 0.04 },
+    },
+    materials: [
+      { id: "mat-default", name: "MacNeal-Harder isotropic",
+        model: "linear", E: 207000, nu: 0.3 },
+    ],
+    sections: [
+      { id: "sec-shell-1", name: "Shell — hemisphere",
+        kind: "shell", material_ref: "mat-default",
+        thickness_source: { kind: "geometry" }, offset: "midsurface" },
+    ],
+    assignments: [{ region: "shell_full", section_ref: "sec-shell-1" }],
+    mesh:     { ...DEFAULT_MESH },
+    bcs:      { kind: "clamped_neumann" },
+    load:     { kind: "point_load", magnitude: 1.0 },
+    analysis: { ...DEFAULT_ANALYSIS, kind: "static" },
+  };
+}
+
 function scordelisLoPreset() {
   return {
     schemaVersion: 2,
@@ -248,8 +332,10 @@ export const BENCHMARKS = [
     referenceSource: "Same as single-patch · |u_z| = 0.3006 (KL shell)",
     referenceQoI: "|u_z|@free-edge-midpoint = 0.3006",
     tolerancePct: 2.0,
-    enabled: false,
-    comingSoonReason: "Depends on the single-patch Scordelis-Lo wiring landing first; then split.",
+    enabled: true,
+    modelPreset: scordelisLoPreset(),
+    recipe: { refines: [5], convergenceRefines: [3, 4, 5] },
+    interpret: (m) => scordelisLoInterpret(m, 2.0, 0.3006),
   },
   {
     id: "pinched-cylinder",
@@ -259,8 +345,10 @@ export const BENCHMARKS = [
     referenceSource: "MacNeal–Harder (1985) · |u| = 1.8248·10⁻⁵ at the load (KL shell)",
     referenceQoI: "|u|@load = 1.8248·10⁻⁵",
     tolerancePct: 2.0,
-    enabled: false,
-    comingSoonReason: "Needs analysis.kind=\"static\" + point-load support in the GUI's BCs section.",
+    enabled: true,
+    modelPreset: pinchedCylinderPreset(),
+    recipe: { refines: [5], convergenceRefines: [3, 4, 5] },
+    interpret: (m) => staticPointLoadInterpret(m, 2.0, 1.8248e-5, "|u|"),
   },
   {
     id: "pinched-hemisphere",
@@ -270,8 +358,10 @@ export const BENCHMARKS = [
     referenceSource: "MacNeal–Harder (1985) · u_x = 0.0924 at the load (KL shell)",
     referenceQoI: "u_x@load = 0.0924",
     tolerancePct: 2.0,
-    enabled: false,
-    comingSoonReason: "Needs shape=\"hemisphere\" geometry + the static-analysis path.",
+    enabled: true,
+    modelPreset: pinchedHemispherePreset(),
+    recipe: { refines: [5], convergenceRefines: [3, 4, 5] },
+    interpret: (m) => staticPointLoadInterpret(m, 2.0, 0.0924, "u_x"),
   },
 ];
 

@@ -1,6 +1,7 @@
 import React from "react";
 import { MONO } from "../../constants.js";
 import { useUI } from "../../store.js";
+import LoadDeflectionPanel from "./LoadDeflectionPanel.jsx";
 
 /** Wired inspector for RUN > Solve — the Jobs panel.
  *
@@ -40,10 +41,40 @@ const PHASE_SEQUENCE = [
 ];
 
 function phaseIndex(phase) {
+  // GNA load-step phases (solving_step_1 / _2 / …) aren't in the
+  // PHASE_SEQUENCE table — they come from cylinder_static.py's
+  // per-increment loop. Treat them as "in the middle" of the progress
+  // bar so the bar still moves even though we don't know the total at
+  // PHASE_SEQUENCE design time. The LoadDeflectionPanel surfaces the
+  // exact step/total below the bar.
+  if (/^solving_step_\d+$/.test(phase)) {
+    return Math.floor(PHASE_SEQUENCE.length / 2);
+  }
+  // GNIA stages map onto coarse progress-bar positions (LBA early,
+  // imperfection mid, arc-length most of the bar).
+  const GNIA_POS = {
+    lba_solving: 0.15, lba_done: 0.25, applying_imperfection: 0.35,
+    arclength_start: 0.4, arclength_done: 0.98,
+  };
+  if (phase && GNIA_POS[phase] != null) {
+    return Math.round(GNIA_POS[phase] * (PHASE_SEQUENCE.length - 1));
+  }
   const i = PHASE_SEQUENCE.findIndex((p) => p.id === phase);
   return i >= 0 ? i : 0;
 }
 function phaseLabel(phase) {
+  const m = phase && phase.match(/^solving_step_(\d+)$/);
+  if (m) return `Load step ${m[1]} — Newton-Raphson`;
+  // GNIA arc-length stages (cylinder_arclength.py / arclength driver).
+  const GNIA = {
+    lba_solving:          "GNIA · solving LBA for imperfection mode…",
+    lba_done:             "GNIA · LBA done — extracting buckling mode",
+    applying_imperfection:"GNIA · superimposing imperfection on geometry",
+    arclength_start:      "GNIA · arc-length continuation started",
+    arclength_done:       "GNIA · arc-length done",
+    halt_min_arclength:   "GNIA · halted (min arc length reached)",
+  };
+  if (phase && GNIA[phase]) return GNIA[phase];
   const p = PHASE_SEQUENCE.find((p) => p.id === phase);
   return p?.label ?? phase;
 }
@@ -90,6 +121,21 @@ export default function RunSolve() {
 
   const running = lastRun.status === "running";
   const activeJob = jobs.find((j) => j.id === activeJobId);
+
+  const handleKillJob = async (jobId) => {
+    if (!confirm(`Kill running job '${jobs.find((j) => j.id === jobId)?.name}'?`)) return;
+    if (!lastRun.runId) {
+      alert("No active run to kill");
+      return;
+    }
+    const res = await fetch(`/run-cancel?id=${encodeURIComponent(lastRun.runId)}`, { method: "POST" });
+    const data = await res.json();
+    if (!data.ok) {
+      alert(`Kill failed: ${data.error || "unknown error"}`);
+      return;
+    }
+    alert("Job cancelled — docker will stop shortly");
+  };
 
   const handleCreate = async () => {
     setCreateErr(null);
@@ -141,6 +187,7 @@ export default function RunSolve() {
               key={j.id}
               job={j}
               active={j.id === activeJobId}
+              isRunning={running && j.id === activeJobId}
               onSelect={() => setActiveJob(j.id)}
               onLoadResults={async () => {
                 await loadResultsManifest(j.id);
@@ -152,6 +199,7 @@ export default function RunSolve() {
                 const r = await deleteJob(j.id);
                 if (!r.ok) alert(`Delete failed: ${r.error}`);
               }}
+              onKill={() => handleKillJob(j.id)}
             />
           ))}
         </div>
@@ -305,8 +353,8 @@ export default function RunSolve() {
 /** One job's row in the Jobs list. Clicking the body selects it as active
  * (and auto-loads its run.json if it had a successful past run). The
  * trailing action chips give one-click load-into-post-processor + delete. */
-function JobRow({ job, active, onSelect, onLoadResults, onDelete }) {
-  const hasResults = job.lastRunStatus === "success";
+function JobRow({ job, active, onSelect, onLoadResults, onDelete, onKill, isRunning }) {
+  const hasResults = job.lastRunStatus === "success" || job.lastRunStatus === "failed";
   return (
     <div
       style={{
@@ -359,16 +407,38 @@ function JobRow({ job, active, onSelect, onLoadResults, onDelete }) {
         >
           {job.name}
         </span>
+        <span style={{ fontSize: 8.5, color: "var(--text-muted)", textTransform: "uppercase", minWidth: 52 }}>
+          {job.lastRunStatus ?? "—"}
+        </span>
         <span style={{ fontSize: 9, color: "var(--text-soft)" }}>{job.threads}×</span>
         <span style={{ fontSize: 9, color: "var(--text-muted)", minWidth: 56, textAlign: "right" }}>
           {relTime(job.lastRunAt ?? job.createdAt)}
         </span>
       </button>
+      {isRunning && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); document.querySelector('[data-run-status-panel]')?.scrollIntoView({ behavior: 'smooth' }); }}
+          title="Scroll to live monitor"
+          style={{
+            background: "transparent",
+            border: "1px solid var(--accent-muted)",
+            borderRadius: 3,
+            color: "var(--accent)",
+            cursor: "pointer",
+            fontFamily: MONO,
+            fontSize: 9.5,
+            padding: "2px 6px",
+          }}
+        >
+          👁
+        </button>
+      )}
       <button
         type="button"
         onClick={(e) => { e.stopPropagation(); onLoadResults(); }}
         disabled={!hasResults}
-        title={hasResults ? "Load this job's results into the post-processor" : "No successful run yet"}
+        title={hasResults ? "Load this job's results into the post-processor" : "No results yet"}
         style={{
           background: "transparent",
           border: "1px solid var(--line-faint)",
@@ -383,6 +453,26 @@ function JobRow({ job, active, onSelect, onLoadResults, onDelete }) {
       >
         ↗
       </button>
+      {job.lastRunStatus === "running" && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onKill(); }}
+          title="Kill this running job"
+          style={{
+            background: "transparent",
+            border: "1px solid var(--warning-border)",
+            borderRadius: 3,
+            color: "var(--warning)",
+            cursor: "pointer",
+            fontFamily: MONO,
+            fontSize: 11,
+            padding: "1px 6px",
+            fontWeight: 700,
+          }}
+        >
+          ⊘
+        </button>
+      )}
       <button
         type="button"
         onClick={(e) => { e.stopPropagation(); onDelete(); }}
@@ -452,6 +542,21 @@ function RunStatusPanel({ lastRun }) {
   const stderr = lastRun.stderr ?? "";
   const stdoutTail = stdout.split("\n").slice(-25).join("\n");
   const [showFull, setShowFull] = React.useState(false);
+  const [cancelErr, setCancelErr] = React.useState(null);
+
+  const handleCancel = async () => {
+    setCancelErr(null);
+    if (!lastRun.runId) {
+      setCancelErr("No runId found — try refreshing");
+      return;
+    }
+    const res = await cancelRun(lastRun.runId);
+    if (!res.ok) {
+      setCancelErr(res.error || "Cancel failed");
+    } else {
+      setCancelErr(null);
+    }
+  };
 
   const [, tick] = React.useState(0);
   React.useEffect(() => {
@@ -476,6 +581,7 @@ function RunStatusPanel({ lastRun }) {
 
   return (
     <div
+      data-run-status-panel
       style={{
         marginTop: 12,
         padding: "10px 12px",
@@ -520,7 +626,7 @@ function RunStatusPanel({ lastRun }) {
           {inFlight && (
             <button
               type="button"
-              onClick={() => cancelRun(lastRun.runId)}
+              onClick={handleCancel}
               title={queued ? "Skip this queued run" : "SIGKILL the docker child"}
               style={{
                 background: "transparent",
@@ -540,6 +646,23 @@ function RunStatusPanel({ lastRun }) {
           )}
         </div>
       </div>
+
+      {cancelErr && (
+        <div
+          style={{
+            marginBottom: 8,
+            padding: "6px 10px",
+            background: "rgba(255,90,60,0.06)",
+            border: "1px solid var(--error-border)",
+            borderRadius: 4,
+            fontSize: 10.5,
+            color: "var(--error)",
+            lineHeight: 1.45,
+          }}
+        >
+          {cancelErr}
+        </div>
+      )}
 
       {queued && (
         <div
@@ -631,6 +754,13 @@ function RunStatusPanel({ lastRun }) {
           )}
         </div>
       )}
+
+      {/* Live load-deflection panel — only renders when the solver script
+          emits [AERIS-PROGRESS] lines (currently cylinder_static.py). The
+          panel parses the stdout tail client-side and grows a mini chart
+          as each NR-converged increment lands. Stays hidden for LBA /
+          scordelis-static runs so their monitor flow is unchanged. */}
+      <LoadDeflectionPanel stdout={stdout} />
 
       {stdoutTail && (
         <>

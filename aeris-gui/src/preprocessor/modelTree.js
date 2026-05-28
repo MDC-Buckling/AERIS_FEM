@@ -123,24 +123,15 @@ export const SECTIONS = [
     label: "Imperfections",
     items: [
       {
-        id: "amplitude",
-        label: "Amplitude (w/t)",
-        defaultPreview: "0 (perfect)",
-        kind: "field",
-        field: { name: "wt", label: "Imperfection amplitude w/t", unit: "–" },
-      },
-      {
-        id: "source",
-        label: "Type / Source",
-        defaultPreview: "none",
-        kind: "selector",
-        options: [
-          { value: "none", label: "None (perfect shell)", enabled: true },
-          { value: "eigenmode", label: "Eigenmode-shaped", enabled: false, note: "later" },
-          { value: "measured", label: "Measured field (NASA 89-shell DB)", enabled: false, note: "later — the 89 measured fields plug in here" },
-          { value: "axisymmetric", label: "Axisymmetric (Koiter)", enabled: false, note: "later" },
-          { value: "weld", label: "Weld imperfection (Rotter)", enabled: false, note: "later" },
-        ],
+        // Single wired inspector (Session GNIA): pick the imperfection kind
+        // (none / eigenmode / random) + mode number + amplitude. Consumed
+        // by GNIA — the eigenmode kind triggers an internal LBA before the
+        // arc-length. The old amplitude/source split collapsed here, same
+        // pattern as mesh.discretisation.
+        id: "definition",
+        label: "Definition",
+        defaultPreview: "eigenmode · mode 1 · w=0.001",
+        kind: "wired",
       },
       {
         id: "cutouts",
@@ -225,7 +216,8 @@ export const SECTIONS = [
         options: [
           { value: "lba", label: "LBA · linear buckling eigenvalue (Session-2.7)", enabled: true },
           { value: "static", label: "LSA · linear static analysis (Scordelis-Lo PASS)", enabled: true },
-          { value: "gnia", label: "GNIA · geometrically nonlinear (arc-length)", enabled: false, note: "later — gsALMBase / Riks / Crisfield" },
+          { value: "gna", label: "GNA · geometrically nonlinear (Newton-Raphson)", enabled: true },
+          { value: "gnia", label: "GNIA · arc-length + imperfection (knockdown)", enabled: true },
           { value: "modal", label: "Modal (vibration eigenvalue)", enabled: false, note: "later" },
         ],
       },

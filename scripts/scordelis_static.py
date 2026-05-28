@@ -231,17 +231,34 @@ def _build_input_xml(model: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def _run_static(xml_path: Path, work_dir: Path,
-                refines: int, threads: int) -> None:
+                refines: int, threads: int,
+                nonlinear: bool = False, gna_solver: str = "newton") -> None:
     """Spawn static_shell_XML with --plot. stdout is forwarded line-by-line
     so the GUI's /run-status polling sees solver progress (the C++ driver
-    prints its own banners, plus we emit phase markers around it)."""
+    prints its own banners, plus we emit phase markers around it).
+
+    When `nonlinear` is true we add --NR, which chains a Newton-Raphson
+    iteration after the initial linear solve. The lambdas inside
+    static_shell_XML rebuild K(u) and r(u) from the *deformed*
+    configuration (mp_def), so this is true GNA: equilibrium on the
+    current geometry, not the reference one. Same material, same BCs;
+    only the equilibrium iteration changes."""
     cmd = [
         str(SOLVER_EXE),
         "-i", str(xml_path),
         "-o", str(work_dir),
         "-r", str(refines),
         "--plot",
+        # --stress activates the constructStress block in static_shell_XML
+        # which writes MembraneStress / MembraneStressVM / Principal* .pvds
+        # alongside solution.pvd. Cheap (one extra pass through the patches)
+        # and the GUI uses it for the post-processor's stress view.
+        "--stress",
     ]
+    if nonlinear:
+        # GNA solver method: --NR Newton-Raphson (default) or --DR Dynamic
+        # Relaxation. static_shell_XML's composite chains LIN → the chosen.
+        cmd.append("--DR" if gna_solver == "dr" else "--NR")
     env = dict(os.environ)
     env["OMP_NUM_THREADS"] = str(max(1, threads))
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env)
@@ -290,7 +307,7 @@ def _extract_qoi(work_dir: Path, R: float, L: float, phi_deg: float,
 
 def _write_sidecar(work_dir: Path, model: dict,
                    convergence: list[dict], refines: list[int],
-                   threads: int) -> None:
+                   threads: int, analysis_kind: str = "static") -> None:
     """Write /work/run.json. Shape mirrors cylinder_lba.py's sidecar so
     the GUI's loadResultsManifest path Just Works; the static-specific
     fields live under qois[] + analysisKind="static". The Hub
@@ -308,7 +325,7 @@ def _write_sidecar(work_dir: Path, model: dict,
         "schemaVersion": 1,
         "generatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "command": " ".join(sys.argv),
-        "analysisKind": "static",
+        "analysisKind": analysis_kind,
         "case": {
             "R": float(seg["R"]), "L": float(seg["L"]),
             "t": float(seg["t"]), "phi_deg": float(seg["phi_deg"]),
@@ -330,7 +347,7 @@ def _write_sidecar(work_dir: Path, model: dict,
             "magnitude": float(model["load"].get("magnitude", 90.0)),
         },
         "analysis": {
-            "kind": "static",
+            "kind": analysis_kind,
             "threads": int(threads),
         },
         "files": {
@@ -341,6 +358,24 @@ def _write_sidecar(work_dir: Path, model: dict,
             # plots are gone but the convergence[] numbers survive.
             "geometry": "mp.pvd",
             "solution": "solution.pvd",
+            # Stress / strain fields written by the C++ driver's --stress
+            # switch (we always pass it now; see _run_static). Only files
+            # that actually landed on disk are listed — keeps the GUI
+            # from trying to fetch missing entries on older job folders.
+            # σ_vm is a true scalar; the principal-* entries are
+            # 3-component vectors (sorted principal eigenvalues) that
+            # the GUI loader projects to max(|component|) per vertex
+            # for a single-scalar contour view.
+            **{
+                k: v for k, v in {
+                    "stressVonMises":           "MembraneStressVM.pvd",
+                    "principalMembraneStress":  "PrincipalMembraneStress.pvd",
+                    "principalFlexuralStress":  "PrincipalFlexuralStress.pvd",
+                    "principalMembraneStrain":  "PrincipalMembraneStrain.pvd",
+                    "principalFlexuralStrain":  "PrincipalFlexuralStrain.pvd",
+                }.items()
+                if (work_dir / v).exists()
+            },
         },
         "qois": [finest_qoi],
         # convergence[] is the per-r sweep history. Each row carries
@@ -391,11 +426,13 @@ def main(argv: list[str] | None = None) -> int:
             f"scordelis_static.py expects geometry.shape='cylinder_segment'; "
             f"got {shape!r}. cylinder_lba.py owns the closed-cylinder path."
         )
-    if kind != "static":
+    if kind not in ("static", "gna"):
         raise SystemExit(
-            f"scordelis_static.py expects analysis.kind='static'; "
+            f"scordelis_static.py expects analysis.kind in {{'static', 'gna'}}; "
             f"got {kind!r}."
         )
+    nonlinear = (kind == "gna")
+    gna_solver = str(model.get("analysis", {}).get("gnaSolver", "newton")).lower()
 
     work_dir = args.model.parent
     xml_text = _build_input_xml(model)
@@ -403,13 +440,15 @@ def main(argv: list[str] | None = None) -> int:
     xml_path.write_text(xml_text)
 
     print("=" * 70)
-    print("Aeris static linear KL-shell — cylinder_segment + scordelis_diaphragm + gravity")
+    analysis_label = "GNA (Newton-Raphson)" if nonlinear else "LSA (linear static)"
+    print(f"Aeris KL-shell · {analysis_label} · cylinder_segment + scordelis_diaphragm + gravity")
     print("=" * 70)
     seg = model["geometry"]["cylinder_segment"]
     mat = model["materials"][0]
     print(f"Geometry : R={seg['R']}, L={seg['L']}, t={seg['t']}, phi={seg['phi_deg']}°")
     print(f"Material : E={mat['E']}, nu={mat['nu']}")
     print(f"Load     : gravity, q = {model['load'].get('magnitude', 90.0)} per area, -z")
+    print(f"Analysis : {analysis_label}")
     print(f"Mesh     : r = {args.refines} · OMP threads = {args.threads}")
     print()
 
@@ -425,7 +464,8 @@ def main(argv: list[str] | None = None) -> int:
     convergence: list[dict] = []
     for r in args.refines:
         _phase(f"solving_r{r}")
-        _run_static(xml_path, work_dir, refines=r, threads=args.threads)
+        _run_static(xml_path, work_dir, refines=r, threads=args.threads,
+                    nonlinear=nonlinear, gna_solver=gna_solver)
         row = _extract_qoi(work_dir,
                            R=float(seg["R"]), L=float(seg["L"]),
                            phi_deg=float(seg["phi_deg"]), r=r)
@@ -451,7 +491,8 @@ def main(argv: list[str] | None = None) -> int:
     print("(reference comparison is per-benchmark; the Hub interpreter handles it)")
 
     _write_sidecar(work_dir, model, convergence,
-                   refines=args.refines, threads=args.threads)
+                   refines=args.refines, threads=args.threads,
+                   analysis_kind=kind)
     print(f"\nSidecar manifest written: {work_dir}/run.json")
 
     if not args.keep_xml:

@@ -20,9 +20,8 @@ import { useUI } from "../../store.js";
 const KIND_OPTIONS = [
   ["lba", "LBA"],
   ["static", "LSA"],
-  ["gnia", "GNIA · Arc-Length",
-    { disabled: true,
-      title: "geometrically nonlinear / arc-length (Riks-Crisfield) — needs gsALMBase driver, post-buckling sweep, separate verdict pipeline. Not wired yet." }],
+  ["gna", "GNA"],
+  ["gnia", "GNIA"],
   ["modal", "Modal",
     { disabled: true,
       title: "free-vibration K x = λ M x — same Spectra machinery as LBA but K_geom is replaced by the mass matrix M. Not wired yet." }],
@@ -63,6 +62,45 @@ const KIND_INFO = {
       </>
     ),
     settingsHint: "Solver settings: tolerance + interface penalty are honoured; eigenvalue-only knobs (nmodes, shift, Spectra mode) are skipped.",
+  },
+  gna: {
+    title: "GNA = Geometrically Nonlinear Analysis",
+    body: (
+      <>
+        Iterate{" "}
+        <span style={{ color: "var(--accent)" }}>K(u) · Δu = r(u)</span>{" "}
+        via Newton-Raphson, where K and r are reassembled at the deformed
+        configuration each iteration. Same linear-elastic material as LSA;
+        only the equilibrium iteration changes. Captures large-displacement
+        coupling (membrane–bending interaction in deep arches, geometric
+        stiffening / softening) that LSA misses by construction.
+        At small loads GNA ≡ LSA within a few promille — the difference
+        grows with deflection. Pre-buckling tracing only: snap-through
+        and post-buckling need arc-length (GNIA, next).
+      </>
+    ),
+    settingsHint: "Solver settings: same K_L assembly path as LSA, plus a Newton-Raphson loop using gsStructuralAnalysis's gsStaticNewton. NR tolerance / max-iter come from defaults today.",
+  },
+  gnia: {
+    title: "GNIA = Geometrically Nonlinear Imperfection Analysis",
+    body: (
+      <>
+        Arc-length (Crisfield) continuation of the imperfect shell{" "}
+        <span style={{ color: "var(--accent)" }}>through</span> its buckling
+        limit point — the gold-standard knockdown analysis. A small radial
+        imperfection breaks the perfect axisymmetry so the path has a smooth
+        limit point; arc-length traces past it (where force-control NR would
+        diverge) into the post-buckling softening branch. The solver's
+        tangent-stiffness determinant flips sign at the limit point
+        (= the "negative eigenvalue" / bifurcation indicator), reported live
+        in the monitor. The reference load is auto-scaled so the peak load
+        factor λ reads directly as the{" "}
+        <span style={{ color: "var(--accent)" }}>knockdown factor</span>{" "}
+        (imperfect ÷ classical). Cylinder only today; needs r ≥ 4 to resolve
+        the circumferential buckling mode.
+      </>
+    ),
+    settingsHint: "Solver settings: arc-length step Δs, max steps, imperfection amplitude, and ALM method below. Drives the Aeris-built arclength_shell_multipatch_XML; the monitor charts the load-deflection curve + flags the bifurcation step live.",
   },
 };
 

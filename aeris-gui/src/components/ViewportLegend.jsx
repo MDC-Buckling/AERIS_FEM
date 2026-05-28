@@ -3,9 +3,12 @@ import { useUI } from "../store.js";
 import { MONO } from "../constants.js";
 import { resolveColormap } from "../viewport/colormap.js";
 
-/** Build a top-to-bottom CSS gradient string from a 256-entry RGB ramp.
- * 12 sampled stops is plenty visually; the shader does the smooth
- * interpolation, this is just for the screen-side colour bar. */
+/** Build a CSS gradient string from a 256-entry RGB ramp. We sample 12 stops
+ * with ascending positions (0%→100%) and use 0deg so the first stop renders
+ * at the *bottom* — i.e. ramp index 0 maps to the legend's zero-value end and
+ * index 255 maps to the max end. (Reversing the stop array would push them
+ * into descending positions, which CSS snaps up to the previous stop and
+ * collapses the gradient to a single solid colour — that was the bug.) */
 function rampToCssGradient(bytes) {
   const stops = [];
   const N = 12;
@@ -16,17 +19,26 @@ function rampToCssGradient(bytes) {
     const b = bytes[k * 3 + 2];
     stops.push(`rgb(${r},${g},${b}) ${(i / (N - 1) * 100).toFixed(1)}%`);
   }
-  return `linear-gradient(180deg, ${stops.reverse().join(", ")})`;
+  return `linear-gradient(0deg, ${stops.join(", ")})`;
 }
 
 /** Human label + LaTeX-ish tag for each displayField the viewport supports.
  * Keep the symbol short so the rotated label fits on the side of the
- * legend even on narrow viewports. */
+ * legend even on narrow viewports. Stress fields are positive-only
+ * scalars (von Mises is always ≥ 0); when more stress measures land
+ * (membrane σ_xx, principal σ₁) extend FIELD_META here and the legend
+ * + projectField pick up the new label automatically. */
 const FIELD_META = {
-  magnitude: { label: "|u|",          isSigned: false },
-  ux:        { label: "u_x",          isSigned: true  },
-  uy:        { label: "u_y",          isSigned: true  },
-  uz:        { label: "u_z",          isSigned: true  },
+  magnitude:                 { label: "|u|",      isSigned: false },
+  ux:                        { label: "u_x",      isSigned: true  },
+  uy:                        { label: "u_y",      isSigned: true  },
+  uz:                        { label: "u_z",      isSigned: true  },
+  vmStress:                  { label: "σ_vm",     isSigned: false },
+  principalMembraneStress:   { label: "σ_p,mem",  isSigned: false },
+  principalFlexuralStress:   { label: "σ_p,flex", isSigned: false },
+  principalMembraneStrain:   { label: "ε_p,mem",  isSigned: false },
+  principalFlexuralStrain:   { label: "ε_p,flex", isSigned: false },
+  scalar:                    { label: "scalar",   isSigned: false },
 };
 
 /** Format a number compactly for the legend ticks. Switches between
@@ -47,7 +59,13 @@ export default function ViewportLegend() {
   const stats = useUI((s) => s.displayFieldStats);
 
   const ramp = resolveColormap(colormapName, theme);
-  const meta = FIELD_META[displayField] ?? FIELD_META.magnitude;
+  // Prefer the field name the viewport ACTUALLY rendered (stats.field) over
+  // the inspector's displayField selector. For stress results, apply()
+  // overrides stats.field to "vmStress" / "scalar" / etc. because the
+  // selector ("|u|" / "u_x" / …) doesn't apply to a 1-component stress
+  // field. Without this the legend kept printing "|u|" on σ_vm plots.
+  const fieldName = stats?.field ?? displayField;
+  const meta = FIELD_META[fieldName] ?? FIELD_META.magnitude;
 
   // What the shader actually maps to color: abs(value) ∈ [0, maxAbs]
   // for both signed and unsigned fields. We label the bar accordingly —

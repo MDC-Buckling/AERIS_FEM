@@ -104,6 +104,14 @@ DEFAULT_GEOMETRY: Dict[str, Any] = {
         "t": 0.25,
         "phi_deg": 40.0,
     },
+    # Hemisphere geometry: full spherical shell. R is the radius, t is the
+    # thickness. Used for the MacNeal-Harder pinched-hemisphere test case.
+    # G+Smo dispatch (geometry.shape="hemisphere") lands when the solver
+    # adds hemisphere support.
+    "hemisphere": {
+        "R": 10.0,
+        "t": 0.04,
+    },
 }
 
 # materials[] is a library — any section can reference any material by id.

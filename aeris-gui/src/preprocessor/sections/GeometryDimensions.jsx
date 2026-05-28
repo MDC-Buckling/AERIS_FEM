@@ -83,6 +83,27 @@ function CylinderDimensions() {
         />
       </div>
 
+      {/* GNA symmetry-breaker — small radial point load at midheight,
+          patch-0 mid-quadrant. 0 keeps the perfect-cylinder LBA/LSA
+          path; non-zero seeds the GNA Newton-Raphson off the trivial
+          axisymmetric branch so the path-tracer actually catches the
+          bifurcation. Equivalent in spirit to the ABAQUS "pin u_r at
+          midpoint" technique — force-imperfection instead of
+          displacement-imperfection, same seed effect. */}
+      <div style={{ marginTop: 12 }}>
+        <NumberField
+          label="GNA imperfection force  (radial, mid-cylinder)"
+          symbol="F_imp"
+          unit="–"
+          value={cyl.imperfectionForce ?? 0}
+          onChange={(v) => setDim("imperfectionForce", v)}
+          min={0}
+          step={0.05}
+          precision={6}
+          hint="Tiny radial point load at midheight, mid-quadrant of patch 0 — breaks the perfect axisymmetry so GNA traces the actual buckling path instead of the trivial branch (mirrors ABAQUS's pin-u_r-at-midpoint trick). 0 = off. Recommended start: 0.25 N (≈ 0.003 % of F_cr for the default cylinder) — bump to 0.5 N if the path still tracks the trivial solution past F_cr. LBA/LSA ignore this field."
+        />
+      </div>
+
       <AxialPartitionsEditor />
     </>
   );

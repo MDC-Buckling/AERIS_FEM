@@ -70,6 +70,13 @@ ENV CC=gcc CXX=g++
 WORKDIR /opt
 COPY external/gismo /opt/gismo
 
+# Aeris custom solver drivers — dropped into the gsStructuralAnalysis
+# solvers/ dir AFTER cmake clones that module (see Layer 3). The solvers
+# CMakeLists aux_cpp_directory-globs every .cpp into its own target, so a
+# reconfigure picks these up with no further wiring. Staged here early so
+# the build RUN can `cp` them in.
+COPY docker/drivers /aeris/drivers
+
 # G+Smo's cmake/gismoUse.cmake::get_repo_info() inspects ${gismo_SOURCE_DIR}/.git
 # to decide between `git clone --depth 1` (preserves .git → SHAs recoverable)
 # and a zip-tarball URL fallback (strips .git → SHAs lost). Our COPY drops no
@@ -108,6 +115,13 @@ RUN mkdir -p /aeris && mkdir /opt/gismo/build && cd /opt/gismo/build && \
             printf '%-30s %s\n' "$name" "$h"; \
         done; \
     } | tee /aeris/BUILD_SHAS.txt \
+    && echo "===== Injecting Aeris custom drivers + reconfiguring =====" \
+    && cp /aeris/drivers/*.cpp /opt/gismo/optional/gsStructuralAnalysis/solvers/ \
+    && ls -la /opt/gismo/optional/gsStructuralAnalysis/solvers/arclength_shell_multipatch_XML.cpp \
+    && echo "----- Patch: add missing include guard to gsStructuralAnalysisTypes.h -----" \
+    && HDR=/opt/gismo/optional/gsStructuralAnalysis/src/gsStructuralAnalysisTools/gsStructuralAnalysisTypes.h \
+    && ( head -1 "$HDR" | grep -q 'pragma once' || sed -i '1i #pragma once' "$HDR" ) \
+    && cmake . \
     && echo "===== Now building =====" \
     && cmake --build . --parallel ${BUILD_PARALLEL} \
     && echo "--- Build artefacts under /opt/gismo/build ---" \
