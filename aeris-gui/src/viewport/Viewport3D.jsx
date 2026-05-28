@@ -84,6 +84,7 @@ export default function Viewport3D() {
   const geometryShape = useUI((s) => s.model.geometry.shape);
   const cyl = useUI((s) => s.model.geometry.cylinder);
   const segment = useUI((s) => s.model.geometry.cylinder_segment);
+  const sphere = useUI((s) => s.model.geometry.sphere);
   // Mesh refinement drives the edge-overlay density so the user gets
   // visual feedback when they bump r/p/k in the MESH inspector. We only
   // care about r here — p and k change DOF count but not the
@@ -398,10 +399,19 @@ export default function Viewport3D() {
 
   // Pick the active geometry's bounding R/L for camera / scale ops. The
   // segment uses its own R/L (Scordelis-Lo's R=25, L=50 differs sharply
-  // from the cylinder default R=33, L=100), so camera limits need to
-  // follow whichever shape is currently selected.
-  const activeR = geometryShape === "cylinder_segment" ? segment.R : cyl.R;
-  const activeL = geometryShape === "cylinder_segment" ? segment.L : cyl.L;
+  // from the cylinder default R=33, L=100), sphere uses only R, so camera
+  // limits need to follow whichever shape is currently selected.
+  let activeR, activeL;
+  if (geometryShape === "cylinder_segment") {
+    activeR = segment.R;
+    activeL = segment.L;
+  } else if (geometryShape === "sphere") {
+    activeR = sphere.R;
+    activeL = sphere.R; // sphere has no axial length, use R for camera bounds
+  } else {
+    activeR = cyl.R;
+    activeL = cyl.L;
+  }
 
   // Rescale camera near/far + OrbitControls min/max distance to the current
   // bounding box. Without this, on a big cylinder (R=33, L=100) the snap-view
@@ -531,6 +541,38 @@ export default function Viewport3D() {
       return;
     }
 
+    // ---- sphere (hemisphere) ----
+    if (geometryShape === "sphere") {
+      // Hemisphere — construct as a full sphere, then position it
+      // at origin (for symmetry in the viewport). THREE.SphereGeometry
+      // creates vertices, we use reasonable detail for the preview.
+      const sphereSegW = 64;  // width segments (meridians)
+      const sphereSegH = 32;  // height segments (parallels)
+      const geom = new THREE.SphereGeometry(sphere.R, sphereSegW, sphereSegH);
+      const mesh = new THREE.Mesh(geom, st.previewMaterial);
+      mesh.userData.kind = "surface";
+      st.meshGroup.add(mesh);
+
+      // Simple wireframe overlay for the sphere.
+      const sphereWireGeom = new THREE.SphereGeometry(
+        sphere.R,
+        Math.min(Math.pow(2, Math.max(0, meshRefinement)) * 8, 64),
+        Math.min(Math.pow(2, Math.max(0, meshRefinement)) * 6, 32)
+      );
+      const wireEdges = new THREE.LineSegments(
+        new THREE.EdgesGeometry(sphereWireGeom),
+        st.edgeMaterial
+      );
+      wireEdges.userData.kind = "edges";
+      wireEdges.visible = showEdges;
+      st.meshGroup.add(wireEdges);
+
+      setStatus(
+        `live preview · hemisphere R=${sphere.R} t=${sphere.t} · R/t=${(sphere.R / sphere.t).toFixed(0)} · ${loadKind}`
+      );
+      return;
+    }
+
     // ---- cylinder (closed) ----
     // THREE.CylinderGeometry default axis is Y; rotate so axis is Z and shift
     // so bottom is at z=0, top at z=L (matches our solver convention).
@@ -623,6 +665,7 @@ export default function Viewport3D() {
     mode, geometryShape,
     cyl.R, cyl.L, cyl.t, partitionsKey,
     segment.R, segment.L, segment.t, segment.phi_deg,
+    sphere.R, sphere.t,
     meshRefinement, loadKind, bcsKind, showEdges, setStatus,
   ]);
 

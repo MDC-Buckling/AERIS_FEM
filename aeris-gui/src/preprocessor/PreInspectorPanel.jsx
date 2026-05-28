@@ -91,6 +91,9 @@ function LivePreviewLine({ dottedId, fallback }) {
     if (model.geometry.shape === "cylinder_segment") {
       const s = model.geometry.cylinder_segment;
       text = `R=${s.R}  L=${s.L}  t=${s.t}  φ=${s.phi_deg}°  ·  R/t=${(s.R / s.t).toFixed(0)}`;
+    } else if (model.geometry.shape === "sphere") {
+      const s = model.geometry.sphere;
+      text = `R=${s.R}  t=${s.t}  ·  R/t=${(s.R / s.t).toFixed(0)}`;
     } else {
       text = `R=${cyl.R}  L=${cyl.L}  t=${cyl.t}  ·  R/t=${(cyl.R / cyl.t).toFixed(0)}`;
     }
