@@ -8,14 +8,14 @@ import { useUI } from "../../store.js";
  * Branches on `model.geometry.shape`:
  *   - cylinder         → R, L, t  (plus axial partitions for stepped wall)
  *   - cylinder_segment → R, L, t, phi_deg  (Scordelis-Lo class roof)
+ *   - sphere           → R, t  (hemisphere — MacNeal-Harder pinched test)
  *
- * Both kinds surface the derived R/t + L/R live, plus a gentle thin-shell
- * warning (R/t < 20 = Kirchhoff–Love validity edge). Solver dispatch on
- * the shape lands in Increment 3; until then the segment is preview-only,
- * which the GeometryShape selector flags with an inline note. */
+ * All kinds surface R/t slenderness with thin-shell warning (R/t ≥ 20).
+ * Solver dispatch on shape lands in the corresponding Python driver. */
 export default function GeometryDimensions() {
   const shape = useUI((s) => s.model.geometry.shape);
   if (shape === "cylinder_segment") return <SegmentDimensions />;
+  if (shape === "sphere") return <SphereDimensions />;
   return <CylinderDimensions />;
 }
 
@@ -213,6 +213,85 @@ function SegmentDimensions() {
         <code style={{ color: "var(--accent-muted)" }}>load.kind = gravity</code>{" "}
         for the Scordelis-Lo PASS case; the Benchmark Hub card loads exactly
         that preset with one click.
+      </div>
+    </>
+  );
+}
+
+/** Spherical-shell ("hemisphere") dimensions panel. Only R and t are present;
+ * no axial length L since the geometry is a full hemisphere (half of a complete
+ * sphere). MacNeal-Harder pinched-hemisphere benchmark. */
+function SphereDimensions() {
+  const sph = useUI((s) => s.model.geometry.sphere);
+  const setDim = useUI((s) => s.setSphereDim);
+
+  const rOverT = sph.R / sph.t;
+  const thin = rOverT >= 20;
+
+  return (
+    <>
+      <NumberField
+        label="Mid-surface radius"
+        symbol="R"
+        unit="–"
+        value={sph.R}
+        onChange={(v) => setDim("R", v)}
+        min={1e-9}
+        step={0.1}
+        precision={5}
+      />
+      <NumberField
+        label="Shell thickness"
+        symbol="t"
+        unit="–"
+        value={sph.t}
+        onChange={(v) => setDim("t", v)}
+        min={1e-9}
+        step={0.001}
+        precision={6}
+        hint="dimensionless throughout — pick consistent units (m / mm) and stick to them"
+      />
+
+      <div
+        style={{
+          marginTop: 8,
+          padding: "10px 12px",
+          background: "var(--panel-bg-soft)",
+          border: "1px solid var(--line-soft)",
+          borderRadius: 5,
+          fontFamily: MONO,
+        }}
+      >
+        <DerivedRow
+          label="Slenderness  R / t"
+          value={rOverT.toFixed(0)}
+          warn={!thin}
+          warnMsg="thin-shell regime: R/t ≥ 20"
+        />
+      </div>
+
+      <div
+        style={{
+          marginTop: 8,
+          padding: "8px 10px",
+          background: "var(--panel-bg-soft)",
+          border: "1px dashed var(--accent-muted)",
+          borderRadius: 4,
+          fontSize: 9.5,
+          color: "var(--text-muted)",
+          fontFamily: MONO,
+          lineHeight: 1.5,
+        }}
+      >
+        <span style={{ color: "var(--accent)", fontWeight: 700 }}>
+          Solve-ready:{" "}
+        </span>
+        pair with{" "}
+        <code style={{ color: "var(--accent-muted)" }}>analysis.kind = static</code>
+        {" "} +{" "}
+        <code style={{ color: "var(--accent-muted)" }}>load.kind = point_load</code>
+        {" "} for the MacNeal-Harder pinched-hemisphere PASS case; the Benchmark
+        Hub card loads exactly that preset with one click.
       </div>
     </>
   );
