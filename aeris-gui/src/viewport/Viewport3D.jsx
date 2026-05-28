@@ -541,23 +541,33 @@ export default function Viewport3D() {
       return;
     }
 
-    // ---- sphere (hemisphere) ----
+    // ---- sphere (hemisphere or partial) ----
     if (geometryShape === "sphere") {
-      // Hemisphere — construct as a full sphere, then position it
-      // at origin (for symmetry in the viewport). THREE.SphereGeometry
-      // creates vertices, we use reasonable detail for the preview.
-      const sphereSegW = 64;  // width segments (meridians)
-      const sphereSegH = 32;  // height segments (parallels)
-      const geom = new THREE.SphereGeometry(sphere.R, sphereSegW, sphereSegH);
+      // Sphere sector defined by opening_angle (in degrees).
+      // 90° = hemisphere (half-sphere from pole)
+      // 180° = full sphere
+      // THREE.SphereGeometry parameters: thetaLength controls polar angle span.
+      const sphereSegW = 64;  // azimuthal segments (meridians)
+      const sphereSegH = 32;  // polar segments (parallels)
+      const openingRad = (sphere.opening_angle_deg * Math.PI) / 180;
+
+      const geom = new THREE.SphereGeometry(
+        sphere.R, sphereSegW, sphereSegH,
+        0,              // phiStart: full azimuth
+        Math.PI * 2,    // phiLength: full azimuth
+        0,              // thetaStart: start from north pole
+        openingRad      // thetaLength: from pole, span by opening_angle
+      );
       const mesh = new THREE.Mesh(geom, st.previewMaterial);
       mesh.userData.kind = "surface";
       st.meshGroup.add(mesh);
 
-      // Simple wireframe overlay for the sphere.
+      // Wireframe overlay respecting the opening angle.
+      const wireSegW = Math.min(Math.pow(2, Math.max(0, meshRefinement)) * 8, 64);
+      const wireSegH = Math.min(Math.pow(2, Math.max(0, meshRefinement)) * 6, 32);
       const sphereWireGeom = new THREE.SphereGeometry(
-        sphere.R,
-        Math.min(Math.pow(2, Math.max(0, meshRefinement)) * 8, 64),
-        Math.min(Math.pow(2, Math.max(0, meshRefinement)) * 6, 32)
+        sphere.R, wireSegW, wireSegH,
+        0, Math.PI * 2, 0, openingRad
       );
       const wireEdges = new THREE.LineSegments(
         new THREE.EdgesGeometry(sphereWireGeom),
@@ -568,7 +578,7 @@ export default function Viewport3D() {
       st.meshGroup.add(wireEdges);
 
       setStatus(
-        `live preview · hemisphere R=${sphere.R} t=${sphere.t} · R/t=${(sphere.R / sphere.t).toFixed(0)} · ${loadKind}`
+        `live preview · sphere R=${sphere.R} t=${sphere.t} θ=${sphere.opening_angle_deg}° · R/t=${(sphere.R / sphere.t).toFixed(0)} · ${loadKind}`
       );
       return;
     }
@@ -665,7 +675,7 @@ export default function Viewport3D() {
     mode, geometryShape,
     cyl.R, cyl.L, cyl.t, partitionsKey,
     segment.R, segment.L, segment.t, segment.phi_deg,
-    sphere.R, sphere.t,
+    sphere.R, sphere.t, sphere.opening_angle_deg,
     meshRefinement, loadKind, bcsKind, showEdges, setStatus,
   ]);
 

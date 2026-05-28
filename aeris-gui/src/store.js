@@ -103,7 +103,7 @@ export const useUI = create((set) => ({
       // driver dispatch is in place. Defaults match the literature
       // Scordelis-Lo case (Belytschko 1985).
       cylinder_segment: { R: 25.0, L: 50.0, t: 0.25, phi_deg: 40.0 },
-      sphere: { R: 10.0, t: 0.04 },
+      sphere: { R: 10.0, t: 0.04, opening_angle_deg: 90.0 },
     },
     // Imperfection definition (used by GNIA). The textbook workflow: run
     // LBA first, take the chosen buckling mode, scale it to `amplitude`,
@@ -279,11 +279,17 @@ export const useUI = create((set) => ({
       };
     }),
 
-  /** Set a sphere (hemisphere) dimension (R / t). R/t must stay strictly positive. */
+  /** Set a sphere (hemisphere) dimension (R / t / opening_angle_deg).
+   * R/t must stay strictly positive. opening_angle_deg clamped to (0, 180]. */
   setSphereDim: (key, value) =>
     set((s) => {
       const v = Number(value);
-      if (!Number.isFinite(v) || v <= 0) return {};
+      if (!Number.isFinite(v)) return {};
+      if (key === "opening_angle_deg") {
+        if (v <= 0 || v > 180) return {};
+      } else {
+        if (v <= 0) return {};
+      }
       return {
         model: {
           ...s.model,

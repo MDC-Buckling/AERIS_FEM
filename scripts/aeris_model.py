@@ -104,13 +104,14 @@ DEFAULT_GEOMETRY: Dict[str, Any] = {
         "t": 0.25,
         "phi_deg": 40.0,
     },
-    # Hemisphere geometry: full spherical shell. R is the radius, t is the
-    # thickness. Used for the MacNeal-Harder pinched-hemisphere test case.
-    # G+Smo dispatch (geometry.shape="hemisphere") lands when the solver
-    # adds hemisphere support.
-    "hemisphere": {
+    # Hemisphere geometry: spherical shell sector defined by opening_angle_deg.
+    # R = radius, t = thickness, opening_angle_deg = polar span (90° = hemisphere,
+    # 180° = full sphere). Used for the MacNeal-Harder pinched-hemisphere test.
+    # G+Smo dispatch (geometry.shape="sphere") routes to hemisphere_static.py.
+    "sphere": {
         "R": 10.0,
         "t": 0.04,
+        "opening_angle_deg": 90.0,
     },
 }
 

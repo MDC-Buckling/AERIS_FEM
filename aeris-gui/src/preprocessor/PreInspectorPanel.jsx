@@ -93,7 +93,7 @@ function LivePreviewLine({ dottedId, fallback }) {
       text = `R=${s.R}  L=${s.L}  t=${s.t}  φ=${s.phi_deg}°  ·  R/t=${(s.R / s.t).toFixed(0)}`;
     } else if (model.geometry.shape === "sphere") {
       const s = model.geometry.sphere;
-      text = `R=${s.R}  t=${s.t}  ·  R/t=${(s.R / s.t).toFixed(0)}`;
+      text = `R=${s.R}  t=${s.t}  θ=${s.opening_angle_deg}°  ·  R/t=${(s.R / s.t).toFixed(0)}`;
     } else {
       text = `R=${cyl.R}  L=${cyl.L}  t=${cyl.t}  ·  R/t=${(cyl.R / cyl.t).toFixed(0)}`;
     }

@@ -251,6 +251,19 @@ function SphereDimensions() {
         precision={6}
         hint="dimensionless throughout — pick consistent units (m / mm) and stick to them"
       />
+      <NumberField
+        label="Opening angle"
+        symbol="θ"
+        unit="°"
+        value={sph.opening_angle_deg}
+        onChange={(v) => setDim("opening_angle_deg", v)}
+        min={1}
+        max={180}
+        step={1}
+        precision={1}
+        showRange
+        hint="90° = hemisphere (half-sphere). 180° = full sphere. MacNeal-Harder pinched test uses 90°."
+      />
 
       <div
         style={{
