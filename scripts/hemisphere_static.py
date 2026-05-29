@@ -40,11 +40,11 @@ def _progress(**fields) -> None:
 
 
 def _model_to_case(model: dict) -> dict:
-    hem = model["geometry"]["hemisphere"]
+    sph = model["geometry"]["sphere"]
     mat = model["materials"][0]
     return {
-        "R": float(hem["R"]),
-        "t": float(hem["t"]),
+        "R": float(sph["R"]),
+        "t": float(sph["t"]),
         "E": float(mat["E"]),
         "nu": float(mat["nu"]),
     }

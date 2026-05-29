@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 2,
+  "name": "Pinched Cylinder Test",
+  "geometry": {
+    "shape": "cylinder",
+    "cylinder": {
+      "R": 1.0,
+      "L": 1.0,
+      "t": 0.01,
+      "partitions": []
+    }
+  },
+  "materials": [
+    {
+      "id": "mat-default",
+      "name": "Steel (linear isotropic)",
+      "model": "linear",
+      "E": 1.0,
+      "nu": 0.3
+    }
+  ],
+  "sections": [
+    {
+      "id": "sec-shell-1",
+      "name": "Shell — full cylinder",
+      "kind": "shell",
+      "material_ref": "mat-default",
+      "thickness_source": {"kind": "geometry"},
+      "offset": "midsurface"
+    }
+  ],
+  "assignments": [
+    {"region": "shell_full", "section_ref": "sec-shell-1"}
+  ],
+  "mesh": {
+    "refinement": 3,
+    "degree": 3,
+    "smoothness": 2,
+    "coupling": "gsSmoothInterfaces"
+  },
+  "bcs": {
+    "kind": "clamped_neumann"
+  },
+  "load": {
+    "kind": "point_load",
+    "magnitude": 1.0
+  },
+  "analysis": {
+    "kind": "static",
+    "interface_penalty": 1000000
+  }
+}
