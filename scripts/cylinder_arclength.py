@@ -349,7 +349,8 @@ def _write_sidecar(work_dir, raw, model, rows, lp, *,
             "lbaEigenvalue": (lba_info or {}).get("eigenvalue"),
             "lbaMode": (lba_info or {}).get("mode"),
         },
-        "files": {"geometry": "mp.pvd"},
+        "files": {k: v for k, v in {"geometry": "mp.pvd"}.items()
+                  if (work_dir / v).exists()},
         "loadDeflection": load_deflection,
         "modes": [],
         "qois": [{

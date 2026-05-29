@@ -58,6 +58,20 @@ function resultsFromManifest(r) {
     });
   }
 
+  // GNIA (arc-length): loadDeflection chart instead of 3D geometry files
+  if (r.analysisKind === "gnia" && r.loadDeflection?.length > 0) {
+    const ld = r.loadDeflection;
+    const maxF = Math.max(...ld.map(d => d.F));
+    const maxU = Math.max(...ld.map(d => d.u_qoi_abs));
+    items.push({
+      id: "chart",
+      label: "Load-Deflection Path (arc-length)",
+      kind: "chart",
+      data: ld,
+      description: `${ld.length} converged steps · λ_max=${Number(ld[ld.length-1].loadFactor).toFixed(3)} · u_max=${Number(maxU).toFixed(4)} · F_max=${Number(maxF).toFixed(1)}`,
+    });
+  }
+
   for (const m of r.modes ?? []) {
     items.push({
       id: m.id,
@@ -217,10 +231,12 @@ export default function ResultsPanel() {
     const firstMode = manifest?.modes?.[0]?.id;
     const hasLinear = !!(manifest?.files?.linearPrestress
                           || manifest?.files?.solution);
+    const hasChart = !!(manifest?.analysisKind === "gnia" && manifest?.loadDeflection?.length > 0);
     const files = manifest?.files ?? {};
     const validIds = new Set([
       "geometry",
       ...(hasLinear ? ["linear"] : []),
+      ...(hasChart ? ["chart"] : []),
       ...((manifest?.modes ?? []).map((m) => m.id)),
       ...(files.stressVonMises          ? ["stress-vm"]         : []),
       ...(files.principalMembraneStress ? ["stress-princ-mem"]  : []),
@@ -237,6 +253,7 @@ export default function ResultsPanel() {
   const groups = [
     { id: "geom",   title: "Geometry",    items: items.filter((r) => r.kind === "geometry") },
     { id: "pre",    title: "Pre-buckling", items: items.filter((r) => r.kind === "displacement") },
+    { id: "chart",  title: "Post-buckling", items: items.filter((r) => r.kind === "chart") },
     { id: "modes",  title: "Eigenmodes",  items: items.filter((r) => r.kind === "mode") },
     { id: "stress", title: "Stress",      items: items.filter((r) => r.kind === "stress") },
     { id: "strain", title: "Strain",      items: items.filter((r) => r.kind === "strain") },
