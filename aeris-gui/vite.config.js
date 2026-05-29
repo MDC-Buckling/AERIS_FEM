@@ -367,13 +367,21 @@ function aerisOutputServer() {
               solverScript = "/scripts/cylinder_static.py";
               solverPaysAttentionToRefines = true;
             } else if (shape === "cylinder" && akind === "gnia") {
-              // GNIA on the closed cylinder — arc-length continuation
-              // through the buckling limit point with radial imperfection.
-              // cylinder_arclength.py drives the custom
-              // arclength_shell_multipatch_XML C++ blackbox; same
-              // AERIS-PROGRESS protocol (L / u / Dmin / bif) feeds the
-              // monitor's load-deflection chart + bifurcation flag.
-              solverScript = "/scripts/cylinder_arclength.py";
+              // GNIA = geometrically nonlinear with imperfections.
+              // The *method* is chosen by gnaSolver:
+              //   - gnaSolver="newton" → GNA with Newton-Raphson + eigenmode/random imperfection
+              //   - gnaSolver="arclength" (or anything else) → arc-length GNIA through the limit point
+              // This lets the user pick the solver family while keeping the imperfection workflow unified.
+              if (modelPeek?.analysis?.gnaSolver === "newton") {
+                // GNA with imperfection: force-control Newton-Raphson
+                solverScript = "/scripts/cylinder_static.py";
+              } else {
+                // Arc-length GNIA: displacement-control through the limit point
+                // cylinder_arclength.py drives arclength_shell_multipatch_XML;
+                // AERIS-PROGRESS protocol (L / u / Dmin / bif) feeds the
+                // monitor's load-deflection chart + bifurcation flag.
+                solverScript = "/scripts/cylinder_arclength.py";
+              }
               solverPaysAttentionToRefines = true;
             } else if (shape === "cylinder_segment"
                        && (akind === "static" || akind === "gna")) {
@@ -429,9 +437,9 @@ function aerisOutputServer() {
             refines = [5];
           }
           // Script args — all scripts take --model + --refines.
-          // cylinder_lba.py also takes --plot-dir (writes mode shapes).
-          // pinched_cylinder_static.py and hemisphere_static.py take --work-dir.
-          // All except cylinder_lba.py take --threads.
+          // cylinder_lba.py takes --plot-dir (writes mode shapes + geometry).
+          // cylinder_static.py, cylinder_arclength.py, pinched_cylinder_static.py, hemisphere_static.py take --threads.
+          // pinched_cylinder_static.py and hemisphere_static.py also take --work-dir.
           const scriptArgs = [
             "--model", "/work/model.json",
             "--refines", ...refines.map(String),

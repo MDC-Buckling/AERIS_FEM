@@ -513,17 +513,23 @@ def main(argv: list[str] | None = None) -> int:
 
     shape = model.get("geometry", {}).get("shape")
     kind = model.get("analysis", {}).get("kind")
+    gna_solver = str(model.get("analysis", {}).get("gnaSolver", "newton")).lower()
+
     if shape != "cylinder":
         raise SystemExit(
             f"cylinder_static.py expects geometry.shape='cylinder'; got {shape!r}."
         )
-    if kind not in ("static", "gna"):
+
+    # Accept kind in {'static', 'gna'} directly, or 'gnia' with gnaSolver='newton'
+    # (GNIA with Newton-Raphson + imperfections; arc-length GNIA routes to cylinder_arclength.py)
+    if kind not in ("static", "gna") and not (kind == "gnia" and gna_solver == "newton"):
         raise SystemExit(
-            f"cylinder_static.py expects analysis.kind in {{'static', 'gna'}}; "
-            f"got {kind!r}."
+            f"cylinder_static.py expects analysis.kind in {{'static', 'gna'}} "
+            f"or 'gnia' with gnaSolver='newton'; got kind={kind!r}, gnaSolver={gna_solver!r}."
         )
-    nonlinear = (kind == "gna")
-    gna_solver = str(model.get("analysis", {}).get("gnaSolver", "newton")).lower()
+
+    # Nonlinear if kind is 'gna' OR 'gnia' with Newton-Raphson
+    nonlinear = (kind == "gna") or (kind == "gnia" and gna_solver == "newton")
     # ABAQUS-style increment configuration. LSA collapses these to one
     # direct solve. GNA reads four fields:
     #   maxIncrements  hard cap on attempts (retries + ok)
