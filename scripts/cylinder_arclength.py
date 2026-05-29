@@ -149,13 +149,22 @@ def _run_arclength(xml_path: Path, work_dir: Path, *,
                 "bif": int(fields.get("bif", "0")),
                 "bisected": int(fields.get("bisected", "0")),
             })
-    proc.wait()
+    try:
+        proc.wait(timeout=3600)  # 1 hour hard limit to prevent infinite divergence loops
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        if rows:
+            print(f"[WARNING] arclength_shell_multipatch_XML timeout — "
+                  f"but {len(rows)} converged steps collected — proceeding with verdict.", flush=True)
+        else:
+            raise RuntimeError("arclength_shell_multipatch_XML timeout with no converged steps")
+
     # Non-zero exit is OK if we have converged steps (e.g., post-bifurcation divergence).
     # The limit point was found; the solver just couldn't continue past it.
     if proc.returncode != 0 and rows:
         print(f"[WARNING] arclength_shell_multipatch_XML exited {proc.returncode}, "
               f"but {len(rows)} converged steps collected — proceeding with verdict.", flush=True)
-    elif proc.returncode != 0:
+    elif proc.returncode != 0 and not rows:
         raise RuntimeError(f"arclength_shell_multipatch_XML exited {proc.returncode} with no converged steps")
     return rows, lba_info
 
@@ -233,13 +242,19 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Mesh     : r={refinement} · ALM method={alm_method} (0=LC,1=Riks,2=Crisfield)")
     print()
 
-    rows, lba_info = _run_arclength(
-        xml_path, work_dir,
-        refines=refinement, arc_length=arc_length, max_steps=max_steps,
-        alm_method=alm_method, threads=args.threads,
-        imperf_kind=imp_kind, imperf_mode=imp_mode,
-        imperf_amplitude=imp_amplitude,
-    )
+    try:
+        rows, lba_info = _run_arclength(
+            xml_path, work_dir,
+            refines=refinement, arc_length=arc_length, max_steps=max_steps,
+            alm_method=alm_method, threads=args.threads,
+            imperf_kind=imp_kind, imperf_mode=imp_mode,
+            imperf_amplitude=imp_amplitude,
+        )
+    except Exception as e:
+        print(f"[ERROR] arc-length failed: {e}", flush=True)
+        rows = []
+        lba_info = {}
+
     if not rows:
         raise SystemExit("arc-length produced no converged steps")
 
