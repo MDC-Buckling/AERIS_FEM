@@ -154,22 +154,40 @@ export default function App() {
         </main>
       ) : (
         <>
-          {/* Floating collapse button for left panels (visible when any are collapsed) */}
+          {/* Vertical collapse button for left panels (visible when any are collapsed) */}
           {mode === "pre" && expandedLeftPanels.size < 2 && (
           <button
             style={{
               position: "fixed",
-              left: 16,
-              top: 120,
+              left: 0,
+              top: "50%",
+              transform: "translateY(-50%)",
               zIndex: 100,
-              padding: "6px 8px",
-              background: "var(--bg-surface, #1f2937)",
-              border: "1px solid var(--border-color, #374151)",
+              width: 24,
+              height: 120,
+              padding: 0,
+              background: "linear-gradient(180deg, rgba(6,182,212,0.2) 0%, rgba(6,182,212,0.4) 50%, rgba(6,182,212,0.2) 100%)",
+              border: "1px solid var(--accent, #06b6d4)",
+              borderLeft: "none",
+              borderRadius: "0 6px 6px 0",
               color: "var(--accent, #06b6d4)",
-              borderRadius: 4,
               cursor: "pointer",
-              fontSize: 12,
+              fontSize: 14,
               fontFamily: "monospace",
+              fontWeight: "bold",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              transition: "all 0.2s ease",
+              backdropFilter: "blur(6px)",
+            }}
+            onMouseEnter={(e) => {
+              e.target.style.background = "linear-gradient(180deg, rgba(6,182,212,0.4) 0%, rgba(6,182,212,0.6) 50%, rgba(6,182,212,0.4) 100%)";
+              e.target.style.width = "28px";
+            }}
+            onMouseLeave={(e) => {
+              e.target.style.background = "linear-gradient(180deg, rgba(6,182,212,0.2) 0%, rgba(6,182,212,0.4) 50%, rgba(6,182,212,0.2) 100%)";
+              e.target.style.width = "24px";
             }}
             onClick={() => expandedLeftPanels.has("models") ? toggleLeftPanel("tree") : toggleLeftPanel("models")}
             title="Expand collapsed panel"
