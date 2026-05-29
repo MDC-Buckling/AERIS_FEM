@@ -16,6 +16,8 @@ export default function ModelsPanel() {
   const moveModel = useUI((s) => s.moveModel);
   const setSelectedModelId = useUI((s) => s.setSelectedModelId);
   const serializeModel = useUI((s) => s.serializeModel);
+  const expandedLeftPanels = useUI((s) => s.expandedLeftPanels);
+  const toggleLeftPanel = useUI((s) => s.toggleLeftPanel);
 
   const [renamingId, setRenamingId] = useState(null);
   const [newName, setNewName] = useState('');
@@ -109,6 +111,13 @@ export default function ModelsPanel() {
             title="Save current model"
           >
             💾 Save
+          </button>
+          <button
+            className="model-action-btn collapse-btn"
+            onClick={() => toggleLeftPanel('models')}
+            title="Collapse Models panel"
+          >
+            ◀
           </button>
         </div>
       </div>

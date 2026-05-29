@@ -86,6 +86,16 @@ export const useUI = create((set) => ({
   selectedTreeItem: "geometry.shape",
   selectTreeItem: (id) => set({ selectedTreeItem: id }),
 
+  /** Pre-processor: UI panel visibility toggles. */
+  expandedLeftPanels: new Set(["models", "tree"]), // "models" and/or "tree"
+  toggleLeftPanel: (panelId) =>
+    set((s) => {
+      const next = new Set(s.expandedLeftPanels);
+      if (next.has(panelId)) next.delete(panelId);
+      else next.add(panelId);
+      return { expandedLeftPanels: next };
+    }),
+
   /** Pre-processor: which sections are expanded. Default: only GEOMETRY open
    * (that's the first thing the user will touch when filling sections later). */
   expandedSections: new Set(["geometry"]),

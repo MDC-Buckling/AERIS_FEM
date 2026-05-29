@@ -18,6 +18,8 @@ export default function App() {
   const selectedResultId = useUI((s) => s.selectedResultId);
   const loadResultsManifest = useUI((s) => s.loadResultsManifest);
   const loadJobs = useUI((s) => s.loadJobs);
+  const expandedLeftPanels = useUI((s) => s.expandedLeftPanels);
+  const toggleLeftPanel = useUI((s) => s.toggleLeftPanel);
   // The pre-mode viewport now builds its own procedural cylinder from
   // store.model.geometry.cylinder, so we no longer need to force
   // selectedResultId to "geometry" on mode switch (Session 3.0's hack).
@@ -151,19 +153,51 @@ export default function App() {
           </div>
         </main>
       ) : (
+        {/* Floating collapse button for left panels (visible when any are collapsed) */}
+        {mode === "pre" && expandedLeftPanels.size < 2 && (
+          <button
+            style={{
+              position: "fixed",
+              left: 16,
+              top: 120,
+              zIndex: 100,
+              padding: "6px 8px",
+              background: "var(--bg-surface, #1f2937)",
+              border: "1px solid var(--border-color, #374151)",
+              color: "var(--accent, #06b6d4)",
+              borderRadius: 4,
+              cursor: "pointer",
+              fontSize: 12,
+              fontFamily: "monospace",
+            }}
+            onClick={() => expandedLeftPanels.has("models") ? toggleLeftPanel("tree") : toggleLeftPanel("models")}
+            title="Expand collapsed panel"
+          >
+            ▶
+          </button>
+        )}
+
         <main
           style={{
             flex: 1,
             display: "grid",
-            gridTemplateColumns: mode === "pre" ? "280px 400px minmax(640px, 1.15fr) 400px" : "400px minmax(640px, 1.15fr) 400px",
+            gridTemplateColumns: (() => {
+              if (mode !== "pre") return "400px minmax(640px, 1.15fr) 400px";
+              const hasModels = expandedLeftPanels.has("models");
+              const hasTree = expandedLeftPanels.has("tree");
+              if (hasModels && hasTree) return "280px 400px minmax(640px, 1.15fr) 400px";
+              if (hasModels) return "280px minmax(640px, 1.15fr) 400px";
+              if (hasTree) return "400px minmax(640px, 1.15fr) 400px";
+              return "minmax(640px, 1.15fr) 400px";
+            })(),
             gridTemplateRows: "1fr",
             gap: 18,
             padding: 16,
             minHeight: 0,
           }}
         >
-          {mode === "pre" && <ModelsPanel />}
-          {mode === "pre" ? <ModelTreePanel /> : <ResultsPanel />}
+          {mode === "pre" && expandedLeftPanels.has("models") && <ModelsPanel />}
+          {mode === "pre" && expandedLeftPanels.has("tree") ? <ModelTreePanel /> : mode !== "pre" ? <ResultsPanel /> : null}
 
           {/* Central viewport is shared between pre and post. */}
           <div

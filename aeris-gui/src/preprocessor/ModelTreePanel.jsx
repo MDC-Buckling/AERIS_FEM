@@ -224,6 +224,8 @@ export default function ModelTreePanel() {
   const selectItem = useUI((s) => s.selectTreeItem);
   const sectionStatus = useUI((s) => s.sectionStatus);
   const projectName = useUI((s) => s.projectName);
+  const expandedLeftPanels = useUI((s) => s.expandedLeftPanels);
+  const toggleLeftPanel = useUI((s) => s.toggleLeftPanel);
 
   return (
     <GlassPanel
@@ -239,15 +241,33 @@ export default function ModelTreePanel() {
         <span className="codex-brand-title" style={{ fontSize: 11, letterSpacing: 0.1 }}>
           MODEL TREE
         </span>
-        <span
-          style={{
-            fontSize: 9.5,
-            color: "var(--text-soft)",
-            fontFamily: MONO,
-          }}
-        >
-          {projectName}
-        </span>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span
+            style={{
+              fontSize: 9.5,
+              color: "var(--text-soft)",
+              fontFamily: MONO,
+            }}
+          >
+            {projectName}
+          </span>
+          <button
+            onClick={() => toggleLeftPanel("tree")}
+            style={{
+              padding: "2px 6px",
+              fontSize: 10,
+              border: "1px solid var(--border-color, #374151)",
+              background: "rgba(255, 255, 255, 0.05)",
+              color: "var(--text-secondary, #d1d5db)",
+              borderRadius: 3,
+              cursor: "pointer",
+              fontFamily: MONO,
+            }}
+            title="Collapse Model Tree"
+          >
+            ◀
+          </button>
+        </div>
       </div>
 
       <div
