@@ -254,14 +254,38 @@ export default function ModelTreePanel() {
           <button
             onClick={() => toggleLeftPanel("tree")}
             style={{
-              padding: "2px 6px",
-              fontSize: 10,
-              border: "1px solid var(--border-color, #374151)",
-              background: "rgba(255, 255, 255, 0.05)",
-              color: "var(--text-secondary, #d1d5db)",
-              borderRadius: 3,
+              position: "absolute",
+              right: -24,
+              top: "50%",
+              transform: "translateY(-50%)",
+              width: 24,
+              height: 100,
+              padding: 0,
+              background: "linear-gradient(180deg, rgba(6,182,212,0.2) 0%, rgba(6,182,212,0.4) 50%, rgba(6,182,212,0.2) 100%)",
+              border: "1px solid var(--accent, #06b6d4)",
+              borderLeft: "none",
+              borderRadius: "0 6px 6px 0",
+              color: "var(--accent, #06b6d4)",
               cursor: "pointer",
+              fontSize: 14,
               fontFamily: MONO,
+              fontWeight: "bold",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              transition: "all 0.2s ease",
+              backdropFilter: "blur(6px)",
+              zIndex: 10,
+            }}
+            onMouseEnter={(e) => {
+              e.target.style.background = "linear-gradient(180deg, rgba(6,182,212,0.4) 0%, rgba(6,182,212,0.6) 50%, rgba(6,182,212,0.4) 100%)";
+              e.target.style.width = "28px";
+              e.target.style.right = "-28px";
+            }}
+            onMouseLeave={(e) => {
+              e.target.style.background = "linear-gradient(180deg, rgba(6,182,212,0.2) 0%, rgba(6,182,212,0.4) 50%, rgba(6,182,212,0.2) 100%)";
+              e.target.style.width = "24px";
+              e.target.style.right = "-24px";
             }}
             title="Collapse Model Tree"
           >
