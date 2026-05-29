@@ -428,23 +428,22 @@ function aerisOutputServer() {
           } else {
             refines = [5];
           }
-          // Script args: all static scripts take --model + --refines + --work-dir.
+          // Script args — all scripts take --model + --refines.
           // cylinder_lba.py also takes --plot-dir (writes mode shapes).
-          // cylinder_arclength.py, cylinder_static.py, pinched_cylinder_static.py,
-          // and hemisphere_static.py also take --threads.
+          // pinched_cylinder_static.py and hemisphere_static.py take --work-dir.
+          // All except cylinder_lba.py take --threads.
           const scriptArgs = [
             "--model", "/work/model.json",
-            "--work-dir", "/work",
             "--refines", ...refines.map(String),
           ];
           if (solverScript === "/scripts/cylinder_lba.py") {
             scriptArgs.push("--plot-dir", "/work");
-          } else if (solverScript === "/scripts/scordelis_static.py"
-                  || solverScript === "/scripts/cylinder_static.py"
-                  || solverScript === "/scripts/cylinder_arclength.py"
-                  || solverScript === "/scripts/pinched_cylinder_static.py"
-                  || solverScript === "/scripts/hemisphere_static.py") {
+          } else {
             scriptArgs.push("--threads", String(threads));
+          }
+          if (solverScript === "/scripts/pinched_cylinder_static.py"
+                  || solverScript === "/scripts/hemisphere_static.py") {
+            scriptArgs.push("--work-dir", "/work");
           }
           // Create the record immediately in "queued" state so the GUI
           // can show queue position while waiting. The actual spawn
