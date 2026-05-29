@@ -5,6 +5,7 @@ import ResultRow from "./ui/ResultRow.jsx";
 import KeyMetric from "./ui/KeyMetric.jsx";
 import ToggleGroup from "./ui/ToggleGroup.jsx";
 import Slider from "./ui/Slider.jsx";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { useUI } from "../store.js";
 import { MONO } from "../constants.js";
 import { COLORMAPS, COLORMAP_OPTIONS, resolveColormap } from "../viewport/colormap.js";
@@ -202,171 +203,180 @@ export default function InspectorPanel() {
           {LBA_META.isFallback ? "fallback · session-2.7 case" : "live · run.json"}
         </div>
 
-        {/* ----- Camera snap views ----- */}
-        <SectionHeader>view</SectionHeader>
-        <ToggleGroup
-          fullWidth
-          value={viewPreset}
-          onChange={setViewPreset}
-          options={[
-            ["oblique", "OBLIQUE"],
-            ["side", "SIDE"],
-            ["end", "END"],
-          ]}
-        />
-
-        {/* ----- Warp + display controls ----- */}
-        <SectionHeader>display</SectionHeader>
-        {/* Stress fields are written on the undeformed shell — no displacement
-            vector to warp by, so we disable the slider and grey it out to make
-            the lack of a deformed configuration obvious. */}
-        <Slider
-          label={isStress ? "Warp scale (n/a for stress)" : "Warp scale"}
-          value={isStress ? 0 : warpScale}
-          min={0}
-          max={isMode ? 5 : 0.5}
-          step={isMode ? 0.05 : 0.005}
-          onChange={isStress ? () => {} : setWarpScale}
-          fmt={(v) => v.toFixed(2)}
-        />
-        <div
-          style={{
-            display: "flex",
-            gap: 6,
-            flexWrap: "wrap",
-            marginTop: 6,
-          }}
-        >
-          <button
-            type="button"
-            className={`codex-action-button ${showEdges ? "is-active" : ""}`}
-            onClick={() => setShowEdges(!showEdges)}
-          >
-            {showEdges ? "EDGES ON" : "EDGES OFF"}
-          </button>
-          <button
-            type="button"
-            className={`codex-action-button ${showUndeformed ? "is-active" : ""}`}
-            onClick={() => setShowUndeformed(!showUndeformed)}
-          >
-            {showUndeformed ? "UNDEF OVERLAY ON" : "UNDEF OVERLAY OFF"}
-          </button>
-          <button
-            type="button"
-            className={`codex-action-button ${showMaxArrow ? "is-active" : ""}`}
-            onClick={() => setShowMaxArrow(!showMaxArrow)}
-            title="Show a magenta arrow pointing at the vertex where the currently-displayed field reaches its maximum value (in the deformed configuration)."
-          >
-            {showMaxArrow ? "MAX ARROW ON" : "MAX ARROW OFF"}
-          </button>
-        </div>
-
-        {/* Field selector — pick the scalar projection of the displacement
-            vector to colour by. magnitude (= |u|, always positive) works
-            with every colormap; the components (u_x / u_y / u_z) are
-            signed but rendered as |component| with the signed range
-            surfaced separately in the viewport legend.
-            Hidden for stress results: the .vts ships a 1-component scalar
-            field already (σ_vm has no x/y/z direction), so showing the
-            displacement-component picker would just confuse the user. */}
-        {!isStress && (
-          <div style={{ marginTop: 10 }}>
-            <div
-              style={{
-                color: "var(--text-secondary)",
-                fontSize: 10,
-                fontFamily: MONO,
-                textTransform: "uppercase",
-                letterSpacing: 0.08,
-                marginBottom: 4,
-              }}
-            >
-              field
-            </div>
+        {/* ----- 3D Visualization controls (hidden for chart results) ----- */}
+        {selectedId !== "chart" && (
+          <>
+            {/* ----- Camera snap views ----- */}
+            <SectionHeader>view</SectionHeader>
             <ToggleGroup
               fullWidth
-              value={displayField}
-              onChange={setDisplayField}
+              value={viewPreset}
+              onChange={setViewPreset}
               options={[
-                ["magnitude", "|u|"],
-                ["ux", "u_x"],
-                ["uy", "u_y"],
-                ["uz", "u_z"],
+                ["oblique", "OBLIQUE"],
+                ["side", "SIDE"],
+                ["end", "END"],
               ]}
             />
-          </div>
-        )}
 
-        {/* Colormap picker — one row per option with a real gradient swatch
-            so the user picks by EYE, not by name. The active row is
-            highlighted in accent so the current choice is obvious. */}
-        <div style={{ marginTop: 10 }}>
-          <div
-            style={{
-              color: "var(--text-secondary)",
-              fontSize: 10,
-              fontFamily: MONO,
-              textTransform: "uppercase",
-              letterSpacing: 0.08,
-              marginBottom: 4,
-            }}
-          >
-            colormap
-          </div>
-          <div
-            style={{
-              border: "1px solid var(--control-border)",
-              borderRadius: 4,
-              background: "var(--control-bg)",
-              overflow: "hidden",
-            }}
-          >
-            {COLORMAP_OPTIONS.map(([key, label]) => {
-              const active = colormapName === key;
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setColormap(key)}
+            {/* ----- Warp + display controls ----- */}
+            <SectionHeader>display</SectionHeader>
+            {/* Stress fields are written on the undeformed shell — no displacement
+                vector to warp by, so we disable the slider and grey it out to make
+                the lack of a deformed configuration obvious. */}
+            <Slider
+              label={isStress ? "Warp scale (n/a for stress)" : "Warp scale"}
+              value={isStress ? 0 : warpScale}
+              min={0}
+              max={isMode ? 5 : 0.5}
+              step={isMode ? 0.05 : 0.005}
+              onChange={isStress ? () => {} : setWarpScale}
+              fmt={(v) => v.toFixed(2)}
+            />
+            <div
+              style={{
+                display: "flex",
+                gap: 6,
+                flexWrap: "wrap",
+                marginTop: 6,
+              }}
+            >
+              <button
+                type="button"
+                className={`codex-action-button ${showEdges ? "is-active" : ""}`}
+                onClick={() => setShowEdges(!showEdges)}
+              >
+                {showEdges ? "EDGES ON" : "EDGES OFF"}
+              </button>
+              <button
+                type="button"
+                className={`codex-action-button ${showUndeformed ? "is-active" : ""}`}
+                onClick={() => setShowUndeformed(!showUndeformed)}
+              >
+                {showUndeformed ? "UNDEF OVERLAY ON" : "UNDEF OVERLAY OFF"}
+              </button>
+              <button
+                type="button"
+                className={`codex-action-button ${showMaxArrow ? "is-active" : ""}`}
+                onClick={() => setShowMaxArrow(!showMaxArrow)}
+                title="Show a magenta arrow pointing at the vertex where the currently-displayed field reaches its maximum value (in the deformed configuration)."
+              >
+                {showMaxArrow ? "MAX ARROW ON" : "MAX ARROW OFF"}
+              </button>
+            </div>
+
+            {/* Field selector — pick the scalar projection of the displacement
+                vector to colour by. magnitude (= |u|, always positive) works
+                with every colormap; the components (u_x / u_y / u_z) are
+                signed but rendered as |component| with the signed range
+                surfaced separately in the viewport legend.
+                Hidden for stress results: the .vts ships a 1-component scalar
+                field already (σ_vm has no x/y/z direction), so showing the
+                displacement-component picker would just confuse the user. */}
+            {!isStress && (
+              <div style={{ marginTop: 10 }}>
+                <div
                   style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    width: "100%",
-                    padding: "5px 8px",
-                    background: active ? "var(--control-active-bg)" : "transparent",
-                    border: "none",
-                    borderBottom: "1px solid var(--line-faint)",
-                    color: active ? "var(--accent)" : "var(--text-secondary)",
+                    color: "var(--text-secondary)",
+                    fontSize: 10,
                     fontFamily: MONO,
-                    fontSize: 10.5,
-                    fontWeight: active ? 700 : 500,
-                    cursor: "pointer",
-                    textAlign: "left",
-                    textShadow: active ? "var(--shadow-accent)" : "none",
+                    textTransform: "uppercase",
+                    letterSpacing: 0.08,
+                    marginBottom: 4,
                   }}
                 >
-                  <ColormapSwatch name={key} theme={theme} />
-                  <span style={{ flex: 1 }}>{label}</span>
-                  {active && <span style={{ color: "var(--accent)", fontSize: 9 }}>●</span>}
-                </button>
-              );
-            })}
-          </div>
-        </div>
+                  field
+                </div>
+                <ToggleGroup
+                  fullWidth
+                  value={displayField}
+                  onChange={setDisplayField}
+                  options={[
+                    ["magnitude", "|u|"],
+                    ["ux", "u_x"],
+                    ["uy", "u_y"],
+                    ["uz", "u_z"],
+                  ]}
+                />
+              </div>
+            )}
 
-        {/* ----- Result metadata ----- */}
-        <SectionHeader>case</SectionHeader>
-        <ResultRow label="R (radius)" value={LBA_META.R?.toFixed(2) ?? "—"} unit="–" />
-        <ResultRow label="L (length)" value={LBA_META.L?.toFixed(2) ?? "—"} unit="–" />
-        <ResultRow label="t (thickness)" value={LBA_META.t?.toFixed(3) ?? "—"} unit="–" />
-        {LBA_META.phi_deg != null && (
-          <ResultRow label="φ (half-angle)" value={LBA_META.phi_deg.toFixed(1)} unit="°" />
+            {/* Colormap picker — one row per option with a real gradient swatch
+                so the user picks by EYE, not by name. The active row is
+                highlighted in accent so the current choice is obvious. */}
+            <div style={{ marginTop: 10 }}>
+              <div
+                style={{
+                  color: "var(--text-secondary)",
+                  fontSize: 10,
+                  fontFamily: MONO,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.08,
+                  marginBottom: 4,
+                }}
+              >
+                colormap
+              </div>
+              <div
+                style={{
+                  border: "1px solid var(--control-border)",
+                  borderRadius: 4,
+                  background: "var(--control-bg)",
+                  overflow: "hidden",
+                }}
+              >
+                {COLORMAP_OPTIONS.map(([key, label]) => {
+                  const active = colormapName === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setColormap(key)}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        width: "100%",
+                        padding: "5px 8px",
+                        background: active ? "var(--control-active-bg)" : "transparent",
+                        border: "none",
+                        borderBottom: "1px solid var(--line-faint)",
+                        color: active ? "var(--accent)" : "var(--text-secondary)",
+                        fontFamily: MONO,
+                        fontSize: 10.5,
+                        fontWeight: active ? 700 : 500,
+                        cursor: "pointer",
+                        textAlign: "left",
+                        textShadow: active ? "var(--shadow-accent)" : "none",
+                      }}
+                    >
+                      <ColormapSwatch name={key} theme={theme} />
+                      <span style={{ flex: 1 }}>{label}</span>
+                      {active && <span style={{ color: "var(--accent)", fontSize: 9 }}>●</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </>
         )}
-        <ResultRow label="E" value={LBA_META.E?.toFixed(1) ?? "—"} unit="–" />
-        <ResultRow label="ν" value={LBA_META.nu?.toFixed(2) ?? "—"} unit="–" />
-        {LBA_META.R != null && LBA_META.t != null && (
-          <ResultRow label="R / t" value={(LBA_META.R / LBA_META.t).toFixed(0)} />
+
+        {/* ----- Result metadata (only for 3D results) ----- */}
+        {selectedId !== "chart" && (
+          <>
+            <SectionHeader>case</SectionHeader>
+            <ResultRow label="R (radius)" value={LBA_META.R?.toFixed(2) ?? "—"} unit="–" />
+            <ResultRow label="L (length)" value={LBA_META.L?.toFixed(2) ?? "—"} unit="–" />
+            <ResultRow label="t (thickness)" value={LBA_META.t?.toFixed(3) ?? "—"} unit="–" />
+            {LBA_META.phi_deg != null && (
+              <ResultRow label="φ (half-angle)" value={LBA_META.phi_deg.toFixed(1)} unit="°" />
+            )}
+            <ResultRow label="E" value={LBA_META.E?.toFixed(1) ?? "—"} unit="–" />
+            <ResultRow label="ν" value={LBA_META.nu?.toFixed(2) ?? "—"} unit="–" />
+            {LBA_META.R != null && LBA_META.t != null && (
+              <ResultRow label="R / t" value={(LBA_META.R / LBA_META.t).toFixed(0)} />
+            )}
+          </>
         )}
 
         {/* ----- LBA: eigenvalue / verdict / critical-load blocks ----- */}
@@ -469,27 +479,68 @@ export default function InspectorPanel() {
           <div style={{ marginBottom: 20 }}>
             <SectionHeader>load-deflection (arc-length)</SectionHeader>
             {currentResults?.loadDeflection && currentResults.loadDeflection.length > 0 ? (
-              <div style={{ fontSize: 11, fontFamily: MONO, lineHeight: 1.6, color: "var(--text-secondary)" }}>
-                {(() => {
-                  const ld = currentResults.loadDeflection;
-                  const maxF = Math.max(...ld.map(d => d.F));
-                  const maxU = Math.max(...ld.map(d => d.u_qoi_abs));
-                  return (
-                    <>
-                      <div style={{ display: "grid", gridTemplateColumns: "auto auto", gap: "12px 16px", marginBottom: 12 }}>
-                        <span>steps:</span> <span style={{ color: "var(--accent)" }}>{ld.length}</span>
-                        <span>λ_max:</span> <span style={{ color: "var(--accent)" }}>{Number(ld[ld.length-1].loadFactor).toFixed(4)}</span>
-                        <span>u_max:</span> <span style={{ color: "var(--accent)" }}>{Number(maxU).toFixed(4)}</span>
-                        <span>F_max:</span> <span style={{ color: "var(--accent)" }}>{Number(maxF).toFixed(1)}</span>
-                      </div>
-                      <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--line-steel-soft)", fontSize: 9.5, color: "var(--text-muted)" }}>
-                        Arc-length path through post-buckling limit point.
-                        {currentResults.verdict?.bifurcationStep != null && ` Bifurcation at step ${currentResults.verdict.bifurcationStep}.`}
-                      </div>
-                    </>
-                  );
-                })()}
-              </div>
+              <>
+                {/* Chart visualization */}
+                <div style={{ width: "100%", height: 280, marginBottom: 16 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={currentResults.loadDeflection} margin={{ top: 5, right: 10, left: -20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--line-faint)" vertical={false} />
+                      <XAxis
+                        dataKey="u_qoi_abs"
+                        type="number"
+                        scale="linear"
+                        label={{ value: "u (deflection)", position: "insideBottomRight", offset: -5, fill: "var(--text-muted)", fontSize: 10 }}
+                        tick={{ fontSize: 9, fill: "var(--text-muted)" }}
+                      />
+                      <YAxis
+                        label={{ value: "F (load)", angle: -90, position: "insideLeft", fill: "var(--text-muted)", fontSize: 10 }}
+                        tick={{ fontSize: 9, fill: "var(--text-muted)" }}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: "var(--control-bg)",
+                          border: "1px solid var(--line-steel-soft)",
+                          borderRadius: 4,
+                          padding: 8,
+                        }}
+                        labelStyle={{ color: "var(--text-primary)", fontSize: 10 }}
+                        formatter={(value) => Number(value).toFixed(2)}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="F"
+                        stroke="var(--accent)"
+                        dot={false}
+                        strokeWidth={2}
+                        isAnimationActive={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Summary metrics */}
+                <div style={{ fontSize: 11, fontFamily: MONO, lineHeight: 1.6, color: "var(--text-secondary)" }}>
+                  {(() => {
+                    const ld = currentResults.loadDeflection;
+                    const maxF = Math.max(...ld.map(d => d.F));
+                    const maxU = Math.max(...ld.map(d => d.u_qoi_abs));
+                    return (
+                      <>
+                        <div style={{ display: "grid", gridTemplateColumns: "auto auto", gap: "8px 12px", marginBottom: 12 }}>
+                          <span>steps:</span> <span style={{ color: "var(--accent)" }}>{ld.length}</span>
+                          <span>λ_max:</span> <span style={{ color: "var(--accent)" }}>{Number(ld[ld.length-1].loadFactor).toFixed(4)}</span>
+                          <span>u_max:</span> <span style={{ color: "var(--accent)" }}>{Number(maxU).toFixed(4)}</span>
+                          <span>F_max:</span> <span style={{ color: "var(--accent)" }}>{Number(maxF).toFixed(1)}</span>
+                        </div>
+                        <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--line-steel-soft)", fontSize: 9.5, color: "var(--text-muted)" }}>
+                          Arc-length path through post-buckling limit point.
+                          {currentResults.verdict?.bifurcationStep != null && ` Bifurcation at step ${currentResults.verdict.bifurcationStep}.`}
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              </>
             ) : (
               <div style={{ color: "var(--text-muted)", fontSize: 10 }}>
                 (loading chart data…)
@@ -561,24 +612,28 @@ export default function InspectorPanel() {
         <ResultRow label="coupling" value={LBA_META.coupling} />
         <ResultRow label="finest r" value={LBA_META.finestR ?? "—"} />
 
-        {/* ----- Loaded patch stats ----- */}
-        <SectionHeader>loaded</SectionHeader>
-        <ResultRow
-          label="patches"
-          value={cached ? cached.patches.length : "—"}
-        />
-        <ResultRow
-          label={isStress ? "field_max" : "|u|_max"}
-          value={cached ? cached.magMax.toExponential(2) : "—"}
-        />
-        <ResultRow
-          label="vertices"
-          value={
-            cached
-              ? cached.patches.reduce((a, p) => a + p.positions.length / 3, 0)
-              : "—"
-          }
-        />
+        {/* ----- Loaded patch stats (only for 3D results) ----- */}
+        {selectedId !== "chart" && (
+          <>
+            <SectionHeader>loaded</SectionHeader>
+            <ResultRow
+              label="patches"
+              value={cached ? cached.patches.length : "—"}
+            />
+            <ResultRow
+              label={isStress ? "field_max" : "|u|_max"}
+              value={cached ? cached.magMax.toExponential(2) : "—"}
+            />
+            <ResultRow
+              label="vertices"
+              value={
+                cached
+                  ? cached.patches.reduce((a, p) => a + p.positions.length / 3, 0)
+                  : "—"
+              }
+            />
+          </>
+        )}
       </div>
 
       <div
