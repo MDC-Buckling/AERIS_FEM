@@ -50,47 +50,78 @@ def _model_to_case(model: dict) -> dict:
     }
 
 
-def _build_hemisphere_nurbs() -> str:
-    """Generate a NURBS hemisphere surface.
+def _build_hemisphere_nurbs(R: float = 10.0) -> str:
+    """Generate NURBS geometry for hemisphere surface.
 
-    Single-patch bivariate NURBS surface:
-    - u ∈ [0, 1]: azimuthal angle (0° to 360°, parametric 0 to 1)
-    - v ∈ [0, 1]: meridional angle (0° to 90° from equator to pole)
+    Single-patch bivariate NURBS surface with 90-degree azimuthal extent.
+    Uses 3×3 = 9 control points with rational weights (circular/spherical arcs).
 
-    Control points in homogeneous coordinates (x, y, z, w).
-    For a sphere of radius R:
-    - At v=0 (equator): circle of radius R
-    - At v=1 (pole): single point (0, 0, R)
+    - u ∈ [0, 1]: 90-degree azimuthal arc (quadrant)
+    - v ∈ [0, 1]: 90-degree meridional arc from equator to pole
+    """
+    sqrt2_inv = 1.0 / math.sqrt(2.0)  # ≈ 0.707107
 
-    We use a standard sphere construction with 13 control points
-    (bilinear in u, cubic in v) and standard NURBS weights for
-    circular and spherical geometry."""
-    # Simplified: use a basic sphere NURBS (3x3 control points)
-    # This is a common reference hemisphere surface.
-    # Full implementation would require proper rational B-spline
-    # geometry, but for MVP we use a simple approximation.
-    nurbs = """  <Basis type="TensorBSpline2" index="9991">
-    <Basis type="BSpline" index="991" knots="0 0 0 1 1 1">
-      <c>-1</c>
-      <c>-1</c>
-      <c>1</c>
+    # 3×3 control point lattice
+    # Row 0: equator (v=0, z=0)
+    cp_equator = [
+        (R, 0.0, 0.0),
+        (R * sqrt2_inv, R * sqrt2_inv, 0.0),
+        (0.0, R, 0.0),
+    ]
+
+    # Row 1: mid-latitude (v=0.5, z≈R√2/2)
+    mid_z = R * sqrt2_inv
+    mid_r = R * sqrt2_inv
+    cp_mid = [
+        (mid_r, 0.0, mid_z),
+        (mid_r * sqrt2_inv, mid_r * sqrt2_inv, mid_z),
+        (0.0, mid_r, mid_z),
+    ]
+
+    # Row 2: open-pole cap at φ ≈ 88° (avoids degenerate Jacobian)
+    phi_cap = math.pi / 2 * 0.978
+    pole_xy = R * math.cos(phi_cap)
+    pole_z = R * math.sin(phi_cap)
+    cp_pole = [
+        (pole_xy, 0.0, pole_z),
+        (pole_xy * sqrt2_inv, pole_xy * sqrt2_inv, pole_z),
+        (0.0, pole_xy, pole_z),
+    ]
+
+    # Weights: 1.0 at corners, √2/2 ≈ 0.707107 at midpoints (circular arc)
+    # Order: row-major (left to right, top to bottom)
+    weights_row = [1.0, sqrt2_inv, 1.0]
+    weights_flat = [w for w in weights_row for _ in range(3)]
+
+    # Coefs: 3×3 control points (9 total) as x y z triplets
+    coefs_list = []
+    for cp_row in [cp_equator, cp_mid, cp_pole]:
+        for x, y, z in cp_row:
+            coefs_list.append(f"{x} {y} {z}")
+    coefs_str = " ".join(coefs_list)  # Single space between triplets
+
+    # Weights string (one per line)
+    weights_str = "\n".join(str(w) for w in weights_flat)
+
+    nurbs = f"""  <Geometry type="TensorNurbs2" id="9991">
+  <Basis type="TensorNurbsBasis2">
+   <Basis type="TensorBSplineBasis2">
+    <Basis type="BSplineBasis" index="0">
+     <KnotVector degree="2">0 0 0 1 1 1 </KnotVector>
     </Basis>
-    <Basis type="BSpline" index="992" knots="0 0 0 0.5 1 1 1">
-      <c>-1</c>
-      <c>-1</c>
-      <c>0</c>
-      <c>1</c>
+    <Basis type="BSplineBasis" index="1">
+     <KnotVector degree="2">0 0 0 1 1 1 </KnotVector>
     </Basis>
+   </Basis>
+   <weights>
+{weights_str}
+   </weights>
   </Basis>
+  <coefs geoDim="3">
+    {coefs_str}
+  </coefs>
+</Geometry>"""
 
-  <GeometryBase type="BSpline" basis="9991" index="9991">
-    <coefs geoDim="3">
-      1 0 0  1 -0.707107 0.707107 0  0 1 0  -0.707107 0.707107 0  -1 0 0
-      1 0 0.5  1 -0.707107 0.707107 0.5  0 1 0.5  -0.707107 0.707107 0.5  -1 0 0.5
-      1 0 1  1 -0.707107 0.707107 1  0 1 1  -0.707107 0.707107 1  -1 0 1
-      1 1 1  1 1 1  1 1 1  1 1 1  1 1 1
-    </coefs>
-  </GeometryBase>"""
     return nurbs
 
 
@@ -122,12 +153,19 @@ def build_hemisphere_static_xml(model: dict, load_factor: float = 1.0) -> str:
     </boundary>
   </MultiPatch>"""
 
-    # Material block: KL shell
-    material = f"""  <GeometryBase type="TensorBSpline2" basis="9991" index="10">
-    <coefs geoDim="1">{t}</coefs>
-  </GeometryBase>
-  <Function type="FunctionExpr" id="11" dim="1">{E}</Function>
-  <Function type="FunctionExpr" id="12" dim="1">{nu}</Function>"""
+    # Material block: KL shell (using MaterialMatrix like Scordelis-Lo)
+    material = f"""  <MaterialMatrix type="Linear3" id="10" TFT="false">
+  <Thickness>
+    <Function type="FunctionExpr" dim="3" index="0">{t}</Function>
+  </Thickness>
+  <Density>
+    <Function type="FunctionExpr" dim="3" index="0">1</Function>
+  </Density>
+  <Parameters>
+    <Function type="FunctionExpr" dim="3" index="0">{E}</Function>
+    <Function type="FunctionExpr" dim="3" index="1">{nu}</Function>
+  </Parameters>
+</MaterialMatrix>"""
 
     # BCs: clamped at pole (v=1), free at equator edges
     bcs = """  <boundaryConditions id="20" multipatch="0">
@@ -197,7 +235,7 @@ def build_hemisphere_static_xml(model: dict, load_factor: float = 1.0) -> str:
 <xml>
 {multipatch}
 
-{_build_hemisphere_nurbs()}
+{_build_hemisphere_nurbs(R=R)}
 
 {material}
 
@@ -410,6 +448,10 @@ def main():
         }],
         "loadDeflection": load_deflection,
         "convergence": [],
+        "files": {"solution": "solution.pvd"},
+        "modes": [
+            {"refinement": int(refines), "pvd_path": "solution.pvd", "kind": "displacement"},
+        ],
     }
 
     sidecar_path = args.work_dir / "run.json"

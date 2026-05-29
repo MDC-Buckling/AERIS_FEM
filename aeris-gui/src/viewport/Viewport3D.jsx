@@ -95,6 +95,8 @@ export default function Viewport3D() {
   // is "auto" today, so once that becomes editable we'll need to also
   // subscribe to .neumann_traction_axial.
   const loadKind = useUI((s) => s.model.load.kind);
+  const loadNodes = useUI((s) => s.model.load.nodes);
+  const pickingMode = useUI((s) => s.pickingMode);
   // bcs.kind drives the diaphragm-vs-free edge colouring on the
   // cylinder_segment preview. We skip the indicator for non-segment
   // shapes (closed cylinder BC topology is shown via the load-arrow
@@ -347,6 +349,97 @@ export default function Viewport3D() {
       }
     };
   }, []);
+
+  // Raycasting for interactive node picking (point load mode).
+  useEffect(() => {
+    const st = stateRef.current;
+    if (!st.renderer || !st.camera || !st.scene || mode !== "pre") return;
+
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    const { addLoadNode } = useUI.getState();
+
+    const onPointerDown = (e) => {
+      if (!pickingMode) return;
+      const rect = st.renderer.domElement.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+      raycaster.setFromCamera(mouse, st.camera);
+      const surfaceChildren = st.meshGroup.children.filter(
+        (c) => c.userData.kind === "surface"
+      );
+      const intersects = raycaster.intersectObjects(surfaceChildren);
+
+      if (intersects.length > 0) {
+        const hit = intersects[0];
+        const pos = hit.point;
+        // Default force: no force set, user must edit manually
+        addLoadNode({ x: pos.x, y: pos.y, z: pos.z, fx: 0, fy: 0, fz: 0 });
+      }
+    };
+
+    if (pickingMode) {
+      st.controls.enabled = false;
+      st.renderer.domElement.addEventListener("pointerdown", onPointerDown);
+    } else {
+      st.controls.enabled = true;
+      st.renderer.domElement.removeEventListener("pointerdown", onPointerDown);
+    }
+
+    return () => {
+      st.renderer.domElement.removeEventListener("pointerdown", onPointerDown);
+      st.controls.enabled = true;
+    };
+  }, [pickingMode, mode]);
+
+  // Node marker visualization (magenta spheres + force arrows at picked positions).
+  useEffect(() => {
+    const st = stateRef.current;
+    if (!st.scene || !st.meshGroup || mode !== "pre" || !loadNodes) return;
+
+    // Remove old markers
+    const oldMarkers = st.meshGroup.children.filter((c) => c.userData.kind === "node-marker");
+    oldMarkers.forEach((m) => {
+      if (m.geometry) m.geometry.dispose();
+      if (m.material) m.material.dispose();
+      st.meshGroup.remove(m);
+    });
+
+    // Add new markers for each node
+    const markerRadius = Math.max(cyl.R, cyl.L) * 0.015;
+    const markerGeom = new THREE.SphereGeometry(markerRadius, 16, 16);
+    const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xd946ef });
+
+    for (const node of loadNodes) {
+      // Sphere marker
+      const marker = new THREE.Mesh(markerGeom, markerMaterial);
+      marker.position.set(node.x, node.y, node.z);
+      marker.userData.kind = "node-marker";
+      st.meshGroup.add(marker);
+
+      // Force arrow (if force is non-zero)
+      const forceMag = Math.sqrt(node.fx * node.fx + node.fy * node.fy + node.fz * node.fz);
+      if (forceMag > 1e-9) {
+        const arrowLen = markerRadius * 5;
+        const forceDir = new THREE.Vector3(
+          node.fx / forceMag,
+          node.fy / forceMag,
+          node.fz / forceMag
+        );
+        const arrow = new THREE.ArrowHelper(
+          forceDir,
+          new THREE.Vector3(node.x, node.y, node.z),
+          arrowLen,
+          0xd946ef,
+          arrowLen * 0.32,
+          arrowLen * 0.2
+        );
+        arrow.userData.kind = "node-marker";
+        st.meshGroup.add(arrow);
+      }
+    }
+  }, [loadNodes, mode, cyl.R, cyl.L]);
 
   // Push warp / theme / edge changes to the live uniforms without rebuilding.
   useEffect(() => {
@@ -661,6 +754,17 @@ export default function Viewport3D() {
       loadGroup.userData.kind = "load";
       st.meshGroup.add(loadGroup);
     }
+
+    // Point load arrows for the pinched-cylinder benchmark.
+    const pointLoadGroup = buildPointLoadArrows(loadKind, cyl.R, cyl.L, loadNodes);
+    if (pointLoadGroup) {
+      pointLoadGroup.userData.kind = "load";
+      st.meshGroup.add(pointLoadGroup);
+    }
+
+    // BC rings — cyan=clamped, amber=free
+    const bcRings = buildCylinderBcRings(cyl.R, cyl.L, bcsKind);
+    st.meshGroup.add(bcRings);
 
     const seamNote = partitionZs.length
       ? ` · ${partitionZs.length} cut → ${partitionZs.length + 1} bands`
@@ -1384,6 +1488,47 @@ function buildLoadArrows(loadKind, R, L, nArrows = 16) {
   return group;
 }
 
+/** Point load arrows for the pinched-cylinder benchmark.
+ * If nodes[] is provided and non-empty, draw arrows from picked positions.
+ * Otherwise, fall back to hardcoded ±y positions for benchmark default.
+ * Returns a THREE.Group of ArrowHelpers, or null if not applicable. */
+function buildPointLoadArrows(loadKind, R, L, nodes = []) {
+  if (loadKind !== "point_load") return null;
+
+  const group = new THREE.Group();
+  const maxLen = Math.max(R, L) * 0.18;
+  const POINT_LOAD = 0xd946ef;  // magenta/purple
+
+  let loads;
+  if (nodes && nodes.length > 0) {
+    // User-picked nodes: draw arrow from force vector
+    loads = nodes.map(n => {
+      const forceMag = Math.sqrt(n.fx * n.fx + n.fy * n.fy + n.fz * n.fz);
+      if (forceMag < 1e-9) {
+        // No force set, skip this node
+        return null;
+      }
+      const dir = new THREE.Vector3(n.fx / forceMag, n.fy / forceMag, n.fz / forceMag);
+      return { pos: new THREE.Vector3(n.x, n.y, n.z), dir, mag: forceMag };
+    }).filter(l => l !== null);
+  } else {
+    // Hardcoded benchmark defaults (Pinched Cylinder)
+    const z_load = L * 0.5;
+    loads = [
+      { pos: new THREE.Vector3(0, R, z_load), dir: new THREE.Vector3(0, 1, 0), mag: 1 },
+      { pos: new THREE.Vector3(0, -R, z_load), dir: new THREE.Vector3(0, -1, 0), mag: 1 },
+    ];
+  }
+
+  for (const load of loads) {
+    const arrowLen = maxLen;
+    const headLen = arrowLen * 0.32;
+    const headWidth = arrowLen * 0.20;
+    group.add(new THREE.ArrowHelper(load.dir, load.pos, arrowLen, POINT_LOAD, headLen, headWidth));
+  }
+  return group;
+}
+
 /** Bright ring at each axial cut z — used in pre-mode to flag the partition
  * layout. Radius bumped slightly outside the cylinder so the line sits proud
  * of the surface (no z-fighting with the Lambertian preview mesh). */
@@ -1401,6 +1546,27 @@ function buildPartitionRings(R, zs, segmentsAround = 96) {
   const geom = new THREE.BufferGeometry();
   geom.setAttribute("position", new THREE.BufferAttribute(arr, 3));
   return geom;
+}
+
+function buildCylinderBcRings(R, L, bcsKind) {
+  const makeRing = (z) => {
+    const pts = [];
+    const N = 128;
+    for (let i = 0; i <= N; i++) {
+      const a = (i / N) * Math.PI * 2;
+      pts.push(new THREE.Vector3(R * Math.cos(a), R * Math.sin(a), z));
+    }
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    return geo;
+  };
+  const cyanMat  = new THREE.LineBasicMaterial({ color: 0x00e5ff, linewidth: 2 });
+  const amberMat = new THREE.LineBasicMaterial({ color: 0xffb454, linewidth: 2 });
+  const topFree = !bcsKind || bcsKind === "clamped_free";
+  const group = new THREE.Group();
+  group.add(new THREE.Line(makeRing(0), cyanMat));
+  group.add(new THREE.Line(makeRing(L), topFree ? amberMat : cyanMat));
+  group.userData.kind = "bc-rings";
+  return group;
 }
 
 /** Walk the per-patch scalar arrays produced by projectField and return the

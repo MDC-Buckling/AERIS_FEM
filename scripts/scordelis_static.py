@@ -384,7 +384,18 @@ def _write_sidecar(work_dir: Path, model: dict,
         "convergence": convergence,
         # Empty arrays for fields the LBA sidecar carries so the
         # GUI's existing parsers don't blow up on missing keys.
-        "modes": [],
+        "modes": [
+            {
+                "refinement": finest_r,
+                "pvd_path": "solution.pvd",
+                "kind": "displacement",
+            },
+            *([{
+                "refinement": finest_r,
+                "pvd_path": "MembraneStressVM.pvd",
+                "kind": "stress",
+            }] if (work_dir / "MembraneStressVM.pvd").exists() else []),
+        ],
         "verdict": {
             # The reference value is per-benchmark, not per-script —
             # the Hub interpreter applies it. Script just reports what
