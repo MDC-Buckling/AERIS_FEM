@@ -83,9 +83,15 @@ const MAGNITUDE_META = {
 export default function LoadCase() {
   const load = useUI((s) => s.model.load);
   const analysisKind = useUI((s) => s.model.analysis.kind);
+  const pickingMode = useUI((s) => s.pickingMode);
   const setKind = useUI((s) => s.setLoadKind);
   const setMagnitude = useUI((s) => s.setLoadMagnitude);
   const setControlMode = useUI((s) => s.setLoadControlMode);
+  const setPickingMode = useUI((s) => s.setPickingMode);
+  const addLoadNode = useUI((s) => s.addLoadNode);
+  const removeLoadNode = useUI((s) => s.removeLoadNode);
+  const updateLoadNode = useUI((s) => s.updateLoadNode);
+  const clearLoadNodes = useUI((s) => s.clearLoadNodes);
 
   const desc = LOAD_DESCRIPTIONS[load.kind] ?? "?";
   const meta = MAGNITUDE_META[load.kind] ?? MAGNITUDE_META.axial;
@@ -260,6 +266,138 @@ export default function LoadCase() {
           </div>
         )}
       </div>
+
+      {/* Point load node picker */}
+      {load.kind === "point_load" && (
+        <div style={{ marginTop: 12 }}>
+          <button
+            onClick={() => setPickingMode(!pickingMode)}
+            style={{
+              width: "100%",
+              padding: "10px 12px",
+              background: pickingMode ? "var(--accent)" : "var(--button-bg)",
+              color: pickingMode ? "var(--button-text-alt)" : "var(--button-text)",
+              border: "1px solid var(--accent)",
+              borderRadius: 4,
+              fontWeight: 600,
+              cursor: "pointer",
+              fontSize: 11,
+              fontFamily: MONO,
+              transition: "all 0.15s",
+            }}
+          >
+            {pickingMode ? "⏹ STOP PICKING" : "⊕ PICK NODES"}
+          </button>
+
+          {pickingMode && (
+            <div
+              style={{
+                marginTop: 8,
+                padding: "8px 10px",
+                background: "rgba(13,200,255,0.08)",
+                border: "1px dashed var(--accent)",
+                borderRadius: 4,
+                fontSize: 10,
+                color: "var(--text-secondary)",
+                fontFamily: MONO,
+              }}
+            >
+              Click the cylinder surface to add a load point.
+            </div>
+          )}
+
+          {/* Node list with force editors */}
+          {load.nodes && load.nodes.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              {load.nodes.map((node, i) => (
+                <div
+                  key={i}
+                  style={{
+                    padding: "10px",
+                    background: "var(--panel-bg-soft)",
+                    border: "1px solid var(--line-soft)",
+                    borderRadius: 4,
+                    marginBottom: 8,
+                    fontSize: 10,
+                    fontFamily: MONO,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                    <span>pos: ({node.x.toFixed(2)}, {node.y.toFixed(2)}, {node.z.toFixed(2)})</span>
+                    <button
+                      onClick={() => removeLoadNode(i)}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        color: "var(--accent-error)",
+                        cursor: "pointer",
+                        fontSize: 12,
+                        padding: 0,
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  {/* Force component editors */}
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+                    <NumberField
+                      label="fx"
+                      symbol=""
+                      unit=""
+                      value={node.fx ?? 0}
+                      onChange={(v) => updateLoadNode(i, { fx: v })}
+                      min={-Infinity}
+                      step={0.1}
+                      precision={3}
+                    />
+                    <NumberField
+                      label="fy"
+                      symbol=""
+                      unit=""
+                      value={node.fy ?? 0}
+                      onChange={(v) => updateLoadNode(i, { fy: v })}
+                      min={-Infinity}
+                      step={0.1}
+                      precision={3}
+                    />
+                    <NumberField
+                      label="fz"
+                      symbol=""
+                      unit=""
+                      value={node.fz ?? 0}
+                      onChange={(v) => updateLoadNode(i, { fz: v })}
+                      min={-Infinity}
+                      step={0.1}
+                      precision={3}
+                    />
+                  </div>
+                </div>
+              ))}
+
+              {load.nodes.length > 0 && (
+                <button
+                  onClick={clearLoadNodes}
+                  style={{
+                    width: "100%",
+                    padding: "8px 10px",
+                    background: "var(--panel-bg-soft)",
+                    border: "1px dashed var(--accent-error)",
+                    borderRadius: 4,
+                    fontSize: 10,
+                    fontFamily: MONO,
+                    color: "var(--accent-error)",
+                    cursor: "pointer",
+                    marginTop: 6,
+                  }}
+                >
+                  Clear all
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       <div
         style={{

@@ -188,7 +188,7 @@ export default function ResultsPanel() {
   const items = resultsFromManifest(currentResults) ?? KNOWN_RESULTS;
   const isLive = !!currentResults;
   const headerHint = isLive
-    ? `r=${currentResults.verdict.finestR} · ${currentResults.mesh.coupling}`
+    ? `r=${currentResults.verdict?.finestR ?? currentResults.mesh?.refinement ?? "?"} · ${currentResults.mesh?.coupling ?? ""}`
     : "cylinder LBA — r=5 (fallback)";
 
   // Only jobs with a successful past run have results to load. Sort by

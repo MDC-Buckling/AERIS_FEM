@@ -155,12 +155,83 @@ def build_pinched_cylinder_xml(model: dict, load_factor: float = 1.0) -> str:
     bcs += """  </bc>
 </boundaryConditions>"""
 
-    # Point loads: two opposing loads at mid-span (v=0.5) at max y-deflection sites.
-    # For a 4-patch closed cylinder, quarter-patches have u ∈ [0, 1]:
-    # - Patch 0 (θ ∈ [0, π/2]): u=1 is θ=π/2 (max +y), load in +y at v=0.5
-    # - Patch 2 (θ ∈ [π, 3π/2]): u=1 is θ=3π/2 (max -y), load in -y at v=0.5
-    # This creates the "pinch" effect (squeezing opposite sides).
-    loads = f"""<Function type="FunctionExpr" id="21" tag="Loads" dim="3">
+    # Point loads: either from user-picked nodes or hardcoded benchmark defaults.
+    picked_nodes = model["load"].get("nodes", [])
+
+    if picked_nodes:
+        # Convert user-picked {x, y, z, fx, fy, fz} to parametric (u, v, patch)
+        # For a 4-patch closed cylinder:
+        # theta = atan2(y, x) ∈ [-π, π]
+        # patch = int(theta / (π/2))  →  0..3
+        # u = (theta - patch * π/2) / (π/2)  →  [0,1] within patch
+        # v = z / L  →  [0,1] axial
+        u_vals = []
+        v_vals = []
+        fx_vals = []
+        fy_vals = []
+        fz_vals = []
+        patch_ids = []
+
+        for node in picked_nodes:
+            x, y, z = float(node.get("x", 0)), float(node.get("y", 0)), float(node.get("z", 0))
+            fx, fy, fz = float(node.get("fx", 0)), float(node.get("fy", 0)), float(node.get("fz", 0))
+
+            # Scale force by load_factor
+            fx *= load_factor
+            fy *= load_factor
+            fz *= load_factor
+
+            # Convert (x, y, z) to (patch, u, v)
+            theta = math.atan2(y, x)
+            # Normalize to [0, 2π)
+            if theta < 0:
+                theta += 2 * math.pi
+            patch = int((theta / (math.pi / 2)) % 4)
+            u = (theta - patch * math.pi / 2) / (math.pi / 2)
+            v = z / case.L
+
+            u_vals.append(u)
+            v_vals.append(v)
+            fx_vals.append(fx)
+            fy_vals.append(fy)
+            fz_vals.append(fz)
+            patch_ids.append(patch)
+
+        # Build XML matrices dynamically
+        n_nodes = len(u_vals)
+        u_row = " ".join(f"{u:.15g}" for u in u_vals)
+        v_row = " ".join(f"{v:.15g}" for v in v_vals)
+        fx_row = " ".join(f"{fx:.15g}" for fx in fx_vals)
+        fy_row = " ".join(f"{fy:.15g}" for fy in fy_vals)
+        fz_row = " ".join(f"{fz:.15g}" for fz in fz_vals)
+        patch_row = " ".join(str(p) for p in patch_ids)
+
+        loads = f"""<Function type="FunctionExpr" id="21" tag="Loads" dim="3">
+  <c> 0 </c>
+  <c> 0 </c>
+  <c> 0 </c>
+</Function>
+<Function type="FunctionExpr" id="22" tag="Loads" dim="3">0</Function>
+
+<Matrix rows="2" cols="{n_nodes}" id="30" tag="Loads">
+{u_row}
+{v_row}
+</Matrix>
+
+<Matrix rows="3" cols="{n_nodes}" id="31" tag="Loads">
+{fx_row}
+{fy_row}
+{fz_row}
+</Matrix>
+
+<Matrix rows="1" cols="{n_nodes}" id="32" tag="Loads">
+{patch_row}
+</Matrix>"""
+    else:
+        # Hardcoded benchmark defaults: two opposing loads at mid-span (v=0.5)
+        # - Patch 0 (θ ∈ [0, π/2]): u=1 is θ=π/2 (max +y), load in +y
+        # - Patch 2 (θ ∈ [π, 3π/2]): u=1 is θ=3π/2 (max -y), load in -y
+        loads = f"""<Function type="FunctionExpr" id="21" tag="Loads" dim="3">
   <c> 0 </c>
   <c> 0 </c>
   <c> 0 </c>
@@ -406,6 +477,21 @@ def main():
             "kind": str(model["load"].get("kind", "point_load")),
             "magnitude": float(model["load"].get("magnitude", 1.0)),
         },
+        "files": {
+            "solution": "solution.pvd",
+        },
+        "modes": [
+            {
+                "refinement": int(refines),
+                "pvd_path": "solution.pvd",
+                "kind": "displacement",
+            },
+            {
+                "refinement": int(refines),
+                "pvd_path": "tensionfield.pvd",
+                "kind": "stress",
+            },
+        ],
         "qois": [{
             "qoiValue": finest["u_qoi"],
             "qoiAbsValue": finest["u_qoi_abs"],

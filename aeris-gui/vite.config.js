@@ -382,7 +382,7 @@ function aerisOutputServer() {
               // chaining a Newton-Raphson iteration after the linear solve.
               solverScript = "/scripts/scordelis_static.py";
               solverPaysAttentionToRefines = true;
-            } else if (shape === "hemisphere"
+            } else if ((shape === "hemisphere" || shape === "sphere")
                        && (akind === "static" || akind === "gna")) {
               // Pinched hemisphere: single-patch NURBS sphere with four
               // equatorial point loads (MacNeal-Harder benchmark).
@@ -396,7 +396,7 @@ function aerisOutputServer() {
               res.end(JSON.stringify({
                 ok: false,
                 error: `no solver wired for (shape=${shape}, analysis.kind=${akind}, load.kind=${loadKind})`,
-                hint: "supported today: (cylinder, lba|static|gna|gnia), (cylinder_segment, static|gna), (hemisphere, static|gna)",
+                hint: "supported today: (cylinder, lba|static|gna|gnia), (cylinder_segment, static|gna), (sphere, static|gna)",
               }));
               return;
             }

@@ -44,7 +44,7 @@ const DEFAULT_MESH = {
  * the GUI after loading doesn't lose the dimensions of the OTHER kind. */
 const DEFAULT_CYLINDER = { R: 33.0, L: 100.0, t: 0.1, partitions: [] };
 const DEFAULT_SEGMENT  = { R: 25.0, L: 50.0, t: 0.25, phi_deg: 40.0 };
-const DEFAULT_HEMISPHERE = { R: 10.0, t: 0.04 };
+const DEFAULT_HEMISPHERE = { R: 10.0, t: 0.04, opening_angle_deg: 90.0 };
 
 /** Helper: build a cylinder-LBA preset with sensible defaults. Each
  * benchmark only has to specify what's special (R / L / t / E / nu /
@@ -182,7 +182,7 @@ function pinchedCylinderPreset() {
       shape: "cylinder",
       cylinder: { R: 6.3, L: 12.6, t: 0.03, partitions: [] },
       cylinder_segment: { ...DEFAULT_SEGMENT },
-      hemisphere: { ...DEFAULT_HEMISPHERE },
+      sphere: { ...DEFAULT_HEMISPHERE },
     },
     materials: [
       { id: "mat-default", name: "MacNeal-Harder isotropic",
@@ -209,10 +209,10 @@ function pinchedHemispherePreset() {
     schemaVersion: 2,
     name: "Pinched hemisphere",
     geometry: {
-      shape: "hemisphere",
+      shape: "sphere",
       cylinder: { ...DEFAULT_CYLINDER },
       cylinder_segment: { ...DEFAULT_SEGMENT },
-      hemisphere: { R: 10.0, t: 0.04 },
+      sphere: { R: 10.0, t: 0.04, opening_angle_deg: 90.0 },
     },
     materials: [
       { id: "mat-default", name: "MacNeal-Harder isotropic",

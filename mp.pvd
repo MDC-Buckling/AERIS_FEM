@@ -3,11 +3,5 @@
 <Collection>
 <DataSet file="mp_0.vts"/>
 <DataSet file="mp_0_mesh.vtp"/>
-<DataSet file="mp_1.vts"/>
-<DataSet file="mp_1_mesh.vtp"/>
-<DataSet file="mp_2.vts"/>
-<DataSet file="mp_2_mesh.vtp"/>
-<DataSet file="mp_3.vts"/>
-<DataSet file="mp_3_mesh.vtp"/>
 </Collection>
 </VTKFile>
