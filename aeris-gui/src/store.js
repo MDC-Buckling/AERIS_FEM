@@ -2,6 +2,60 @@ import { create } from "zustand";
 
 const THEME_KEY = "aeris_theme";
 
+/** Auto-compute model readiness based on state. Returns sectionStatus map
+ * with keys: geometry, shellConstruction, material, imperfections, mesh,
+ * bcsLoads, analysis, run. Each is "default" | "configured" | "warning". */
+function computeModelReadiness(model) {
+  const shape = model.geometry.shape;
+  const g = model.geometry;
+  const cyl = g.cylinder;
+  const seg = g.cylinder_segment;
+  const sph = g.sphere;
+  const mat = model.materials?.[0];
+  const mesh = model.mesh;
+  const analysis = model.analysis;
+  const load = model.load;
+  const bcs = model.bcs;
+
+  // GEOMETRY: shape-dependent validation
+  let geomOk = false;
+  if (shape === "cylinder") geomOk = cyl.R > 0 && cyl.L > 0 && cyl.t > 0;
+  else if (shape === "cylinder_segment") geomOk = seg.R > 0 && seg.L > 0 && seg.t > 0 && seg.phi_deg > 0;
+  else if (shape === "sphere" || shape === "hemisphere") geomOk = sph.R > 0 && sph.t > 0;
+
+  // MATERIAL: E, nu must be defined and positive
+  const matOk = mat && Number.isFinite(mat.E) && mat.E > 0 && Number.isFinite(mat.nu) && mat.nu > 0;
+
+  // SHELL CONSTRUCTION: at least one section and one assignment
+  const shellOk = model.sections?.length > 0 && model.assignments?.length > 0;
+
+  // MESH: refinement and degree must be valid
+  const meshOk = mesh.refinement >= 1 && mesh.degree >= 1;
+
+  // BCS & LOADS: both must be set
+  const bcsOk = !!bcs.kind;
+  const loadOk = load.kind && (load.magnitude > 0 || load.kind === "gravity");
+
+  // ANALYSIS: kind must exist; LBA with zero shift is a warning
+  const analysisKind = analysis.kind;
+  const analysisOk = !!analysisKind;
+  const analysisWarning = analysisKind === "lba" && (analysis.shift === 0 || !Number.isFinite(analysis.shift));
+
+  // RUN: all sections must be configured
+  const runOk = geomOk && matOk && shellOk && meshOk && bcsOk && loadOk && analysisOk;
+
+  return {
+    geometry:          geomOk ? "configured" : "warning",
+    shellConstruction: shellOk ? "configured" : "default",
+    material:          matOk ? "configured" : "warning",
+    imperfections:     "default", // no mandatory fields
+    mesh:              meshOk ? "configured" : "warning",
+    bcsLoads:          (bcsOk && loadOk) ? "configured" : "warning",
+    analysis:          analysisWarning ? "warning" : (analysisOk ? "configured" : "default"),
+    run:               runOk ? "configured" : "default",
+  };
+}
+
 function initialTheme() {
   if (typeof window === "undefined") return "dark";
   try {
@@ -43,8 +97,19 @@ export const useUI = create((set) => ({
       return { expandedSections: next };
     }),
 
+  expandSection: (sectionId) =>
+    set((s) => {
+      const next = new Set(s.expandedSections);
+      next.add(sectionId);
+      return { expandedSections: next };
+    }),
+
+  /** Command palette open/closed state */
+  paletteOpen: false,
+  setPaletteOpen: (v) => set({ paletteOpen: v }),
+
   /** Pre-processor: per-section state — "default" | "configured" | "warning".
-   * Sessions tick them to "configured" as their sections get wired. */
+   * Auto-computed from model state; see computeModelReadiness(). */
   sectionStatus: {
     geometry:          "configured",  // 3.2
     material:          "configured",  // 3.3
@@ -161,7 +226,7 @@ export const useUI = create((set) => ({
     //                    paths (where force-control would jump).
     // LSA / LBA ignore controlMode (LBA is eigenvalue-only; LSA is single
     // direct K·u=F).
-    load: { kind: "axial", magnitude: 1.0, controlMode: "force" },
+    load: { kind: "axial", magnitude: 1.0, controlMode: "force", nodes: [] },
     analysis: {
       kind: "lba",
       nmodes: 5,
@@ -249,14 +314,16 @@ export const useUI = create((set) => ({
       // R/L/t must stay strictly positive.
       if (key !== "imperfectionForce" && v <= 0) return {};
       if (key === "imperfectionForce" && v < 0) return {};
-      return {
-        model: {
-          ...s.model,
-          geometry: {
-            ...s.model.geometry,
-            cylinder: { ...s.model.geometry.cylinder, [key]: v },
-          },
+      const nextModel = {
+        ...s.model,
+        geometry: {
+          ...s.model.geometry,
+          cylinder: { ...s.model.geometry.cylinder, [key]: v },
         },
+      };
+      return {
+        model: nextModel,
+        sectionStatus: computeModelReadiness(nextModel),
       };
     }),
 
@@ -268,14 +335,16 @@ export const useUI = create((set) => ({
       const v = Number(value);
       if (!Number.isFinite(v) || v <= 0) return {};
       if (key === "phi_deg" && v > 90) return {};
-      return {
-        model: {
-          ...s.model,
-          geometry: {
-            ...s.model.geometry,
-            cylinder_segment: { ...s.model.geometry.cylinder_segment, [key]: v },
-          },
+      const nextModel = {
+        ...s.model,
+        geometry: {
+          ...s.model.geometry,
+          cylinder_segment: { ...s.model.geometry.cylinder_segment, [key]: v },
         },
+      };
+      return {
+        model: nextModel,
+        sectionStatus: computeModelReadiness(nextModel),
       };
     }),
 
@@ -290,25 +359,31 @@ export const useUI = create((set) => ({
       } else {
         if (v <= 0) return {};
       }
-      return {
-        model: {
-          ...s.model,
-          geometry: {
-            ...s.model.geometry,
-            sphere: { ...s.model.geometry.sphere, [key]: v },
-          },
+      const nextModel = {
+        ...s.model,
+        geometry: {
+          ...s.model.geometry,
+          sphere: { ...s.model.geometry.sphere, [key]: v },
         },
+      };
+      return {
+        model: nextModel,
+        sectionStatus: computeModelReadiness(nextModel),
       };
     }),
 
   /** Set the shape family. Only "cylinder" is wired. */
   setShape: (shape) =>
-    set((s) => ({
-      model: {
+    set((s) => {
+      const nextModel = {
         ...s.model,
         geometry: { ...s.model.geometry, shape },
-      },
-    })),
+      };
+      return {
+        model: nextModel,
+        sectionStatus: computeModelReadiness(nextModel),
+      };
+    }),
 
   /** Patch a single field on a material by id. Silently rejects non-finite
    * numbers; positivity for E, [0, 0.5) for nu enforced by the inspector. */
@@ -320,7 +395,11 @@ export const useUI = create((set) => ({
         if (typeof v === "number" && !Number.isFinite(v)) return m;
         return { ...m, [key]: v };
       });
-      return { model: { ...s.model, materials } };
+      const nextModel = { ...s.model, materials };
+      return {
+        model: nextModel,
+        sectionStatus: computeModelReadiness(nextModel),
+      };
     }),
 
   /** -------------------- Partitions + Section Assignments --------------
@@ -424,21 +503,37 @@ export const useUI = create((set) => ({
   setMeshField: (key, value) =>
     set((s) => {
       if (typeof value === "number" && !Number.isFinite(value)) return {};
-      return { model: { ...s.model, mesh: { ...s.model.mesh, [key]: value } } };
+      const nextModel = { ...s.model, mesh: { ...s.model.mesh, [key]: value } };
+      return {
+        model: nextModel,
+        sectionStatus: computeModelReadiness(nextModel),
+      };
     }),
 
   /** Set the boundary-condition preset (model.bcs.kind). Currently only
    * "clamped_neumann" is wired in the solver; the inspector enforces the
    * narrower allow-list via disabled toggles. */
   setBcsKind: (kind) =>
-    set((s) => ({ model: { ...s.model, bcs: { ...s.model.bcs, kind } } })),
+    set((s) => {
+      const nextModel = { ...s.model, bcs: { ...s.model.bcs, kind } };
+      return {
+        model: nextModel,
+        sectionStatus: computeModelReadiness(nextModel),
+      };
+    }),
 
   /** Set the load-case preset (model.load.kind). "axial" and "bending" are
    * wired end-to-end as of Session 3.6; "torsion" / "extpress" / "intpress"
    * / "combined" are disabled in the GUI until the solver-side branches
    * land. */
   setLoadKind: (kind) =>
-    set((s) => ({ model: { ...s.model, load: { ...s.model.load, kind } } })),
+    set((s) => {
+      const nextModel = { ...s.model, load: { ...s.model.load, kind } };
+      return {
+        model: nextModel,
+        sectionStatus: computeModelReadiness(nextModel),
+      };
+    }),
 
   /** Switch between force-control and displacement-control. Only
    * affects cylinder GNA today (LBA is eigenvalue-only; LSA is
@@ -458,6 +553,48 @@ export const useUI = create((set) => ({
       const v = Number(value);
       if (!Number.isFinite(v) || v <= 0) return {};
       return { model: { ...s.model, load: { ...s.model.load, magnitude: v } } };
+    }),
+
+  /** Interactive node picking mode for point loads. */
+  pickingMode: false,
+  setPickingMode: (v) => set({ pickingMode: v }),
+
+  /** Add a picked node: {x, y, z, fx, fy, fz}. */
+  addLoadNode: (node) =>
+    set((s) => ({
+      model: {
+        ...s.model,
+        load: {
+          ...s.model.load,
+          nodes: [...(s.model.load.nodes ?? []), node],
+        },
+      },
+    })),
+
+  /** Remove node at index. */
+  removeLoadNode: (i) =>
+    set((s) => {
+      const nodes = [...(s.model.load.nodes ?? [])];
+      nodes.splice(i, 1);
+      return {
+        model: { ...s.model, load: { ...s.model.load, nodes } },
+      };
+    }),
+
+  /** Clear all picked nodes. */
+  clearLoadNodes: () =>
+    set((s) => ({
+      model: { ...s.model, load: { ...s.model.load, nodes: [] } },
+    })),
+
+  /** Update a node's force components or other fields. */
+  updateLoadNode: (i, patch) =>
+    set((s) => {
+      const nodes = [...(s.model.load.nodes ?? [])];
+      nodes[i] = { ...nodes[i], ...patch };
+      return {
+        model: { ...s.model, load: { ...s.model.load, nodes } },
+      };
     }),
 
   /** ----- BENCHMARK HUB ---------------------------------------------------
@@ -608,7 +745,13 @@ export const useUI = create((set) => ({
 
   /** Set model.analysis.kind. lba / static / gna / gnia all wired. */
   setAnalysisKind: (kind) =>
-    set((s) => ({ model: { ...s.model, analysis: { ...s.model.analysis, kind } } })),
+    set((s) => {
+      const nextModel = { ...s.model, analysis: { ...s.model.analysis, kind } };
+      return {
+        model: nextModel,
+        sectionStatus: computeModelReadiness(nextModel),
+      };
+    }),
 
   /** Patch one field on model.imperfections (kind / mode / amplitude).
    * Used by the Imperfections inspector section; consumed by GNIA. */
@@ -629,8 +772,10 @@ export const useUI = create((set) => ({
   setAnalysisField: (key, value) =>
     set((s) => {
       if (typeof value === "number" && !Number.isFinite(value)) return {};
+      const nextModel = { ...s.model, analysis: { ...s.model.analysis, [key]: value } };
       return {
-        model: { ...s.model, analysis: { ...s.model.analysis, [key]: value } },
+        model: nextModel,
+        sectionStatus: computeModelReadiness(nextModel),
       };
     }),
 

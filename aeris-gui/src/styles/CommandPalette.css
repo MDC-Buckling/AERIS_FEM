@@ -1,0 +1,114 @@
+.command-palette-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 60px;
+  z-index: 10000;
+  backdrop-filter: blur(2px);
+}
+
+.command-palette-container {
+  display: flex;
+  flex-direction: column;
+  width: 90%;
+  max-width: 500px;
+  background-color: var(--bg-surface, #1f2937);
+  border: 1px solid var(--border-color, #374151);
+  border-radius: 6px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3);
+  max-height: 400px;
+  overflow: hidden;
+}
+
+.command-palette-input {
+  padding: 12px 16px;
+  border: none;
+  border-bottom: 1px solid var(--border-color, #374151);
+  background-color: var(--bg-surface, #1f2937);
+  color: var(--text-primary, #e5e7eb);
+  font-size: 14px;
+  font-family: 'Courier New', monospace;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.command-palette-input:focus {
+  border-bottom-color: var(--accent, #06b6d4);
+}
+
+.command-palette-input::placeholder {
+  color: var(--text-muted, #9ca3af);
+}
+
+.command-palette-list {
+  overflow-y: auto;
+  max-height: 300px;
+}
+
+.command-palette-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 16px;
+  border: none;
+  background-color: transparent;
+  color: var(--text-primary, #e5e7eb);
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: 'Courier New', monospace;
+  transition: background-color 0.1s;
+}
+
+.command-palette-item:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.command-palette-item.selected {
+  background-color: var(--accent, #06b6d4);
+  color: #000;
+}
+
+.command-icon {
+  display: inline-block;
+  width: 20px;
+  text-align: center;
+  font-size: 14px;
+}
+
+.command-label {
+  flex: 1;
+}
+
+.command-palette-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-muted, #9ca3af);
+  font-size: 13px;
+}
+
+.command-palette-help {
+  padding: 8px 16px;
+  border-top: 1px solid var(--border-color, #374151);
+  background-color: rgba(0, 0, 0, 0.2);
+  font-size: 11px;
+  color: var(--text-muted, #9ca3af);
+  font-family: 'Courier New', monospace;
+}
+
+.command-palette-help kbd {
+  padding: 2px 6px;
+  background-color: rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--border-color, #374151);
+  border-radius: 3px;
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  margin: 0 4px;
+}

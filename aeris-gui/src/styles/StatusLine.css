@@ -1,0 +1,93 @@
+.status-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 28px;
+  padding: 0 12px;
+  background-color: var(--bg-surface, #1f2937);
+  border-bottom: 1px solid var(--border-color, #374151);
+  font-size: 12px;
+  font-family: 'Courier New', monospace;
+  color: var(--text-primary, #e5e7eb);
+  user-select: none;
+}
+
+.status-line-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.status-line-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: 16px;
+  flex-shrink: 0;
+}
+
+.model-name {
+  font-weight: 600;
+  color: var(--accent, #06b6d4);
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+.divider {
+  color: var(--text-muted, #9ca3af);
+}
+
+.status-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: currentColor;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background-color 0.15s;
+  white-space: nowrap;
+  font-size: 11px;
+  font-family: 'Courier New', monospace;
+}
+
+.status-badge:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.status-badge .icon {
+  display: inline-block;
+  width: 10px;
+  text-align: center;
+  font-weight: bold;
+}
+
+.solver-status {
+  color: var(--text-secondary, #d1d5db);
+  white-space: nowrap;
+  padding: 0 6px;
+}
+
+.palette-hint {
+  padding: 4px 8px;
+  height: 20px;
+  border: 1px solid var(--text-muted, #9ca3af);
+  background: transparent;
+  color: var(--text-muted, #9ca3af);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: 'Courier New', monospace;
+  transition: all 0.15s;
+}
+
+.palette-hint:hover {
+  border-color: var(--accent, #06b6d4);
+  color: var(--accent, #06b6d4);
+}

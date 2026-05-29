@@ -8,6 +8,8 @@ import ViewportLegend from "./components/ViewportLegend.jsx";
 import ModelTreePanel from "./preprocessor/ModelTreePanel.jsx";
 import PreInspectorPanel from "./preprocessor/PreInspectorPanel.jsx";
 import BenchmarkHubPanel from "./benchmarks/BenchmarkHubPanel.jsx";
+import StatusLine from "./components/StatusLine.jsx";
+import CommandPalette from "./components/CommandPalette.jsx";
 
 export default function App() {
   const theme = useUI((s) => s.theme);
@@ -29,6 +31,66 @@ export default function App() {
     loadResultsManifest();
   }, [loadJobs, loadResultsManifest]);
 
+  // Global keyboard handler for command palette and section shortcuts
+  React.useEffect(() => {
+    const handleKeyDown = (e) => {
+      const tag = e.target.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || e.target.isContentEditable) return;
+
+      const store = useUI.getState();
+      const { mode, setMode, selectTreeItem, expandSection, runSolver, setPaletteOpen, paletteOpen } = store;
+
+      // Command palette: Space or Cmd/Ctrl+K
+      if ((e.key === " " && !e.ctrlKey && !e.metaKey) ||
+          ((e.ctrlKey || e.metaKey) && e.key === "k")) {
+        e.preventDefault();
+        setPaletteOpen(!paletteOpen);
+        return;
+      }
+
+      if (mode !== "pre") {
+        if (e.key === "Tab") {
+          e.preventDefault();
+          setMode(mode === "pre" ? "post" : "pre");
+        }
+        return;
+      }
+
+      const jump = (sectionId, itemId) => {
+        expandSection(sectionId);
+        selectTreeItem(`${sectionId}.${itemId}`);
+      };
+
+      switch (e.key.toLowerCase()) {
+        case "g":
+          jump("geometry", "dimensions");
+          break;
+        case "m":
+          jump("material", "base");
+          break;
+        case "b":
+          jump("bcsLoads", "bcs");
+          break;
+        case "e":
+          jump("mesh", "discretisation");
+          break;
+        case "s":
+          jump("analysis", "type");
+          break;
+        case "r":
+          if (!e.ctrlKey && !e.metaKey) runSolver();
+          break;
+        case "tab":
+          e.preventDefault();
+          setMode("post");
+          break;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   return (
     <div
       className="theme-root"
@@ -41,6 +103,8 @@ export default function App() {
       }}
     >
       <TopChrome />
+      <StatusLine />
+      <CommandPalette />
 
       {mode === "hub" ? (
         // Hub: full-width single panel. No viewport — the hub is a
