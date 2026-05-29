@@ -952,13 +952,6 @@ export default function Viewport3D() {
       }
     };
 
-    if (resultCache[cacheKey]) {
-      apply(resultCache[cacheKey]);
-      return () => {
-        cancelled = true;
-      };
-    }
-
     // For GNIA charts, don't try to load a PVD file — chart data is shown in Inspector instead
     if (result.kind === "chart") {
       // Clear the viewport and show a message in the status bar
@@ -966,11 +959,30 @@ export default function Viewport3D() {
         const c = st.meshGroup.children.pop();
         c.geometry?.dispose();
       }
+      while (st.wireGroup.children.length) {
+        st.wireGroup.children.pop();
+      }
       const ld = result.data;
       if (ld && ld.length > 0) {
         setStatus(`${ld.length} converged steps · λ_max=${Number(ld[ld.length-1].loadFactor).toFixed(3)} (details in Inspector →)`);
       }
       return () => { cancelled = true; };
+    }
+
+    // If meshGroup is empty but cache exists, it means we just returned from a chart view.
+    // Rebuild the mesh from cache.
+    if (st.meshGroup.children.length === 0 && resultCache[cacheKey]) {
+      apply(resultCache[cacheKey]);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    // Cache hit for non-empty mesh
+    if (st.meshGroup.children.length > 0 && resultCache[cacheKey]) {
+      return () => {
+        cancelled = true;
+      };
     }
 
     setStatus(`loading ${result.label}…`);
