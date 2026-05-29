@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 2,
+  "name": "Hemisphere Test",
+  "geometry": {
+    "shape": "sphere",
+    "sphere": {
+      "R": 10.0,
+      "t": 0.04,
+      "opening_angle_deg": 90.0
+    }
+  },
+  "materials": [
+    {
+      "id": "mat-default",
+      "name": "Steel (linear isotropic)",
+      "model": "linear",
+      "E": 1.0,
+      "nu": 0.3
+    }
+  ],
+  "sections": [
+    {
+      "id": "sec-shell-1",
+      "name": "Shell — hemisphere",
+      "kind": "shell",
+      "material_ref": "mat-default",
+      "thickness_source": {"kind": "geometry"},
+      "offset": "midsurface"
+    }
+  ],
+  "assignments": [
+    {"region": "shell_full", "section_ref": "sec-shell-1"}
+  ],
+  "mesh": {
+    "refinement": 3,
+    "degree": 3,
+    "smoothness": 2,
+    "coupling": "gsSmoothInterfaces"
+  },
+  "bcs": {
+    "kind": "clamped_neumann"
+  },
+  "load": {
+    "kind": "point_load",
+    "magnitude": 1.0
+  },
+  "analysis": {
+    "kind": "static",
+    "interface_penalty": 1000000
+  }
+}
