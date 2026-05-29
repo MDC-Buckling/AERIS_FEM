@@ -822,6 +822,7 @@ export default function Viewport3D() {
       ? [
           currentResults.files?.geometry && { id: "geometry", pvd: prefix + currentResults.files.geometry, kind: "geometry" },
           linearPvd && { id: "linear", pvd: prefix + linearPvd, kind: "displacement" },
+          currentResults.analysisKind === "gnia" && currentResults.loadDeflection && { id: "chart", data: currentResults.loadDeflection, kind: "chart" },
           ...((currentResults.modes ?? []).map((m) => ({ id: m.id, pvd: prefix + m.pvd, kind: "mode" }))),
           ...stressEntries
             .filter((e) => files[e.pvdKey])
@@ -956,6 +957,41 @@ export default function Viewport3D() {
       return () => {
         cancelled = true;
       };
+    }
+
+    // For GNIA charts, render the load-deflection curve directly instead of loading a PVD
+    if (result.kind === "chart" && result.data) {
+      // Tear down previous meshes and render chart info
+      while (st.meshGroup.children.length) {
+        const c = st.meshGroup.children.pop();
+        c.geometry?.dispose();
+      }
+      // Create a simple text mesh showing the chart data
+      const canvas = document.createElement("canvas");
+      canvas.width = 800;
+      canvas.height = 600;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#0f1419";
+      ctx.fillRect(0, 0, 800, 600);
+      ctx.fillStyle = "#06b6d4";
+      ctx.font = "bold 28px monospace";
+      ctx.fillText("Load-Deflection Path (GNIA)", 50, 50);
+
+      const data = result.data;
+      ctx.font = "16px monospace";
+      ctx.fillText(`Steps: ${data.length}`, 50, 100);
+      ctx.fillText(`λ_max: ${Number(data[data.length-1].loadFactor).toFixed(4)}`, 50, 130);
+      ctx.fillText(`u_max: ${Math.max(...data.map(d => d.u_qoi_abs)).toFixed(4)}`, 50, 160);
+      ctx.fillText(`F_max: ${Math.max(...data.map(d => d.F)).toFixed(1)}`, 50, 190);
+      ctx.fillText(`(Full chart visualization coming soon)`, 50, 250);
+
+      const tex = new THREE.CanvasTexture(canvas);
+      const mat = new THREE.MeshBasicMaterial({ map: tex });
+      const geom = new THREE.PlaneGeometry(16, 12);
+      const mesh = new THREE.Mesh(geom, mat);
+      st.meshGroup.add(mesh);
+      setStatus(`${data.length} converged steps · λ_max=${Number(data[data.length-1].loadFactor).toFixed(3)}`);
+      return () => { cancelled = true; };
     }
 
     setStatus(`loading ${result.label}…`);
