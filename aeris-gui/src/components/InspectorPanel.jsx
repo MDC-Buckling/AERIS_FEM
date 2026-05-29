@@ -464,8 +464,36 @@ export default function InspectorPanel() {
           </>
         )}
 
+        {/* ----- GNIA: Load-Deflection Chart ----- */}
+        {selectedId === "chart" && currentResults?.loadDeflection && (
+          <>
+            <SectionHeader>load-deflection (arc-length)</SectionHeader>
+            <div style={{ fontSize: 11, fontFamily: MONO, lineHeight: 1.6, color: "var(--text-secondary)" }}>
+              {(() => {
+                const ld = currentResults.loadDeflection;
+                const maxF = Math.max(...ld.map(d => d.F));
+                const maxU = Math.max(...ld.map(d => d.u_qoi_abs));
+                return (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "auto auto", gap: "12px 16px", marginBottom: 12 }}>
+                      <span>steps:</span> <span style={{ color: "var(--accent)" }}>{ld.length}</span>
+                      <span>λ_max:</span> <span style={{ color: "var(--accent)" }}>{Number(ld[ld.length-1].loadFactor).toFixed(4)}</span>
+                      <span>u_max:</span> <span style={{ color: "var(--accent)" }}>{Number(maxU).toFixed(4)}</span>
+                      <span>F_max:</span> <span style={{ color: "var(--accent)" }}>{Number(maxF).toFixed(1)}</span>
+                    </div>
+                    <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--line-steel-soft)", fontSize: 9.5, color: "var(--text-muted)" }}>
+                      Arc-length path through post-buckling limit point.
+                      {currentResults.verdict?.bifurcationStep != null && ` Bifurcation at step ${currentResults.verdict.bifurcationStep}.`}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          </>
+        )}
+
         {/* ----- GNIA: knockdown verdict ----- */}
-        {LBA_META.kind === "gnia" && (
+        {LBA_META.kind === "gnia" && selectedId !== "chart" && (
           <>
             <SectionHeader>knockdown (GNIA)</SectionHeader>
             <KeyMetric
