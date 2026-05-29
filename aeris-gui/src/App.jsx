@@ -153,8 +153,9 @@ export default function App() {
           </div>
         </main>
       ) : (
-        {/* Floating collapse button for left panels (visible when any are collapsed) */}
-        {mode === "pre" && expandedLeftPanels.size < 2 && (
+        <>
+          {/* Floating collapse button for left panels (visible when any are collapsed) */}
+          {mode === "pre" && expandedLeftPanels.size < 2 && (
           <button
             style={{
               position: "fixed",
@@ -243,6 +244,7 @@ export default function App() {
 
           {mode === "pre" ? <PreInspectorPanel /> : <InspectorPanel />}
         </main>
+        </>
       )}
     </div>
   );
