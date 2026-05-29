@@ -94,7 +94,7 @@ export default function ModelsPanel() {
   };
 
   return (
-    <div className="models-panel glass-panel">
+    <div className="models-panel glass-panel" style={{ position: "relative" }}>
       <div className="models-header">
         <h3>Models</h3>
         <div className="models-buttons">

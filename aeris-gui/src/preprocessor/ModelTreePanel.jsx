@@ -229,7 +229,7 @@ export default function ModelTreePanel() {
 
   return (
     <GlassPanel
-      style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}
+      style={{ display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}
     >
       <div
         style={{
