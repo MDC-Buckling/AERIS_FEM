@@ -1090,6 +1090,157 @@ export const useUI = create((set) => ({
   /** UI status line for the inspector (e.g. "loading…", "loaded 4 patches"). */
   status: "ready",
   setStatus: (s) => set({ status: s }),
+
+  /** ======================================================================
+   *  MODEL MANAGEMENT — Save/Load/List/Delete multiple named models
+   *  ====================================================================== */
+
+  /** List of saved models: [{id, name, createdAt, updatedAt}]. Sync'd from
+   * localStorage. */
+  models: [],
+  modelsLoaded: false,
+  setModels: (models) => set({ models, modelsLoaded: true }),
+
+  /** Currently selected model id in the models browser (not the current
+   * active model — that's stored separately below). */
+  selectedModelId: null,
+  setSelectedModelId: (id) => set({ selectedModelId: id }),
+
+  /** Load all saved models from localStorage (called on app startup). */
+  loadModels: () => {
+    try {
+      const stored = window.localStorage.getItem("aeris_models");
+      const models = stored ? JSON.parse(stored) : [];
+      set({ models, modelsLoaded: true });
+    } catch (e) {
+      console.error("Failed to load models:", e);
+      set({ modelsLoaded: true });
+    }
+  },
+
+  /** Save a new model. name → auto-generated if empty. Returns {id}. */
+  saveModel: (name, modelData) => {
+    const id = `model-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const now = new Date().toISOString();
+    const newModel = {
+      id,
+      name: (name || "Untitled").trim() || "Untitled",
+      createdAt: now,
+      updatedAt: now,
+      data: modelData,
+    };
+    set((s) => {
+      const updated = [newModel, ...s.models];
+      try {
+        window.localStorage.setItem("aeris_models", JSON.stringify(updated));
+      } catch (e) {
+        console.error("Failed to save model:", e);
+      }
+      return { models: updated };
+    });
+    return { id };
+  },
+
+  /** Overwrite an existing model's data (keep name/timestamps). */
+  updateModel: (id, modelData) => {
+    set((s) => {
+      const updated = s.models.map((m) =>
+        m.id === id ? { ...m, data: modelData, updatedAt: new Date().toISOString() } : m
+      );
+      try {
+        window.localStorage.setItem("aeris_models", JSON.stringify(updated));
+      } catch (e) {
+        console.error("Failed to update model:", e);
+      }
+      return { models: updated };
+    });
+  },
+
+  /** Load a saved model into the current editor. */
+  openModel: (id) => {
+    const model = useUI.getState().models.find((m) => m.id === id);
+    if (!model) return { ok: false, error: "Model not found" };
+    set({ model: model.data, selectedModelId: id });
+    return { ok: true };
+  },
+
+  /** Duplicate a model with "_copy" suffix. */
+  duplicateModel: (id) => {
+    const original = useUI.getState().models.find((m) => m.id === id);
+    if (!original) return { ok: false, error: "Model not found" };
+    const newId = `model-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const now = new Date().toISOString();
+    const newModel = {
+      id: newId,
+      name: `${original.name} (copy)`,
+      createdAt: now,
+      updatedAt: now,
+      data: JSON.parse(JSON.stringify(original.data)), // deep clone
+    };
+    set((s) => {
+      const updated = [newModel, ...s.models];
+      try {
+        window.localStorage.setItem("aeris_models", JSON.stringify(updated));
+      } catch (e) {
+        console.error("Failed to duplicate model:", e);
+      }
+      return { models: updated };
+    });
+    return { ok: true, id: newId };
+  },
+
+  /** Rename a model. */
+  renameModel: (id, newName) => {
+    if (!newName || !newName.trim()) return { ok: false, error: "Name cannot be empty" };
+    set((s) => {
+      const updated = s.models.map((m) =>
+        m.id === id ? { ...m, name: newName.trim() } : m
+      );
+      try {
+        window.localStorage.setItem("aeris_models", JSON.stringify(updated));
+      } catch (e) {
+        console.error("Failed to rename model:", e);
+      }
+      return { models: updated };
+    });
+    return { ok: true };
+  },
+
+  /** Delete a model. If it's the currently open one, switches to a different model. */
+  deleteModel: (id) => {
+    set((s) => {
+      const updated = s.models.filter((m) => m.id !== id);
+      try {
+        window.localStorage.setItem("aeris_models", JSON.stringify(updated));
+      } catch (e) {
+        console.error("Failed to delete model:", e);
+      }
+      const nextSelected = s.selectedModelId === id ? (updated[0]?.id ?? null) : s.selectedModelId;
+      return { models: updated, selectedModelId: nextSelected };
+    });
+    return { ok: true };
+  },
+
+  /** Move a model up/down in the list (reorder). */
+  moveModel: (id, direction) => {
+    set((s) => {
+      const idx = s.models.findIndex((m) => m.id === id);
+      if (idx < 0) return {};
+      const updated = s.models.slice();
+      if (direction === "up" && idx > 0) {
+        [updated[idx - 1], updated[idx]] = [updated[idx], updated[idx - 1]];
+      } else if (direction === "down" && idx < updated.length - 1) {
+        [updated[idx], updated[idx + 1]] = [updated[idx + 1], updated[idx]];
+      }
+      try {
+        window.localStorage.setItem("aeris_models", JSON.stringify(updated));
+      } catch (e) {
+        console.error("Failed to move model:", e);
+      }
+      return { models: updated };
+    });
+    return { ok: true };
+  },
 }));
 
 /** Auto-rebuild the assignments[] (and sections[]) so that every band has a

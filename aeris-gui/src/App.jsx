@@ -10,6 +10,7 @@ import PreInspectorPanel from "./preprocessor/PreInspectorPanel.jsx";
 import BenchmarkHubPanel from "./benchmarks/BenchmarkHubPanel.jsx";
 import StatusLine from "./components/StatusLine.jsx";
 import CommandPalette from "./components/CommandPalette.jsx";
+import ModelsPanel from "./components/ModelsPanel.jsx";
 
 export default function App() {
   const theme = useUI((s) => s.theme);
@@ -38,13 +39,29 @@ export default function App() {
       if (tag === "INPUT" || tag === "TEXTAREA" || e.target.isContentEditable) return;
 
       const store = useUI.getState();
-      const { mode, setMode, selectTreeItem, expandSection, runSolver, setPaletteOpen, paletteOpen } = store;
+      const { mode, setMode, selectTreeItem, expandSection, runSolver, setPaletteOpen, paletteOpen, loadModels } = store;
 
       // Command palette: Space or Cmd/Ctrl+K
       if ((e.key === " " && !e.ctrlKey && !e.metaKey) ||
           ((e.ctrlKey || e.metaKey) && e.key === "k")) {
         e.preventDefault();
         setPaletteOpen(!paletteOpen);
+        return;
+      }
+
+      // New model: Cmd/Ctrl+N
+      if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+        e.preventDefault();
+        // This would need a ref to ModelsPanel to trigger the new dialog
+        // For now, just load models in case they need to be refreshed
+        loadModels();
+        return;
+      }
+
+      // Open model list: Cmd/Ctrl+O
+      if ((e.ctrlKey || e.metaKey) && e.key === "o") {
+        e.preventDefault();
+        loadModels();
         return;
       }
 
@@ -138,13 +155,14 @@ export default function App() {
           style={{
             flex: 1,
             display: "grid",
-            gridTemplateColumns: "400px minmax(640px, 1.15fr) 400px",
+            gridTemplateColumns: mode === "pre" ? "280px 400px minmax(640px, 1.15fr) 400px" : "400px minmax(640px, 1.15fr) 400px",
             gridTemplateRows: "1fr",
             gap: 18,
             padding: 16,
             minHeight: 0,
           }}
         >
+          {mode === "pre" && <ModelsPanel />}
           {mode === "pre" ? <ModelTreePanel /> : <ResultsPanel />}
 
           {/* Central viewport is shared between pre and post. */}
