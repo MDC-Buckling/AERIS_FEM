@@ -241,7 +241,7 @@ export default function ModelTreePanel() {
         <span className="codex-brand-title" style={{ fontSize: 11, letterSpacing: 0.1 }}>
           MODEL TREE
         </span>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", position: "relative" }}>
           <span
             style={{
               fontSize: 9.5,

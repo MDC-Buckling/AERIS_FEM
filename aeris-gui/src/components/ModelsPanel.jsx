@@ -97,7 +97,7 @@ export default function ModelsPanel() {
     <div className="models-panel glass-panel" style={{ position: "relative" }}>
       <div className="models-header">
         <h3>Models</h3>
-        <div className="models-buttons">
+        <div className="models-buttons" style={{ position: "relative" }}>
           <button
             className="model-action-btn"
             onClick={() => setShowNewDialog(true)}
