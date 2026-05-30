@@ -53,9 +53,14 @@ from aeris_model import ModelConfig  # noqa: E402
 import gmsh  # noqa: E402  (heavy import; only the FEM engine pulls this module)
 
 
-# Mesh order each Code_Aster shell family requires. COQUE_3D is a quadratic
-# element (TRIA6/QUAD8) → needs a 2nd-order mesh; the DKT/DKTG/DST/Q4G
-# discrete-Kirchhoff family is linear (TRIA3/QUAD4).
+# Mesh order each Code_Aster shell family requires. The DKT/DKTG/DST/Q4G
+# discrete-Kirchhoff family is linear (TRIA3/QUAD4) — DKT is the validated
+# default. COQUE_3D is quadratic BUT needs a *central node* (TRIA7/QUAD9):
+# gmsh setOrder(2) yields TRIA6, which Code_Aster's AFFE_MODELE rejects
+# ("aucune maille affectée"). Supporting COQUE_3D therefore means quad
+# recombination + complete 2nd order (Mesh.SecondOrderIncomplete=0) → QUAD9;
+# deferred. The "2" below is the geometric order only and is not yet enough
+# on its own to make a COQUE_3D-loadable mesh.
 _FAMILY_MESH_ORDER: Dict[str, int] = {
     "COQUE_3D": 2,
     "DKT": 1, "DKTG": 1, "DST": 1, "Q4G": 1, "COQUE_AXIS": 1,
