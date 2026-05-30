@@ -30,8 +30,22 @@ A model.json round-trip looks like:
                      "neumann_traction_axial": "auto" },
       "analysis":  { "kind": "lba", "nmodes": 5,
                      "solver": "spectra-buckling",
-                     "shift": "auto" }
+                     "shift": "auto" },
+      "solver":    { "engine": "gismo" },
+      "discretization": {
+        "gismo":      { "refinement": 5, "degree": 3, "smoothness": 2,
+                        "coupling": "gsSmoothInterfaces" },
+        "code_aster": { "element_family": "COQUE_3D", "mesh_size": 2.0,
+                        "order": 1 }
+      }
     }
+
+`solver.engine` selects the discretisation engine ("gismo" = isogeometric,
+the validated path; "code_aster" = classical FEM via GMSH mesh + Code_Aster
+.comm). The model.json above is engine-agnostic; each engine reads its own
+`discretization.<engine>` block. `discretization.gismo` is kept mirrored to
+the legacy top-level `mesh` block so the IGA solver scripts keep reading
+`model.mesh` unchanged.
 
 `auto` placeholders are resolved at solve time from the geometry/material
 (e.g. `neumann_traction_axial = "auto"` resolves to the shell thickness `t`,
@@ -232,6 +246,47 @@ DEFAULT_ANALYSIS: Dict[str, Any] = {
 
 
 # ---------------------------------------------------------------------------
+# Discretisation engine (Session — Code_Aster as a second strategy)
+# ---------------------------------------------------------------------------
+# The model.json is engine-agnostic: geometry / material / section / load /
+# analysis describe *intent*; the engine decides *how* the intent is
+# discretised and solved. Two engines:
+#   "gismo"      → isogeometric (NURBS patches + Greville h-refinement),
+#                  the validated path; reads `discretization.gismo`.
+#   "code_aster" → classical FEM (GMSH mesh → .med → Code_Aster .comm),
+#                  reads `discretization.code_aster`.
+# Dispatch in aeris-gui/vite.config.js reads solver.engine *before* the
+# (shape, kind, load) matrix, then picks the backend script for that engine.
+DEFAULT_SOLVER: Dict[str, Any] = {
+    "engine": "gismo",
+}
+
+# Per-engine discretisation parameters. The IGA path keeps refinement /
+# degree / smoothness / coupling (these have no meaning in a classical
+# mesh); the FEM path uses a target element size, a shell element family,
+# and an interpolation order (no NURBS refinement *level* exists in a mesh).
+# `discretization.gismo` is kept identical to the legacy top-level `mesh`
+# block — mirrored on load (see from_dict) so the two can't drift — until
+# the IGA solver scripts are migrated off `model.mesh` onto this.
+DEFAULT_DISCRETIZATION: Dict[str, Any] = {
+    "gismo": dict(DEFAULT_MESH),
+    "code_aster": {
+        "element_family": "COQUE_3D",   # Code_Aster thin-shell element
+        "mesh_size": 2.0,               # target GMSH characteristic length
+        # Geometric mesh order. COQUE_3D is quadratic (TRIA6/QUAD8) → 2; the
+        # DKT/DKTG family is linear → 1. gmsh_shells._resolve_order coerces a
+        # mismatch to the family's requirement so the .med stays loadable.
+        "order": 2,
+    },
+}
+
+
+def _default_discretization() -> Dict[str, Any]:
+    """Fresh deep-ish copy of DEFAULT_DISCRETIZATION (nested dicts copied)."""
+    return {eng: dict(params) for eng, params in DEFAULT_DISCRETIZATION.items()}
+
+
+# ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
 
@@ -274,6 +329,8 @@ class ModelConfig:
     bcs: Dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_BCS))
     load: Dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_LOAD))
     analysis: Dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_ANALYSIS))
+    solver: Dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_SOLVER))
+    discretization: Dict[str, Any] = field(default_factory=_default_discretization)
     schemaVersion: int = SCHEMA_VERSION
 
     # --- migration -------------------------------------------------------
@@ -323,16 +380,33 @@ class ModelConfig:
                 f"[aeris_model] WARN: schemaVersion={sv} ≠ expected {SCHEMA_VERSION}; "
                 "reading anyway\n"
             )
+        # Discretisation: `discretization.gismo` is the canonical IGA params,
+        # but legacy files only carry the top-level `mesh` block. Merge so
+        # discretization.gismo (if present) wins over mesh wins over default,
+        # then mirror the resolved gismo params back into `mesh` so the IGA
+        # solver scripts (which still read model.mesh) stay bit-identical.
+        raw_disc = d.get("discretization") or {}
+        gismo_disc = {
+            **DEFAULT_MESH,
+            **(d.get("mesh") or {}),
+            **(raw_disc.get("gismo") or {}),
+        }
+        ca_disc = {
+            **DEFAULT_DISCRETIZATION["code_aster"],
+            **(raw_disc.get("code_aster") or {}),
+        }
         return cls(
             name=d.get("name", "Cylinder LBA"),
             geometry={**DEFAULT_GEOMETRY, **d.get("geometry", {})},
             materials=list(d.get("materials") or [dict(m) for m in DEFAULT_MATERIALS]),
             sections=list(d.get("sections") or [dict(s) for s in DEFAULT_SECTIONS]),
             assignments=list(d.get("assignments") or [dict(a) for a in DEFAULT_ASSIGNMENTS]),
-            mesh={**DEFAULT_MESH, **d.get("mesh", {})},
+            mesh=dict(gismo_disc),
             bcs={**DEFAULT_BCS, **d.get("bcs", {})},
             load=_migrate_load(d.get("load", {})),
             analysis={**DEFAULT_ANALYSIS, **d.get("analysis", {})},
+            solver={**DEFAULT_SOLVER, **(d.get("solver") or {})},
+            discretization={"gismo": gismo_disc, "code_aster": ca_disc},
             schemaVersion=SCHEMA_VERSION,
         )
 
@@ -353,7 +427,26 @@ class ModelConfig:
             "bcs": self.bcs,
             "load": self.load,
             "analysis": self.analysis,
+            "solver": self.solver,
+            "discretization": self.discretization,
         }
+
+    # --- engine / discretisation -----------------------------------------
+
+    def engine(self) -> str:
+        """Discretisation engine selector ("gismo" | "code_aster")."""
+        return str(self.solver.get("engine", "gismo"))
+
+    def disc(self, engine: str | None = None) -> Dict[str, Any]:
+        """Discretisation params for `engine` (defaults to the active one)."""
+        eng = engine or self.engine()
+        params = self.discretization.get(eng)
+        if params is None:
+            raise KeyError(
+                f"no discretization params for engine {eng!r}; "
+                f"have {sorted(self.discretization)}"
+            )
+        return params
 
     # --- lookups ---------------------------------------------------------
 
