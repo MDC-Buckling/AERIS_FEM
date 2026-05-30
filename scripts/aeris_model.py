@@ -271,14 +271,19 @@ DEFAULT_SOLVER: Dict[str, Any] = {
 DEFAULT_DISCRETIZATION: Dict[str, Any] = {
     "gismo": dict(DEFAULT_MESH),
     "code_aster": {
-        # DKT (discrete-Kirchhoff triangle, linear TRIA3) is the robust
-        # default thin-shell element — the textbook choice for Scordelis-Lo
-        # and the MacNeal-Harder suite. NB: COQUE_3D is NOT a drop-in: it
-        # needs QUAD9/TRIA7 (a central node that gmsh's standard TRIA6 lacks),
-        # so it requires quad recombination in the mesh layer — deferred.
+        # Shell formulation (Code_Aster modelisation): "DKT" (thin Kirchhoff,
+        # the validated default) or "COQUE_3D" (curved/thick, biquadratic).
         "element_family": "DKT",
+        # Abaqus-style independent mesh controls:
+        #   element_shape : "triangle" | "quad" — gmsh recombines to quads.
+        #   technique     : "free" (Delaunay/Frontal) | "structured" (mapped,
+        #                   transfinite — regular rows of elements).
+        # Coupling enforced in the mesh layer: COQUE_3D requires "quad" (its
+        # QUAD9 needs a centre node) and is quadratic; DKT/DKQ are linear.
+        "element_shape": "triangle",
+        "technique": "free",
         "mesh_size": 2.0,               # target GMSH characteristic length
-        "order": 1,                     # DKT is linear (TRIA3)
+        "order": 1,                     # derived from the family (DKT=1, COQUE_3D=2)
     },
 }
 

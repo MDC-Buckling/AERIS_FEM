@@ -61,10 +61,20 @@ const FAMILY_OPTIONS = [
 // element shape, shell theory). These follow from the element family — the
 // mesh layer coerces the geometric order to match, so they're read-only here.
 const FAMILY_INFO = {
-  DKT:      { ansatz: "linear (P1)",    shape: "triangle · TRIA3",       theory: "thin shell (Kirchhoff)" },
-  DKTG:     { ansatz: "linear (P1)",    shape: "triangle · TRIA3",       theory: "thin shell + drilling DOF" },
-  COQUE_3D: { ansatz: "quadratic (P2)", shape: "quad · QUAD9 (+centre)", theory: "thick/curved shell (Mindlin)" },
+  DKT:      { ansatz: "linear (P1)",    theory: "thin shell (Kirchhoff)" },
+  DKTG:     { ansatz: "linear (P1)",    theory: "thin shell + drilling DOF" },
+  COQUE_3D: { ansatz: "quadratic (P2)", theory: "thick/curved shell (Mindlin)" },
 };
+
+// Abaqus-style mesh controls, independent of the element type.
+const SHAPE_OPTIONS = [
+  ["triangle", "Triangle"],
+  ["quad",     "Quad"],
+];
+const TECHNIQUE_OPTIONS = [
+  ["free",       "Free"],
+  ["structured", "Structured"],
+];
 
 export default function MeshDiscretisation() {
   const mesh = useUI((s) => s.model.mesh);
@@ -291,6 +301,17 @@ function CodeAsterPanel({ ca, setCa }) {
   const family = String(ca.element_family ?? "DKT");
   const meshSize = Number(ca.mesh_size ?? 2.0);
   const info = FAMILY_INFO[family] ?? FAMILY_INFO.DKT;
+  const shape = String(ca.element_shape ?? "triangle");
+  const technique = String(ca.technique ?? "free");
+  const isCoque = family === "COQUE_3D";
+  const effShape = isCoque ? "quad" : shape;     // COQUE_3D is quad-only
+  const elementLabel = isCoque
+    ? "QUAD9 (+centre)"
+    : effShape === "quad" ? "QUAD4 (DKQ)" : "TRIA3";
+  // COQUE_3D can't use triangles (its QUAD9 needs a centre node) — disable it.
+  const shapeOptions = isCoque
+    ? [["triangle", "Triangle", { disabled: true, title: "COQUE_3D needs the QUAD9 centre node — quad only" }], ["quad", "Quad"]]
+    : SHAPE_OPTIONS;
   const meshPreview = useUI((s) => s.meshPreview);
   const busy = useUI((s) => s.meshPreviewBusy);
   const preview = useUI((s) => s.meshPreviewResult);
@@ -330,6 +351,32 @@ function CodeAsterPanel({ ca, setCa }) {
         </div>
       </div>
 
+      {/* Abaqus-style mesh controls, independent of the element type. */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 9 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ color: "var(--text-secondary)", fontSize: 10.5, fontFamily: MONO, marginBottom: 4 }}>
+            Element shape
+          </div>
+          <ToggleGroup
+            options={shapeOptions}
+            value={effShape}
+            onChange={(v) => setCa("element_shape", v)}
+            fullWidth
+          />
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ color: "var(--text-secondary)", fontSize: 10.5, fontFamily: MONO, marginBottom: 4 }}>
+            Mesh technique
+          </div>
+          <ToggleGroup
+            options={TECHNIQUE_OPTIONS}
+            value={technique}
+            onChange={(v) => setCa("technique", v)}
+            fullWidth
+          />
+        </div>
+      </div>
+
       <NumberField
         label="Element size  (h — target edge length of the FEM mesh)"
         symbol="h"
@@ -354,10 +401,10 @@ function CodeAsterPanel({ ca, setCa }) {
       >
         <DerivedRow label="Engine" value="Code_Aster (classical FEM)" />
         <DerivedRow label="Modelisation" value={family} accent />
+        <DerivedRow label="Element" value={elementLabel} />
         <DerivedRow label="Ansatz / order" value={info.ansatz} />
-        <DerivedRow label="Element shape" value={info.shape} />
         <DerivedRow label="Shell theory" value={info.theory} />
-        <DerivedRow label="Mesher" value="GMSH → MED (at solve)" />
+        <DerivedRow label="Mesh" value={`${effShape} · ${technique} · GMSH→MED`} />
         <div
           style={{
             marginTop: 6,

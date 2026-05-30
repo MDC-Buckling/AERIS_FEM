@@ -64,27 +64,34 @@ import gmsh  # noqa: E402  (heavy import; only the FEM engine pulls this module)
 # COQUE_3D → biquadratic quads (QUAD9): recombine + complete 2nd order. (A bare
 # setOrder(2) on triangles gives TRIA6, which Code_Aster's COQUE_3D rejects
 # at AFFE_MODELE — it needs the centre node, hence the QUAD9 route.)
-_FAMILY_MESH: Dict[str, tuple] = {
-    "DKT":      (False, 1, False),
-    "DKTG":     (False, 1, False),
-    "DST":      (False, 1, False),
-    "DKQ":      (True,  1, False),
-    "DSQ":      (True,  1, False),
-    "Q4G":      (True,  1, False),
-    "COQUE_3D": (True,  2, True),
-}
+def _mesh_plan(disc: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve the gmsh meshing plan from the Abaqus-style discretisation
+    controls — element shape (tri/quad), technique (free/structured) and the
+    shell formulation together fix: recombine-to-quads, geometric order,
+    2nd-order completeness, and whether to mesh structured (transfinite).
+    COQUE_3D forces quad + quadratic (its QUAD9 needs the centre node)."""
+    family = str(disc.get("element_family", "DKT")).upper()
+    shape = str(disc.get("element_shape", "triangle")).lower()
+    technique = str(disc.get("technique", "free")).lower()
+    if family == "COQUE_3D":
+        shape = "quad"            # QUAD9 only — the mesher can't emit TRIA7
+    order = 2 if family == "COQUE_3D" else 1
+    return {
+        "family": family,
+        "shape": shape,
+        "recombine": shape == "quad",
+        "order": order,
+        "complete": order >= 2,
+        "structured": technique == "structured",
+    }
 
 
-def _apply_mesh_options(family: str) -> int:
-    """Set gmsh's meshing options for `family` (quad recombination + 2nd-order
-    completeness) BEFORE generate(2). Returns the geometric order to apply via
-    setOrder() afterwards. Unknown families fall back to linear triangles."""
-    recombine, order, complete = _FAMILY_MESH.get(family.upper(), (False, 1, False))
-    gmsh.option.setNumber("Mesh.RecombineAll", 1 if recombine else 0)
-    if order >= 2:
+def _apply_mesh_options(plan: Dict[str, Any]) -> None:
+    """Set the global gmsh options for `plan` BEFORE generate(2)."""
+    gmsh.option.setNumber("Mesh.RecombineAll", 1 if plan["recombine"] else 0)
+    if plan["order"] >= 2:
         # 0 = complete (QUAD9 with centre node — COQUE_3D); 1 = serendipity.
-        gmsh.option.setNumber("Mesh.SecondOrderIncomplete", 0 if complete else 1)
-    return order
+        gmsh.option.setNumber("Mesh.SecondOrderIncomplete", 0 if plan["complete"] else 1)
 
 
 def _segment_frame(R: float, phi_deg: float):
@@ -133,7 +140,8 @@ def build_cylinder_segment(model: ModelConfig, out_path: Path) -> Dict[str, Any]
     R, L, phi_deg = float(seg["R"]), float(seg["L"]), float(seg["phi_deg"])
     disc = model.disc("code_aster")
     h = float(disc.get("mesh_size", 2.0))
-    family = str(disc.get("element_family", "DKT"))
+    plan = _mesh_plan(disc)
+    family = plan["family"]
 
     A, B, C, phi = _segment_frame(R, phi_deg)
     qoi_target = [L / 2.0, -2.0 * R * math.sin(phi), 0.0]
@@ -150,8 +158,17 @@ def build_cylinder_segment(model: ModelConfig, out_path: Path) -> Dict[str, Any]
         pC = g.addPoint(0.0, C[0], C[1], h)
         arc0 = g.addCircleArc(pA, pC, pB)
 
-        # Extrude the arc along +x to sweep the roof surface.
-        ext = g.extrude([(1, arc0)], L, 0.0, 0.0)
+        # Extrude the arc along +x to sweep the roof surface. Structured →
+        # transfinite arc (n_around nodes) + a fixed number of swept layers
+        # (n_along) so the mesh is a regular mapped grid; free → size-driven.
+        if plan["structured"]:
+            n_around = max(2, round(R * 2.0 * phi / h))
+            n_along = max(1, round(L / h))
+            g.mesh.setTransfiniteCurve(arc0, n_around + 1)
+            ext = g.extrude([(1, arc0)], L, 0.0, 0.0,
+                            numElements=[n_along], recombine=plan["recombine"])
+        else:
+            ext = g.extrude([(1, arc0)], L, 0.0, 0.0)
         surf = next(tag for (dim, tag) in ext if dim == 2)
         arcL = next(tag for (dim, tag) in ext if dim == 1)
         g.synchronize()
@@ -179,8 +196,9 @@ def build_cylinder_segment(model: ModelConfig, out_path: Path) -> Dict[str, Any]
             gid = gmsh.model.addPhysicalGroup(dim, tags)
             gmsh.model.setPhysicalName(dim, gid, name)
 
-        order = _apply_mesh_options(family)
+        _apply_mesh_options(plan)
         gmsh.model.mesh.generate(2)
+        order = plan["order"]
         if order >= 2:
             gmsh.model.mesh.setOrder(2)
 
@@ -220,7 +238,8 @@ def build_cylinder(model: ModelConfig, out_path: Path) -> Dict[str, Any]:
     R, L, t = float(cyl["R"]), float(cyl["L"]), float(cyl["t"])
     disc = model.disc("code_aster")
     h = float(disc.get("mesh_size", 2.0))
-    family = str(disc.get("element_family", "DKT"))
+    plan = _mesh_plan(disc)
+    family = plan["family"]
     qoi_target = [R, 0.0, L]   # extrusion of the circle's seam point (R,0,0)
 
     gmsh.initialize()
@@ -232,11 +251,24 @@ def build_cylinder(model: ModelConfig, out_path: Path) -> Dict[str, Any]:
         occ = gmsh.model.occ
 
         # Full-circle rim at z=0; extrude along +z to sweep the lateral shell.
+        # Structured → fixed swept layers (n_along) + a transfinite rim
+        # (n_around) for a regular mapped grid; free → size-driven.
         bottom = occ.addCircle(0.0, 0.0, 0.0, R)
-        ext = occ.extrude([(1, bottom)], 0.0, 0.0, L)
+        if plan["structured"]:
+            n_along = max(1, round(L / h))
+            ext = occ.extrude([(1, bottom)], 0.0, 0.0, L,
+                              numElements=[n_along], recombine=plan["recombine"])
+        else:
+            ext = occ.extrude([(1, bottom)], 0.0, 0.0, L)
         occ.synchronize()
         surf = next(tag for (dim, tag) in ext if dim == 2)
         top = next(tag for (dim, tag) in ext if dim == 1)
+        if plan["structured"]:
+            n_around = max(3, round(2.0 * math.pi * R / h))
+            try:
+                gmsh.model.mesh.setTransfiniteCurve(bottom, n_around + 1)
+            except Exception:
+                pass
 
         groups = {
             ("shell", 2): [surf],
@@ -249,8 +281,9 @@ def build_cylinder(model: ModelConfig, out_path: Path) -> Dict[str, Any]:
             gmsh.model.setPhysicalName(dim, gid, name)
             gids[name] = (dim, gid)
 
-        order = _apply_mesh_options(family)
+        _apply_mesh_options(plan)
         gmsh.model.mesh.generate(2)
+        order = plan["order"]
         if order >= 2:
             gmsh.model.mesh.setOrder(2)
 
