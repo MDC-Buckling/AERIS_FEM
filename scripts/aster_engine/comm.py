@@ -38,13 +38,21 @@ def _mat(model: "ModelConfig"):  # noqa: F821
 
 
 def _preamble(group_shell: str, family: str, E: float, nu: float,
-              thickness: float, bc_groups: list[str]) -> str:
+              thickness: float, bc_groups: list[str],
+              cara_vector: tuple | None = None) -> str:
     """LIRE_MAILLAGE + DEFI_GROUP (node groups for the BCs) + AFFE_MODELE +
     material + AFFE_CARA_ELEM. Shared by every shape; the caller appends its
     own load (CHAR) + solve. `family` is the gmsh element-family label, which
     maps 1:1 to the Code_Aster shell modelisation (DKT, DKTG, COQUE_3D, ...).
-    COQUE_NCOU is only meaningful for the thick COQUE_3D family."""
+    COQUE_NCOU is only meaningful for the thick COQUE_3D family.
+
+    `cara_vector` sets AFFE_CARA_ELEM/COQUE/VECTEUR — the reference direction
+    the shell local frame is built from. Needed where the default (project
+    global X) is degenerate, e.g. a cylinder whose surface normal is ∥X at
+    θ=0; pass the axis (0,0,1), which is tangent everywhere. Only matters once
+    a stress field (SIEF_ELGA) is computed (buckling), not for DEPL-only runs."""
     coque_ncou = ", COQUE_NCOU=1" if family.upper() == "COQUE_3D" else ""
+    vec = f", VECTEUR={tuple(float(c) for c in cara_vector)}" if cara_vector else ""
     crea = ", ".join(f"_F(GROUP_MA='{g}')" for g in bc_groups)
     return f"""DEBUT(LANG='EN')
 
@@ -64,7 +72,7 @@ CHMAT = AFFE_MATERIAU(MAILLAGE=MAIL, AFFE=_F(GROUP_MA='{group_shell}', MATER=ACI
 
 CARA = AFFE_CARA_ELEM(
     MODELE=MODE,
-    COQUE=_F(GROUP_MA='{group_shell}', EPAIS={thickness:.10g}{coque_ncou}),
+    COQUE=_F(GROUP_MA='{group_shell}', EPAIS={thickness:.10g}{coque_ncou}{vec}),
 )
 """
 
@@ -255,15 +263,20 @@ def build_comm_buckling(model: "ModelConfig", manifest: Dict[str, Any],  # noqa:
     # critical load factor λ₁ ≈ 1 — the eigensolver finds it near 1 instead of
     # at ~thousands (where OPTION='PLUS_PETITE' returns 0 modes).
     fz_node = -float(f_ref) / n_top
-    pre = _preamble("shell", family, E, nu, thickness, ["bottom", "top"])
+    # VECTEUR=(0,0,1): the cylinder axis is tangent to the shell everywhere, so
+    # the local frame is well-defined (default global-X projection is normal to
+    # the surface at θ=0 → PLATE1_40). Needed once SIEF_ELGA is computed.
+    pre = _preamble("shell", family, E, nu, thickness, ["bottom", "top"],
+                    cara_vector=(0.0, 0.0, 1.0))
     return pre + f"""
 # Dirichlet BC (kinematic) and the axial reference load kept separate so the
-# stiffness assembly takes only the BC, the static solve takes both. BC mirrors
-# the IGA cylinder_lba path's clamped_neumann: bottom rim fully clamped, top
-# rim free except for the axial load. (Note: this BC admits edge modes, so the
-# FE σ_cr sits below the simply-supported classical estimate; a tight classical
-# match needs SS ends + a converged mesh, whose dense modal spectrum is a
-# dedicated eigensolve-tuning follow-up — see code_aster_buckling.py.)
+# stiffness assembly takes only the BC, the static solve takes both. Clamped
+# bottom / free loaded top (mirrors the IGA cylinder_lba clamped_neumann).
+# NOTE: simply-supported ends (both rims DX=DY=0) are the classical-σ_cr BC,
+# but that produces a DENSE clustered spectrum the shift-invert eigensolver
+# here doesn't resolve (CENTRE applies a 0 shift → 0 modes; BANDE finds 800+
+# and diverges). Cracking the classical match is a dedicated Code_Aster
+# eigensolver-tuning task — see the honest note in code_aster_buckling.py.
 CHBC = AFFE_CHAR_MECA(
     MODELE=MODE,
     DDL_IMPO=_F(GROUP_NO='bottom', DX=0.0, DY=0.0, DZ=0.0, DRX=0.0, DRY=0.0, DRZ=0.0),
@@ -298,10 +311,11 @@ G_AS = ASSE_MATRICE(MATR_ELEM=MEL_G, NUME_DDL=NUM)
 
 # Axial-cylinder buckling has a DENSE cluster of modes near the critical load
 # (many circumferential-wave combinations at almost the same λ). 'BANDE' would
-# try to compute all of them (hundreds) and not converge; 'PLUS_PETITE' near 0
-# returns nothing. Shift-invert ('CENTRE') around the scaled classical value
-# λ≈1 finds just the few nearest. STURM='NON' skips the a-posteriori check
-# that trips on the dense/multiple spectrum.
+# compute all of them (hundreds) and not converge; 'PLUS_PETITE' returns
+# nothing. Shift-invert ('CENTRE') finds just the NMAX nearest a shift — and
+# the shift must sit OFF the cluster: f_ref is scaled so the cluster is ≈ 1.0,
+# so we shift at 0.7 (below it). Shifting AT 1.0 makes (K + σ·K_geom) singular
+# → 0 modes. STURM='NON' skips the a-posteriori check that trips on multiples.
 FLAMB = CALC_MODES(
     MATR_RIGI=K_AS, MATR_RIGI_GEOM=G_AS,
     OPTION='BANDE', TYPE_RESU='MODE_FLAMB',
