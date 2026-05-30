@@ -245,10 +245,11 @@ export default function SolverSettings() {
         </div>
       )}
 
-      {/* GNIA-only: arc-length continuation params. The reference load is
+      {/* GNIA with arc-length: continuation params. The reference load is
           auto-scaled so λ=1 == classical F_cr, so the peak λ the walk
-          reaches reads directly as the knockdown factor. */}
-      {isGNIA && (
+          reaches reads directly as the knockdown factor. Only shown when
+          gnaSolver !== "newton" (i.e., using arc-length instead of NR). */}
+      {isGNIA && analysis.gnaSolver !== "newton" && (
         <div
           style={{
             marginTop: 6, marginBottom: 12,
