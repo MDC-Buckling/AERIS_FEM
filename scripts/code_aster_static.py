@@ -109,16 +109,18 @@ def _find_depl3(mesh) -> "np.ndarray":
     )
 
 
-def _extract_qoi(mesh, target: list[float]) -> dict:
-    """u_z at the node nearest `target` (the free-edge midpoint)."""
+def _extract_qoi(mesh, qoi_spec: dict) -> dict:
+    """u_z at the node nearest the QoI target. name/label come from the mesh
+    manifest's qoi spec so each geometry reports its own QoI identity."""
     import numpy as np
+    target = qoi_spec["target"]
     pts = np.asarray(mesh.points)
     dz = _find_depl3(mesh)[:, 2]
     d = np.linalg.norm(pts - np.asarray(target), axis=1)
     i = int(d.argmin())
     return {
-        "name": "uz_free_edge_midpoint",
-        "label": "u_z at free-edge midpoint",
+        "name": qoi_spec.get("name", "uz"),
+        "label": qoi_spec.get("label", "u_z at QoI point"),
         "qoiValue": float(dz[i]),
         "qoiAbsValue": abs(float(dz[i])),
         "deformedPosition": [float(pts[i][0]), float(pts[i][1]), float(pts[i][2])],
@@ -174,20 +176,20 @@ def _write_sidecar(work_dir: Path, model: ModelConfig, manifest: dict,
                    qoi: dict, threads: int, solution_file: str | None = None) -> None:
     """run.json mirroring scordelis_static.py so the GUI + Hub interpreter
     read it unchanged; engine="code_aster" + a FEM mesh block distinguish it."""
-    seg = model.geometry["cylinder_segment"]
+    shape = model.geometry.get("shape")
+    geom = model.geometry[shape]
     mat = model.materials[0]
+    case = {k: float(geom[k]) for k in ("R", "L", "t", "phi_deg") if k in geom}
+    case["E"] = float(mat["E"])
+    case["nu"] = float(mat["nu"])
     run_json = {
         "schemaVersion": 1,
         "generatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "command": " ".join(sys.argv),
         "engine": "code_aster",
         "analysisKind": "static",
-        "case": {
-            "R": float(seg["R"]), "L": float(seg["L"]),
-            "t": float(seg["t"]), "phi_deg": float(seg["phi_deg"]),
-            "E": float(mat["E"]), "nu": float(mat["nu"]),
-        },
-        "geometry": {"shape": "cylinder_segment", "n_patches": None},
+        "case": case,
+        "geometry": {"shape": shape, "n_patches": None},
         "mesh": {
             "engine": "code_aster",
             "element_family": manifest.get("element_family"),
@@ -199,7 +201,7 @@ def _write_sidecar(work_dir: Path, model: ModelConfig, manifest: dict,
         "bcs": {"kind": str(model.bcs.get("kind"))},
         "load": {
             "kind": str(model.load.get("kind")),
-            "magnitude": float(model.load.get("magnitude", 90.0)),
+            "magnitude": float(model.load.get("magnitude", 1.0)),
         },
         "analysis": {"kind": "static", "threads": int(threads)},
         "files": {
@@ -243,10 +245,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(
             f"code_aster_static.py expects solver.engine='code_aster'; got {engine!r}"
         )
-    if shape != "cylinder_segment":
+    if shape not in ("cylinder_segment", "cylinder"):
         raise SystemExit(
-            f"code_aster_static.py wires geometry.shape='cylinder_segment' "
-            f"(Step 3); got {shape!r}."
+            "code_aster_static.py wires geometry.shape in "
+            f"{{'cylinder_segment', 'cylinder'}} (Steps 3, 6); got {shape!r}."
         )
     if kind != "static":
         raise SystemExit(
@@ -254,15 +256,17 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     work_dir = args.model.parent
-    seg = model.geometry["cylinder_segment"]
+    geom = model.geometry[shape]
     mat = model.materials[0]
+    load = model.load
 
     print("=" * 70)
-    print("Aeris Code_Aster · LSA (linear static) · cylinder_segment + gravity")
+    print(f"Aeris Code_Aster · LSA (linear static) · {shape} + {load.get('kind')}")
     print("=" * 70)
-    print(f"Geometry : R={seg['R']}, L={seg['L']}, t={seg['t']}, phi={seg['phi_deg']}°")
+    dims = "  ".join(f"{k}={geom[k]}" for k in ("R", "L", "t", "phi_deg") if k in geom)
+    print(f"Geometry : {dims}")
     print(f"Material : E={mat['E']}, nu={mat['nu']}")
-    print(f"Load     : gravity, q={model.load.get('magnitude', 90.0)} per area, -z")
+    print(f"Load     : {load.get('kind')} · magnitude={load.get('magnitude')}")
     disc = model.disc("code_aster")
     print(f"Mesh     : {disc.get('element_family')} · h={disc.get('mesh_size')} · "
           f"OMP threads={args.threads}")
@@ -286,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
     _phase("parsing")
     import meshio
     result_mesh = meshio.read(str(work_dir / "result.med"))
-    qoi = _extract_qoi(result_mesh, manifest["qoi"]["target"])
+    qoi = _extract_qoi(result_mesh, manifest["qoi"])
     # MED → .vtu (+ .pvd) so the deformed shell renders in the GUI viewport.
     solution_file = _write_result_files(result_mesh, work_dir)
 

@@ -194,6 +194,7 @@ def build_cylinder_segment(model: ModelConfig, out_path: Path) -> Dict[str, Any]
             "physical_groups": {name: dim for (name, dim) in groups},
             "qoi": {
                 "name": "uz_free_edge_midpoint",
+                "label": "u_z at free-edge midpoint",
                 "group": "free_B",
                 "component": "uz",
                 "target": qoi_target,
@@ -206,15 +207,91 @@ def build_cylinder_segment(model: ModelConfig, out_path: Path) -> Dict[str, Any]
         gmsh.finalize()
 
 
+def build_cylinder(model: ModelConfig, out_path: Path) -> Dict[str, Any]:
+    """Mesh the closed cylinder (axis along z, z ∈ [0, L], radius R) into a
+    Code_Aster MED file. Groups: shell (lateral surface), bottom/top (the two
+    rim circles, for the support + axial end load). QoI: u_z at a top-rim node
+    — the axial end displacement, compared against the membrane solution
+    u_z = -F·L/(2πRtE) in the degenerate ν=0 sanity check."""
+    cyl = model.geometry["cylinder"]
+    R, L, t = float(cyl["R"]), float(cyl["L"]), float(cyl["t"])
+    disc = model.disc("code_aster")
+    h = float(disc.get("mesh_size", 2.0))
+    family = str(disc.get("element_family", "DKT"))
+    order = _resolve_order(family, int(disc.get("order", 1)))
+    qoi_target = [R, 0.0, L]   # extrusion of the circle's seam point (R,0,0)
+
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeMax", h)
+        gmsh.option.setNumber("Mesh.MeshSizeMin", h)
+        gmsh.model.add("cylinder")
+        occ = gmsh.model.occ
+
+        # Full-circle rim at z=0; extrude along +z to sweep the lateral shell.
+        bottom = occ.addCircle(0.0, 0.0, 0.0, R)
+        ext = occ.extrude([(1, bottom)], 0.0, 0.0, L)
+        occ.synchronize()
+        surf = next(tag for (dim, tag) in ext if dim == 2)
+        top = next(tag for (dim, tag) in ext if dim == 1)
+
+        groups = {
+            ("shell", 2): [surf],
+            ("bottom", 1): [bottom],
+            ("top", 1): [top],
+        }
+        gids = {}
+        for (name, dim), tags in groups.items():
+            gid = gmsh.model.addPhysicalGroup(dim, tags)
+            gmsh.model.setPhysicalName(dim, gid, name)
+            gids[name] = (dim, gid)
+
+        gmsh.model.mesh.generate(2)
+        if order >= 2:
+            gmsh.model.mesh.setOrder(2)
+
+        node_tags, _, _ = gmsh.model.mesh.getNodes()
+        _et, etags, _ = gmsh.model.mesh.getElements(2)
+        # Top-rim node count: the axial end load is applied as equal nodal
+        # forces (FORCE_NODALE) summing to the total F, so the .comm needs N.
+        top_nodes, _ = gmsh.model.mesh.getNodesForPhysicalGroup(*gids["top"])
+        manifest = {
+            "shape": "cylinder",
+            "path": str(out_path),
+            "element_family": family,
+            "mesh_order": order,
+            "mesh_size": h,
+            "n_nodes": len(node_tags),
+            "n_elements": int(sum(len(t) for t in etags)),
+            "top_node_count": int(len(top_nodes)),
+            "physical_groups": {name: dim for (name, dim) in groups},
+            "qoi": {
+                "name": "uz_top_rim",
+                "label": "u_z at top rim (axial)",
+                "group": "top",
+                "component": "uz",
+                "target": qoi_target,
+            },
+            "case": {"R": R, "L": L, "t": t},
+        }
+        manifest["writer"] = _write_mesh(out_path)
+        return manifest
+    finally:
+        gmsh.finalize()
+
+
 def build_shell_mesh(model: ModelConfig, out_path: Path) -> Dict[str, Any]:
-    """Dispatch on geometry.shape. Step 2 wires cylinder_segment; the
-    closed cylinder + sphere land in Step 6."""
+    """Dispatch on geometry.shape. Step 2 wired cylinder_segment; Step 6 adds
+    the closed cylinder. Sphere (pinched-hemisphere point loads) is deferred."""
     shape = model.geometry.get("shape")
     if shape == "cylinder_segment":
         return build_cylinder_segment(model, out_path)
+    if shape == "cylinder":
+        return build_cylinder(model, out_path)
     raise NotImplementedError(
         f"gmsh_shells: geometry.shape={shape!r} not wired yet "
-        "(Step 6 adds closed cylinder + sphere)"
+        "(sphere/hemisphere is the remaining Step 6 follow-up)"
     )
 
 

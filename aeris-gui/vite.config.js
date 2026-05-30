@@ -358,7 +358,8 @@ function aerisOutputServer() {
             // wired and validated vs the IGA engine (Scordelis-Lo, 0.1%).
             const engine = modelPeek?.solver?.engine ?? "gismo";
             if (engine === "code_aster") {
-              if (shape === "cylinder_segment" && akind === "static") {
+              if ((shape === "cylinder_segment" || shape === "cylinder")
+                  && akind === "static") {
                 solverScript = "/scripts/code_aster_static.py";
                 solverPaysAttentionToRefines = false;
               } else {
@@ -367,7 +368,7 @@ function aerisOutputServer() {
                 res.end(JSON.stringify({
                   ok: false,
                   error: `Code_Aster engine: no solver wired for (shape=${shape}, analysis.kind=${akind})`,
-                  hint: "Code_Aster today supports (cylinder_segment, static). Switch the engine back to NURBS/IGA, or pick cylinder_segment + static.",
+                  hint: "Code_Aster today supports (cylinder_segment | cylinder, static). Switch the engine back to NURBS/IGA, or pick a static case on those shapes.",
                 }));
                 return;
               }
