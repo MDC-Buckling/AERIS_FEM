@@ -68,6 +68,33 @@ def main(argv: list[str] | None = None) -> int:
             '</VTKFile>\n'
         )
         preview = "meshpreview.pvd"
+
+        # Unique element edges of the NATIVE cells (3 per triangle, 4 per quad
+        # on the corner nodes) → flat xyz pairs the viewport draws as
+        # LineSegments. This shows the TRUE element shapes (triangles for DKT,
+        # quads for COQUE_3D), unlike the density-only parametric grid.
+        edge_set = set()
+        for ct, data in m.cells_dict.items():
+            d = np.asarray(data)
+            if ct.startswith("triangle"):
+                corners = d[:, :3]
+                loops = [(0, 1), (1, 2), (2, 0)]
+            elif ct.startswith("quad"):
+                corners = d[:, :4]
+                loops = [(0, 1), (1, 2), (2, 3), (3, 0)]
+            else:
+                continue
+            for cell in corners:
+                for a, b in loops:
+                    i, j = int(cell[a]), int(cell[b])
+                    edge_set.add((i, j) if i < j else (j, i))
+        edge_pos = []
+        for (a, b) in edge_set:
+            edge_pos.extend([float(pts[a][0]), float(pts[a][1]), float(pts[a][2]),
+                             float(pts[b][0]), float(pts[b][1]), float(pts[b][2])])
+        (work_dir / "meshpreview_edges.json").write_text(
+            json.dumps({"n_edges": len(edge_set), "edgePositions": edge_pos})
+        )
     else:
         preview = None
 
@@ -80,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         "n_nodes": manifest.get("n_nodes"),
         "n_elements": manifest.get("n_elements"),
         "preview": preview,
+        "edges": "meshpreview_edges.json" if preview else None,
     }
     (work_dir / "meshpreview.json").write_text(json.dumps(info, indent=2))
     print(json.dumps(info))

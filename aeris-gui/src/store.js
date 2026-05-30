@@ -540,6 +540,10 @@ export const useUI = create((set) => ({
       return {
         model: nextModel,
         sectionStatus: computeModelReadiness(nextModel),
+        // The previewed mesh is now stale — drop it so the viewport falls back
+        // to the live density grid until the user re-generates.
+        meshPreviewResult: null,
+        meshPreviewEdges: null,
       };
     }),
 
@@ -557,6 +561,9 @@ export const useUI = create((set) => ({
       return {
         model: nextModel,
         sectionStatus: computeModelReadiness(nextModel),
+        // Changing the element type / size invalidates the previewed mesh.
+        meshPreviewResult: null,
+        meshPreviewEdges: null,
       };
     }),
 
@@ -976,6 +983,7 @@ export const useUI = create((set) => ({
 
   // ---- FE mesh preview (Abaqus-style "Mesh Part" — Code_Aster engine) ----
   meshPreviewResult: null,   // null | { ok, n_nodes, n_elements, element_family, ... }
+  meshPreviewEdges: null,    // null | Float-array of FE element-edge xyz pairs
   meshPreviewBusy: false,
 
   /** Mesh the current model (no solve) and report the FE-mesh counts. Ensures
@@ -1007,7 +1015,16 @@ export const useUI = create((set) => ({
       if (!saveData.ok) throw new Error(saveData.error || "save failed");
       const res = await fetch(`/mesh-preview?jobId=${encodeURIComponent(jobId)}`, { method: "POST" });
       const data = await res.json();
-      set({ meshPreviewResult: data, meshPreviewBusy: false });
+      // Pull the true element edges so the viewport can draw the actual FE
+      // mesh (triangles for DKT, quads for COQUE_3D), not just a density grid.
+      let edges = null;
+      if (data.ok && data.edges) {
+        try {
+          const er = await fetch(`/data/jobs/${encodeURIComponent(jobId)}/meshpreview_edges.json`);
+          if (er.ok) edges = (await er.json()).edgePositions ?? null;
+        } catch { /* edges are best-effort; counts still show */ }
+      }
+      set({ meshPreviewResult: data, meshPreviewEdges: edges, meshPreviewBusy: false });
       return data;
     } catch (e) {
       set({ meshPreviewResult: { ok: false, error: String(e?.message ?? e) }, meshPreviewBusy: false });

@@ -95,6 +95,9 @@ export default function Viewport3D() {
   // resolution the user enters.
   const engine = useUI((s) => s.model.solver?.engine ?? "gismo");
   const caMeshSize = useUI((s) => s.model.discretization?.code_aster?.mesh_size ?? 2.0);
+  // The actual FE element edges from the last "Generate mesh" — when present
+  // (Code_Aster), the cylinder preview draws the real mesh instead of the grid.
+  const meshPreviewEdges = useUI((s) => s.meshPreviewEdges);
   // Load case drives the arrow indicators on the top edge so the user
   // sees axial-vs-bending at a glance. Subscribe to .kind only — magnitude
   // is "auto" today, so once that becomes editable we'll need to also
@@ -708,48 +711,53 @@ export default function Viewport3D() {
     // max=8) so r=5/6 still visibly densify before saturation. Costs
     // ~O(meridians × segmentsAround + rings × segmentsAround) line
     // segments, still trivial for three.js at the cap.
-    const nBandsPreview = (cyl.partitions?.length ?? 0) + 1;
-    let meridians, ringsPerBand;
-    if (engine === "code_aster") {
-      // FE mesh: grid density tracks the element size h — ≈ circumference/h
-      // around, L/h along — so the preview reflects the meshed resolution
-      // (changing h visibly changes the grid), not the IGA refinement r.
-      const h = Math.max(1e-6, caMeshSize);
-      meridians = Math.min(Math.max(4, Math.round((2 * Math.PI * cyl.R) / h)), 256);
-      const alongTotal = Math.max(1, Math.round(cyl.L / h));
-      ringsPerBand = Math.min(Math.max(1, Math.round(alongTotal / nBandsPreview)), 96);
+    if (engine === "code_aster" && meshPreviewEdges && meshPreviewEdges.length) {
+      // TRUE FE mesh: draw the actual element edges (triangles for DKT, quads
+      // for COQUE_3D) from the generated mesh — not the parametric density
+      // grid. Cleared on any discretisation change (mesh goes stale), so the
+      // view falls back to the density grid below until re-generated.
+      const eg = new THREE.BufferGeometry();
+      eg.setAttribute("position", new THREE.Float32BufferAttribute(meshPreviewEdges, 3));
+      const realEdges = new THREE.LineSegments(eg, st.edgeMaterial);
+      realEdges.userData.kind = "edges";
+      realEdges.visible = showEdges;
+      st.meshGroup.add(realEdges);
     } else {
-      const elementsPerPatch = Math.pow(2, Math.max(0, meshRefinement));
-      meridians = Math.min(4 * elementsPerPatch, 256);
-      ringsPerBand = Math.min(elementsPerPatch, 96);
-    }
-    const ringZs = [];
-    for (let b = 0; b < nBandsPreview; b++) {
-      // Skip the very last ring of each band — it's the band boundary
-      // (also the start of the next band / top of the cylinder), drawn
-      // by the band edges below to avoid double-drawing.
-      const z0 = b === 0 ? 0 : Number(cyl.partitions[b - 1].z);
-      const z1 = b < nBandsPreview - 1 ? Number(cyl.partitions[b].z) : cyl.L;
-      const span = z1 - z0;
-      for (let i = 0; i <= ringsPerBand; i++) {
-        const t = i / ringsPerBand;
-        // Skip ring at t=0 except for the very bottom (avoids
-        // double-drawing at band boundaries when partitions land here).
-        if (i === 0 && b > 0) continue;
-        ringZs.push(z0 + t * span);
+      const nBandsPreview = (cyl.partitions?.length ?? 0) + 1;
+      let meridians, ringsPerBand;
+      if (engine === "code_aster") {
+        // No generated mesh yet → density grid tracking the element size h
+        // (≈ circumference/h around, L/h along), so the preview reflects the
+        // resolution the user enters; click "Generate mesh" for the real one.
+        const h = Math.max(1e-6, caMeshSize);
+        meridians = Math.min(Math.max(4, Math.round((2 * Math.PI * cyl.R) / h)), 256);
+        const alongTotal = Math.max(1, Math.round(cyl.L / h));
+        ringsPerBand = Math.min(Math.max(1, Math.round(alongTotal / nBandsPreview)), 96);
+      } else {
+        const elementsPerPatch = Math.pow(2, Math.max(0, meshRefinement));
+        meridians = Math.min(4 * elementsPerPatch, 256);
+        ringsPerBand = Math.min(elementsPerPatch, 96);
       }
+      const ringZs = [];
+      for (let b = 0; b < nBandsPreview; b++) {
+        const z0 = b === 0 ? 0 : Number(cyl.partitions[b - 1].z);
+        const z1 = b < nBandsPreview - 1 ? Number(cyl.partitions[b].z) : cyl.L;
+        const span = z1 - z0;
+        for (let i = 0; i <= ringsPerBand; i++) {
+          const t = i / ringsPerBand;
+          if (i === 0 && b > 0) continue;
+          ringZs.push(z0 + t * span);
+        }
+      }
+      const ringSegmentsAround = Math.max(96, meridians);
+      const edges = new THREE.LineSegments(
+        buildCylinderEdgesAt(cyl.R, cyl.L, ringZs, meridians, ringSegmentsAround),
+        st.edgeMaterial
+      );
+      edges.userData.kind = "edges";
+      edges.visible = showEdges;
+      st.meshGroup.add(edges);
     }
-    // Ring segment count tracks meridian count so the ring → meridian
-    // intersections land cleanly without visible kinks at the corners.
-    // 96 minimum keeps low-r rings round-looking.
-    const ringSegmentsAround = Math.max(96, meridians);
-    const edges = new THREE.LineSegments(
-      buildCylinderEdgesAt(cyl.R, cyl.L, ringZs, meridians, ringSegmentsAround),
-      st.edgeMaterial
-    );
-    edges.userData.kind = "edges";
-    edges.visible = showEdges;
-    st.meshGroup.add(edges);
 
     // Partition seam rings — one bright ring at each cut z, drawn slightly
     // outside R so the line sits proud of the surface and doesn't z-fight.
@@ -796,7 +804,7 @@ export default function Viewport3D() {
     cyl.R, cyl.L, cyl.t, partitionsKey,
     segment.R, segment.L, segment.t, segment.phi_deg,
     sphere.R, sphere.t, sphere.opening_angle_deg,
-    meshRefinement, engine, caMeshSize, loadKind, bcsKind, showEdges, setStatus,
+    meshRefinement, engine, caMeshSize, meshPreviewEdges, loadKind, bcsKind, showEdges, setStatus,
   ]);
 
   // -------------------------------------------------------------------
