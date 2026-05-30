@@ -90,6 +90,11 @@ export default function Viewport3D() {
   // care about r here — p and k change DOF count but not the
   // element-grid layout.
   const meshRefinement = useUI((s) => s.model.mesh.refinement);
+  // For the Code_Aster engine the preview grid tracks the FE element size
+  // (h) instead of the IGA refinement r, so the 3D view matches the meshed
+  // resolution the user enters.
+  const engine = useUI((s) => s.model.solver?.engine ?? "gismo");
+  const caMeshSize = useUI((s) => s.model.discretization?.code_aster?.mesh_size ?? 2.0);
   // Load case drives the arrow indicators on the top edge so the user
   // sees axial-vs-bending at a glance. Subscribe to .kind only — magnitude
   // is "auto" today, so once that becomes editable we'll need to also
@@ -704,9 +709,20 @@ export default function Viewport3D() {
     // ~O(meridians × segmentsAround + rings × segmentsAround) line
     // segments, still trivial for three.js at the cap.
     const nBandsPreview = (cyl.partitions?.length ?? 0) + 1;
-    const elementsPerPatch = Math.pow(2, Math.max(0, meshRefinement));
-    const meridians = Math.min(4 * elementsPerPatch, 256);
-    const ringsPerBand = Math.min(elementsPerPatch, 96);
+    let meridians, ringsPerBand;
+    if (engine === "code_aster") {
+      // FE mesh: grid density tracks the element size h — ≈ circumference/h
+      // around, L/h along — so the preview reflects the meshed resolution
+      // (changing h visibly changes the grid), not the IGA refinement r.
+      const h = Math.max(1e-6, caMeshSize);
+      meridians = Math.min(Math.max(4, Math.round((2 * Math.PI * cyl.R) / h)), 256);
+      const alongTotal = Math.max(1, Math.round(cyl.L / h));
+      ringsPerBand = Math.min(Math.max(1, Math.round(alongTotal / nBandsPreview)), 96);
+    } else {
+      const elementsPerPatch = Math.pow(2, Math.max(0, meshRefinement));
+      meridians = Math.min(4 * elementsPerPatch, 256);
+      ringsPerBand = Math.min(elementsPerPatch, 96);
+    }
     const ringZs = [];
     for (let b = 0; b < nBandsPreview; b++) {
       // Skip the very last ring of each band — it's the band boundary
@@ -780,7 +796,7 @@ export default function Viewport3D() {
     cyl.R, cyl.L, cyl.t, partitionsKey,
     segment.R, segment.L, segment.t, segment.phi_deg,
     sphere.R, sphere.t, sphere.opening_angle_deg,
-    meshRefinement, loadKind, bcsKind, showEdges, setStatus,
+    meshRefinement, engine, caMeshSize, loadKind, bcsKind, showEdges, setStatus,
   ]);
 
   // -------------------------------------------------------------------

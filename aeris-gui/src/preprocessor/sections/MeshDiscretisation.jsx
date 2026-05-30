@@ -112,16 +112,32 @@ export default function MeshDiscretisation() {
 
   return (
     <>
-      <div style={{ marginBottom: 9 }}>
+      {/* Solver engine — the top-level choice that drives the whole solver
+          (and the rest of this panel). Styled as a prominent accent card so
+          it doesn't read as just another sub-option. */}
+      <div
+        style={{
+          marginBottom: 14,
+          padding: "11px 12px 12px",
+          background: "var(--accent-soft-bg, rgba(0,180,210,0.08))",
+          border: "1px solid var(--accent)",
+          borderRadius: 6,
+          boxShadow: "0 0 14px rgba(0,180,210,0.12)",
+        }}
+      >
         <div
           style={{
-            color: "var(--text-secondary)",
-            fontSize: 10.5,
+            color: "var(--accent)",
+            fontSize: 11.5,
+            fontWeight: 700,
             fontFamily: MONO,
-            marginBottom: 4,
+            letterSpacing: 0.12,
+            textTransform: "uppercase",
+            marginBottom: 7,
+            textShadow: "var(--shadow-accent)",
           }}
         >
-          Discretisation engine
+          ⚙ Discretisation engine
         </div>
         <ToggleGroup
           options={ENGINE_OPTIONS}
@@ -131,7 +147,7 @@ export default function MeshDiscretisation() {
         />
         <div
           style={{
-            marginTop: 4,
+            marginTop: 6,
             fontSize: 9.5,
             color: "var(--text-muted)",
             fontFamily: MONO,
