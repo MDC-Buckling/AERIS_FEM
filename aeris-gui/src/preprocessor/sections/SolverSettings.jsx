@@ -143,27 +143,42 @@ export default function SolverSettings() {
           attempts (retries + ok) — match ABAQUS's "MAXIMUM NUMBER OF
           INCREMENTS" semantics so the mental model carries over. Hidden
           for LSA (single direct solve, nothing to ramp). */}
-      {/* GNA solver method — Newton-Raphson (default) or Dynamic
-          Relaxation. Both drive static_shell_XML's composite solver;
-          DR is explicit/robust for very unstable transients, NR is the
-          standard implicit choice. */}
-      {isGNA && (
+      {/* GNA/GNIA solver method — Newton-Raphson (default), Dynamic
+          Relaxation (for GNA), or arc-length (for GNIA). For GNA, both NR
+          and DR drive static_shell_XML's composite solver; DR is
+          explicit/robust for very unstable transients, NR is the standard
+          implicit choice. For GNIA, Newton-Raphson uses force-control NR
+          (GNA with imperfections), arc-length uses displacement-control
+          through the limit point. */}
+      {(isGNA || isGNIA) && (
         <div style={{ marginBottom: 10 }}>
           <div style={{ color: "var(--text-secondary)", fontSize: 10.5,
                         fontFamily: MONO, marginBottom: 4 }}>
-            Solver method
+            {isGNA ? "Solver method" : "Imperfection method"}
           </div>
           <ToggleGroup
-            options={[["newton", "Newton-Raphson"], ["dr", "Dynamic Relaxation"]]}
+            options={isGNA
+              ? [["newton", "Newton-Raphson"], ["dr", "Dynamic Relaxation"]]
+              : [["newton", "Newton-Raphson"], ["arclength", "Arc-length"]]}
             value={analysis.gnaSolver ?? "newton"}
             onChange={(v) => setField("gnaSolver", v)}
             fullWidth
           />
           <div style={{ fontSize: 9.5, color: "var(--text-muted)", fontFamily: MONO,
                         marginTop: 4, lineHeight: 1.4 }}>
-            Newton-Raphson — implicit, quadratic convergence, the default.
-            Dynamic Relaxation — pseudo-transient explicit, slower but
-            robust when NR diverges on strongly snapping paths.
+            {isGNA ? (
+              <>
+                Newton-Raphson — implicit, quadratic convergence, the default.
+                Dynamic Relaxation — pseudo-transient explicit, slower but
+                robust when NR diverges on strongly snapping paths.
+              </>
+            ) : (
+              <>
+                Newton-Raphson — force-control implicit iteration with
+                imperfections. Arc-length — displacement-control through
+                the limit point, captures knockdown post-bifurcation.
+              </>
+            )}
           </div>
         </div>
       )}
