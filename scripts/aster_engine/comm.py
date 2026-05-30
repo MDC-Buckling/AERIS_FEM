@@ -161,6 +161,96 @@ def build_comm(model: "ModelConfig", manifest: Dict[str, Any]) -> str:  # noqa: 
     raise SystemExit(f"build_comm: geometry.shape={shape!r} not wired")
 
 
+def build_comm_buckling(model: "ModelConfig", manifest: Dict[str, Any],  # noqa: F821
+                        work_dir: str = "/work", nmodes: int = 5,
+                        f_ref: float = 1.0) -> str:
+    """Linear buckling (LBA) of the closed cylinder under axial load. Classic
+    Code_Aster eigen-buckling chain:
+      1. MECA_STATIQUE under a reference axial load → pre-buckling stress
+         (SIEF_ELGA) — the same clamped-bottom / nodal-top setup as the static
+         path, so the pre-stress is the validated membrane field.
+      2. RIGI_MECA (with the Dirichlet BCs) + RIGI_GEOM (from that stress) →
+         assembled K and K_geom.
+      3. CALC_MODES(TYPE_RESU='MODE_FLAMB') → critical load factors λ. The
+         applied load is F_ref, so the buckling load is F_cr = λ₁·F_ref.
+    The λ list is dumped to charcrit.json (via the comm's own Python) for the
+    wrapper to turn into σ_cr and compare against the classical estimate."""
+    cyl = model.geometry["cylinder"]
+    thickness = float(cyl["t"])
+    E, nu = _mat(model)
+    family = str(manifest.get("element_family", "DKT")).upper()
+    n_top = int(manifest.get("top_node_count", 0))
+    if n_top <= 0:
+        raise SystemExit("cylinder buckling: manifest has no top_node_count")
+    # f_ref is scaled by the wrapper to the classical F_cr estimate so the
+    # critical load factor λ₁ ≈ 1 — the eigensolver finds it near 1 instead of
+    # at ~thousands (where OPTION='PLUS_PETITE' returns 0 modes).
+    fz_node = -float(f_ref) / n_top
+    pre = _preamble("shell", family, E, nu, thickness, ["bottom", "top"])
+    return pre + f"""
+# Dirichlet BC (kinematic) and the axial reference load kept separate so the
+# stiffness assembly takes only the BC, the static solve takes both. BC mirrors
+# the IGA cylinder_lba path's clamped_neumann: bottom rim fully clamped, top
+# rim free except for the axial load. (Note: this BC admits edge modes, so the
+# FE σ_cr sits below the simply-supported classical estimate; a tight classical
+# match needs SS ends + a converged mesh, whose dense modal spectrum is a
+# dedicated eigensolve-tuning follow-up — see code_aster_buckling.py.)
+CHBC = AFFE_CHAR_MECA(
+    MODELE=MODE,
+    DDL_IMPO=_F(GROUP_NO='bottom', DX=0.0, DY=0.0, DZ=0.0, DRX=0.0, DRY=0.0, DRZ=0.0),
+)
+CHLO = AFFE_CHAR_MECA(
+    MODELE=MODE,
+    FORCE_NODALE=_F(GROUP_NO='top', FZ={fz_node:.10g}),
+)
+
+RESU = MECA_STATIQUE(
+    MODELE=MODE, CHAM_MATER=CHMAT, CARA_ELEM=CARA,
+    EXCIT=(_F(CHARGE=CHBC), _F(CHARGE=CHLO)),
+)
+RESU = CALC_CHAMP(reuse=RESU, RESULTAT=RESU, CONTRAINTE='SIEF_ELGA')
+
+SIG = CREA_CHAMP(
+    OPERATION='EXTR', TYPE_CHAM='ELGA_SIEF_R',
+    RESULTAT=RESU, NOM_CHAM='SIEF_ELGA', NUME_ORDRE=1,
+)
+
+MEL_R = CALC_MATR_ELEM(
+    OPTION='RIGI_MECA', MODELE=MODE, CHAM_MATER=CHMAT,
+    CARA_ELEM=CARA, CHARGE=CHBC,
+)
+MEL_G = CALC_MATR_ELEM(
+    OPTION='RIGI_GEOM', MODELE=MODE, CARA_ELEM=CARA, SIEF_ELGA=SIG,
+)
+
+NUM = NUME_DDL(MATR_RIGI=MEL_R)
+K_AS = ASSE_MATRICE(MATR_ELEM=MEL_R, NUME_DDL=NUM)
+G_AS = ASSE_MATRICE(MATR_ELEM=MEL_G, NUME_DDL=NUM)
+
+# Axial-cylinder buckling has a DENSE cluster of modes near the critical load
+# (many circumferential-wave combinations at almost the same λ). 'BANDE' would
+# try to compute all of them (hundreds) and not converge; 'PLUS_PETITE' near 0
+# returns nothing. Shift-invert ('CENTRE') around the scaled classical value
+# λ≈1 finds just the few nearest. STURM='NON' skips the a-posteriori check
+# that trips on the dense/multiple spectrum.
+FLAMB = CALC_MODES(
+    MATR_RIGI=K_AS, MATR_RIGI_GEOM=G_AS,
+    OPTION='BANDE', TYPE_RESU='MODE_FLAMB',
+    CALC_CHAR_CRIT=_F(CHAR_CRIT=(0.0, 3.0)),
+    VERI_MODE=_F(STURM='NON'),
+)
+
+# Dump the critical load factors λ for the wrapper (the .comm is Python).
+_tab = RECU_TABLE(CO=FLAMB, NOM_PARA='CHAR_CRIT')
+_vals = _tab.EXTR_TABLE().values()['CHAR_CRIT']
+import json as _json
+with open('{work_dir}/charcrit.json', 'w') as _f:
+    _json.dump([float(v) for v in _vals], _f)
+
+FIN()
+"""
+
+
 def build_export(work_dir: str = "/work",
                  time_limit_s: int = 900,
                  memory_mb: int = 2048) -> str:

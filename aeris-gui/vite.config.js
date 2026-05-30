@@ -362,13 +362,19 @@ function aerisOutputServer() {
                   && akind === "static") {
                 solverScript = "/scripts/code_aster_static.py";
                 solverPaysAttentionToRefines = false;
+              } else if (shape === "cylinder" && akind === "lba") {
+                // Linear buckling: MODE_FLAMB eigen-buckling, cross-checked
+                // against the classical Lorenz/Timoshenko σ_cr (the same
+                // target the IGA cylinder_lba path validates).
+                solverScript = "/scripts/code_aster_buckling.py";
+                solverPaysAttentionToRefines = false;
               } else {
                 res.statusCode = 400;
                 res.setHeader("Content-Type", "application/json");
                 res.end(JSON.stringify({
                   ok: false,
                   error: `Code_Aster engine: no solver wired for (shape=${shape}, analysis.kind=${akind})`,
-                  hint: "Code_Aster today supports (cylinder_segment | cylinder, static). Switch the engine back to NURBS/IGA, or pick a static case on those shapes.",
+                  hint: "Code_Aster today supports (cylinder_segment | cylinder, static) and (cylinder, lba). Switch the engine back to NURBS/IGA, or pick one of those.",
                 }));
                 return;
               }
@@ -464,10 +470,12 @@ function aerisOutputServer() {
           // cylinder_lba.py takes --plot-dir (writes mode shapes + geometry).
           // cylinder_static.py, cylinder_arclength.py, pinched_cylinder_static.py, hemisphere_static.py take --threads.
           // pinched_cylinder_static.py and hemisphere_static.py also take --work-dir.
+          const isCodeAster = solverScript.startsWith("/scripts/code_aster_");
           const scriptArgs = ["--model", "/work/model.json"];
-          if (solverScript === "/scripts/code_aster_static.py") {
-            // Code_Aster meshes from element-size, not IGA refinement — it
-            // takes neither --refines nor --plot-dir, only --threads.
+          if (isCodeAster) {
+            // Code_Aster meshes from element-size, not IGA refinement — its
+            // scripts take neither --refines nor --plot-dir, only --threads
+            // (buckling reads nmodes from model.json).
             scriptArgs.push("--threads", String(threads));
           } else {
             scriptArgs.push("--refines", ...refines.map(String));
@@ -496,8 +504,7 @@ function aerisOutputServer() {
             // without copy-pasting it into scripts/.
             "-v", `${benchmarksDir}:/benchmarks:ro`,
             "-v", `${workDir}:/work:rw`,
-            solverScript === "/scripts/code_aster_static.py"
-              ? CODE_ASTER_IMAGE : SOLVER_IMAGE,
+            isCodeAster ? CODE_ASTER_IMAGE : SOLVER_IMAGE,
             "python3", "-u",                  // -u: unbuffered, so phase
                                               // markers flush in real time
             solverScript,
