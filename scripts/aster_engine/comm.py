@@ -161,6 +161,75 @@ def build_comm(model: "ModelConfig", manifest: Dict[str, Any]) -> str:  # noqa: 
     raise SystemExit(f"build_comm: geometry.shape={shape!r} not wired")
 
 
+def build_comm_gna(model: "ModelConfig", manifest: Dict[str, Any],  # noqa: F821
+                   nsteps: int = 20) -> str:
+    """Geometrically-nonlinear static (GNA) of the Scordelis-Lo roof:
+    STAT_NON_LINE with large-displacement kinematics (GROT_GDEP), the gravity
+    load ramped over the pseudo-time [0,1] in `nsteps` increments. At the
+    Scordelis load the deflection is small relative to R, so GNA ≈ LSA — the
+    degenerate check that the nonlinear path correctly reduces to linear."""
+    seg = model.geometry["cylinder_segment"]
+    thickness = float(seg["t"])
+    E, nu = _mat(model)
+    # GNA uses DKTG (discrete-Kirchhoff with membrane + drilling stiffness),
+    # not plain DKT: DKT's null drilling DOF makes the nonlinear tangent
+    # singular → Newton can't converge. DKTG shares the same TRIA3 mesh.
+    family = "DKTG"
+    load = model.load
+    if load.get("kind") != "gravity":
+        raise SystemExit(
+            f"cylinder_segment GNA: only load.kind='gravity' is wired; "
+            f"got {load.get('kind')!r}"
+        )
+    fz = -float(load.get("magnitude", 90.0))
+    pre = _preamble("roof", family, E, nu, thickness,
+                    ["diaph_x0", "diaph_xL", "corner_pin"])
+    return pre + f"""
+CHAR = AFFE_CHAR_MECA(
+    MODELE=MODE,
+    DDL_IMPO=(
+        _F(GROUP_NO='diaph_x0', DY=0.0, DZ=0.0),
+        _F(GROUP_NO='diaph_xL', DY=0.0, DZ=0.0),
+        _F(GROUP_NO='corner_pin', DX=0.0),
+    ),
+    FORCE_COQUE=_F(GROUP_MA='roof', FZ={fz:.10g}),
+)
+
+LREEL = DEFI_LIST_REEL(DEBUT=0.0, INTERVALLE=_F(JUSQU_A=1.0, NOMBRE={int(nsteps)}))
+# Auto time-stepping: on a non-converged Newton step, cut the increment
+# (DECOUPE) and retry — the standard robustness recipe for GNA.
+DLIST = DEFI_LIST_INST(
+    METHODE='AUTO',
+    DEFI_LIST=_F(LIST_INST=LREEL),
+    ECHEC=_F(EVENEMENT='ERREUR', ACTION='DECOUPE',
+             SUBD_METHODE='MANUEL', SUBD_PAS=4, SUBD_NIVEAU=5),
+)
+RAMPE = DEFI_FONCTION(
+    NOM_PARA='INST', VALE=(0.0, 0.0, 1.0, 1.0),
+    PROL_DROITE='CONSTANT', PROL_GAUCHE='CONSTANT',
+)
+
+RESU = STAT_NON_LINE(
+    MODELE=MODE, CHAM_MATER=CHMAT, CARA_ELEM=CARA,
+    EXCIT=_F(CHARGE=CHAR, FONC_MULT=RAMPE),
+    COMPORTEMENT=_F(RELATION='ELAS', DEFORMATION='GROT_GDEP'),
+    INCREMENT=_F(LIST_INST=DLIST),
+    NEWTON=_F(MATRICE='TANGENTE', REAC_ITER=1),
+    # 1e-5, not 1e-6: the solution is essentially converged by iteration 2
+    # (relative residual ~4e-6), but a slowly-decaying drilling mode creeps
+    # just above 1e-6 for hundreds of iterations. 1e-5 converges in 2 iters.
+    CONVERGENCE=_F(RESI_GLOB_RELA=1e-5, ITER_GLOB_MAXI=50),
+)
+
+IMPR_RESU(
+    FORMAT='MED', UNITE={UNITE_RESU_OUT},
+    RESU=_F(RESULTAT=RESU, NOM_CHAM=('DEPL',), INST=1.0),
+)
+
+FIN()
+"""
+
+
 def build_comm_buckling(model: "ModelConfig", manifest: Dict[str, Any],  # noqa: F821
                         work_dir: str = "/work", nmodes: int = 5,
                         f_ref: float = 1.0) -> str:

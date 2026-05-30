@@ -358,8 +358,12 @@ function aerisOutputServer() {
             // wired and validated vs the IGA engine (Scordelis-Lo, 0.1%).
             const engine = modelPeek?.solver?.engine ?? "gismo";
             if (engine === "code_aster") {
-              if ((shape === "cylinder_segment" || shape === "cylinder")
-                  && akind === "static") {
+              if (((shape === "cylinder_segment" || shape === "cylinder")
+                   && akind === "static")
+                  || (shape === "cylinder_segment" && akind === "gna")) {
+                // static (both shapes) + GNA (segment): code_aster_static.py
+                // dispatches on analysis.kind internally (MECA_STATIQUE vs
+                // STAT_NON_LINE).
                 solverScript = "/scripts/code_aster_static.py";
                 solverPaysAttentionToRefines = false;
               } else if (shape === "cylinder" && akind === "lba") {

@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aeris_model import ModelConfig                       # noqa: E402
 from meshing.gmsh_shells import build_shell_mesh          # noqa: E402
-from aster_engine.comm import build_comm, build_export    # noqa: E402
+from aster_engine.comm import build_comm, build_comm_gna, build_export  # noqa: E402
 
 
 # run_aster is the conda-forge launcher; as_run is the legacy name. Probed
@@ -173,7 +173,8 @@ def _write_result_files(mesh, work_dir: Path) -> str | None:
 
 
 def _write_sidecar(work_dir: Path, model: ModelConfig, manifest: dict,
-                   qoi: dict, threads: int, solution_file: str | None = None) -> None:
+                   qoi: dict, threads: int, solution_file: str | None = None,
+                   analysis_kind: str = "static") -> None:
     """run.json mirroring scordelis_static.py so the GUI + Hub interpreter
     read it unchanged; engine="code_aster" + a FEM mesh block distinguish it."""
     shape = model.geometry.get("shape")
@@ -187,7 +188,7 @@ def _write_sidecar(work_dir: Path, model: ModelConfig, manifest: dict,
         "generatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "command": " ".join(sys.argv),
         "engine": "code_aster",
-        "analysisKind": "static",
+        "analysisKind": analysis_kind,
         "case": case,
         "geometry": {"shape": shape, "n_patches": None},
         "mesh": {
@@ -203,7 +204,7 @@ def _write_sidecar(work_dir: Path, model: ModelConfig, manifest: dict,
             "kind": str(model.load.get("kind")),
             "magnitude": float(model.load.get("magnitude", 1.0)),
         },
-        "analysis": {"kind": "static", "threads": int(threads)},
+        "analysis": {"kind": analysis_kind, "threads": int(threads)},
         "files": {
             "result_med": "result.med",
             "mess": "study.mess",
@@ -250,9 +251,10 @@ def main(argv: list[str] | None = None) -> int:
             "code_aster_static.py wires geometry.shape in "
             f"{{'cylinder_segment', 'cylinder'}} (Steps 3, 6); got {shape!r}."
         )
-    if kind != "static":
+    if kind not in ("static", "gna"):
         raise SystemExit(
-            f"code_aster_static.py wires analysis.kind='static' (Step 3); got {kind!r}."
+            f"code_aster_static.py wires analysis.kind in {{'static','gna'}} "
+            f"(Steps 3, 8); got {kind!r}."
         )
 
     work_dir = args.model.parent
@@ -260,8 +262,9 @@ def main(argv: list[str] | None = None) -> int:
     mat = model.materials[0]
     load = model.load
 
+    analysis_label = "GNA (geometrically nonlinear)" if kind == "gna" else "LSA (linear static)"
     print("=" * 70)
-    print(f"Aeris Code_Aster · LSA (linear static) · {shape} + {load.get('kind')}")
+    print(f"Aeris Code_Aster · {analysis_label} · {shape} + {load.get('kind')}")
     print("=" * 70)
     dims = "  ".join(f"{k}={geom[k]}" for k in ("R", "L", "t", "phi_deg") if k in geom)
     print(f"Geometry : {dims}")
@@ -281,7 +284,15 @@ def main(argv: list[str] | None = None) -> int:
     _phase("comm")
     comm_path = work_dir / "study.comm"
     export_path = work_dir / "study.export"
-    comm_path.write_text(build_comm(model, manifest))
+    if kind == "gna":
+        if shape != "cylinder_segment":
+            raise SystemExit(
+                "code_aster_static.py: GNA is wired for cylinder_segment only (Step 8)"
+            )
+        comm_text = build_comm_gna(model, manifest)
+    else:
+        comm_text = build_comm(model, manifest)
+    comm_path.write_text(comm_text)
     export_path.write_text(build_export(str(work_dir)))
 
     _phase("solving")
@@ -308,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
     print("(reference comparison is per-benchmark; the Hub interpreter handles it)")
 
     _write_sidecar(work_dir, model, manifest, qoi, threads=args.threads,
-                   solution_file=solution_file)
+                   solution_file=solution_file, analysis_kind=kind)
     if solution_file:
         print(f"Viewport  : result.vtu + {solution_file} written for the 3D view")
     print(f"\nSidecar manifest written: {work_dir}/run.json")
