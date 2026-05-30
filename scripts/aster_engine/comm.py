@@ -78,8 +78,12 @@ CARA = AFFE_CARA_ELEM(
 
 
 def _static_tail(char_block: str) -> str:
-    """CHAR + MECA_STATIQUE + IMPR_RESU(DEPL) + FIN. Closes a linear-static
-    study after a shape-specific _preamble."""
+    """CHAR + MECA_STATIQUE + nodal membrane forces + IMPR_RESU + FIN. Closes a
+    linear-static study after a shape-specific _preamble. EFGE_NOEU (nodal
+    generalised shell efforts: NXX, NYY, NXY, M…) is output so the wrapper can
+    form the membrane von-Mises stress (σ = N/t) — the engineering result the
+    IGA path also surfaces. Reported in the shell local frame, so the caller's
+    _preamble cara_vector matters."""
     return f"""
 {char_block}
 
@@ -87,10 +91,13 @@ RESU = MECA_STATIQUE(
     MODELE=MODE, CHAM_MATER=CHMAT, CARA_ELEM=CARA,
     EXCIT=_F(CHARGE=CHAR),
 )
+RESU = CALC_CHAMP(
+    reuse=RESU, RESULTAT=RESU, CONTRAINTE=('EFGE_ELNO', 'EFGE_NOEU'),
+)
 
 IMPR_RESU(
     FORMAT='MED', UNITE={UNITE_RESU_OUT},
-    RESU=_F(RESULTAT=RESU, NOM_CHAM=('DEPL',)),
+    RESU=_F(RESULTAT=RESU, NOM_CHAM=('DEPL', 'EFGE_NOEU')),
 )
 
 FIN()
@@ -122,8 +129,11 @@ def _comm_segment(model: "ModelConfig", manifest: Dict[str, Any]) -> str:  # noq
     ),
     FORCE_COQUE=_F(GROUP_MA='roof', FZ={fz:.10g}),
 )"""
+    # VECTEUR=(1,0,0): the roof axis (x) is tangent everywhere → defines the
+    # shell local frame for the EFGE/stress recovery.
     return _preamble("roof", family, E, nu, thickness,
-                     ["diaph_x0", "diaph_xL", "corner_pin"]) + _static_tail(char)
+                     ["diaph_x0", "diaph_xL", "corner_pin"],
+                     cara_vector=(1.0, 0.0, 0.0)) + _static_tail(char)
 
 
 def _comm_cylinder(model: "ModelConfig", manifest: Dict[str, Any]) -> str:  # noqa: F821
@@ -153,8 +163,10 @@ def _comm_cylinder(model: "ModelConfig", manifest: Dict[str, Any]) -> str:  # no
     DDL_IMPO=_F(GROUP_NO='bottom', DX=0.0, DY=0.0, DZ=0.0, DRX=0.0, DRY=0.0, DRZ=0.0),
     FORCE_NODALE=_F(GROUP_NO='top', FZ={fz_node:.10g}),
 )"""
-    return _preamble("shell", family, E, nu, thickness,
-                     ["bottom", "top"]) + _static_tail(char)
+    # VECTEUR=(0,0,1): the cylinder axis is tangent everywhere → defines the
+    # shell local frame for the EFGE/stress recovery (NXX = axial membrane).
+    return _preamble("shell", family, E, nu, thickness, ["bottom", "top"],
+                     cara_vector=(0.0, 0.0, 1.0)) + _static_tail(char)
 
 
 def build_comm(model: "ModelConfig", manifest: Dict[str, Any]) -> str:  # noqa: F821
