@@ -312,6 +312,15 @@ export const useUI = create((set) => ({
       imperfection: 0.001,
       almMethod: 2,
     },
+    // Discretisation engine — mirrors the Python ModelConfig contract
+    // (scripts/aeris_model.py): solver.engine selects the backend, each
+    // engine reads its own discretization.<engine> block. The IGA params
+    // live in model.mesh above (Python mirrors mesh ↔ discretization.gismo
+    // on load), so only the Code_Aster FEM params are carried here.
+    solver: { engine: "gismo" },   // "gismo" (NURBS/IGA) | "code_aster" (FEM)
+    discretization: {
+      code_aster: { element_family: "DKT", mesh_size: 2.0, order: 1 },
+    },
   },
 
   /** Set cylinder geometry from the inspector. Validates positivity; on
@@ -514,6 +523,37 @@ export const useUI = create((set) => ({
     set((s) => {
       if (typeof value === "number" && !Number.isFinite(value)) return {};
       const nextModel = { ...s.model, mesh: { ...s.model.mesh, [key]: value } };
+      return {
+        model: nextModel,
+        sectionStatus: computeModelReadiness(nextModel),
+      };
+    }),
+
+  /** Set the discretisation engine (model.solver.engine): "gismo" (NURBS/
+   * IGA) or "code_aster" (classical FEM). The dev-server dispatcher routes
+   * to the matching solver script + image. Doesn't affect readiness — both
+   * engines are always valid choices. */
+  setSolverEngine: (engine) =>
+    set((s) => {
+      if (!["gismo", "code_aster"].includes(engine)) return {};
+      const nextModel = { ...s.model, solver: { ...s.model.solver, engine } };
+      return {
+        model: nextModel,
+        sectionStatus: computeModelReadiness(nextModel),
+      };
+    }),
+
+  /** Patch one field on model.discretization.code_aster (element_family /
+   * mesh_size / order). Used by the Code_Aster branch of the mesh inspector;
+   * IGA params keep flowing through setMeshField. */
+  setCaDiscField: (key, value) =>
+    set((s) => {
+      if (typeof value === "number" && !Number.isFinite(value)) return {};
+      const ca = { ...s.model.discretization.code_aster, [key]: value };
+      const nextModel = {
+        ...s.model,
+        discretization: { ...s.model.discretization, code_aster: ca },
+      };
       return {
         model: nextModel,
         sectionStatus: computeModelReadiness(nextModel),

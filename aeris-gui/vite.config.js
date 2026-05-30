@@ -10,6 +10,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Container image + executable conventions — keep in sync with
 // scripts/cylinder_lba.py and the deploy README.
 const SOLVER_IMAGE = "aeris/gismo:v25.07.0";
+// Classical-FEM engine image (Code_Aster). Selected per solver script — the
+// G+Smo image has no Code_Aster and vice-versa, so engine ⇒ image.
+const CODE_ASTER_IMAGE = "aeris/codeaster:v17";
 const SOLVE_TIMEOUT_MS = 60 * 60 * 1000;   // 60 min hard cap per run
 
 // Session 4.1: jobs replace the single-slot run registry. Each job owns a
@@ -348,7 +351,27 @@ function aerisOutputServer() {
             const shape = modelPeek?.geometry?.shape ?? "cylinder";
             const akind = modelPeek?.analysis?.kind ?? "lba";
             const loadKind = modelPeek?.load?.kind ?? "axial";
-            if (shape === "cylinder" && akind === "lba") {
+            // Discretisation engine: "gismo" (NURBS/IGA, the default) vs
+            // "code_aster" (classical FEM). Engine takes precedence over the
+            // shape/kind matrix below — Code_Aster reroutes to its own script
+            // (+ its own image). Today only (cylinder_segment, static) is
+            // wired and validated vs the IGA engine (Scordelis-Lo, 0.1%).
+            const engine = modelPeek?.solver?.engine ?? "gismo";
+            if (engine === "code_aster") {
+              if (shape === "cylinder_segment" && akind === "static") {
+                solverScript = "/scripts/code_aster_static.py";
+                solverPaysAttentionToRefines = false;
+              } else {
+                res.statusCode = 400;
+                res.setHeader("Content-Type", "application/json");
+                res.end(JSON.stringify({
+                  ok: false,
+                  error: `Code_Aster engine: no solver wired for (shape=${shape}, analysis.kind=${akind})`,
+                  hint: "Code_Aster today supports (cylinder_segment, static). Switch the engine back to NURBS/IGA, or pick cylinder_segment + static.",
+                }));
+                return;
+              }
+            } else if (shape === "cylinder" && akind === "lba") {
               solverScript = "/scripts/cylinder_lba.py";
               solverPaysAttentionToRefines = true;
             } else if (shape === "cylinder" && loadKind === "point_load"
@@ -440,18 +463,22 @@ function aerisOutputServer() {
           // cylinder_lba.py takes --plot-dir (writes mode shapes + geometry).
           // cylinder_static.py, cylinder_arclength.py, pinched_cylinder_static.py, hemisphere_static.py take --threads.
           // pinched_cylinder_static.py and hemisphere_static.py also take --work-dir.
-          const scriptArgs = [
-            "--model", "/work/model.json",
-            "--refines", ...refines.map(String),
-          ];
-          if (solverScript === "/scripts/cylinder_lba.py") {
-            scriptArgs.push("--plot-dir", "/work");
-          } else {
+          const scriptArgs = ["--model", "/work/model.json"];
+          if (solverScript === "/scripts/code_aster_static.py") {
+            // Code_Aster meshes from element-size, not IGA refinement — it
+            // takes neither --refines nor --plot-dir, only --threads.
             scriptArgs.push("--threads", String(threads));
-          }
-          if (solverScript === "/scripts/pinched_cylinder_static.py"
-                  || solverScript === "/scripts/hemisphere_static.py") {
-            scriptArgs.push("--work-dir", "/work");
+          } else {
+            scriptArgs.push("--refines", ...refines.map(String));
+            if (solverScript === "/scripts/cylinder_lba.py") {
+              scriptArgs.push("--plot-dir", "/work");
+            } else {
+              scriptArgs.push("--threads", String(threads));
+            }
+            if (solverScript === "/scripts/pinched_cylinder_static.py"
+                    || solverScript === "/scripts/hemisphere_static.py") {
+              scriptArgs.push("--work-dir", "/work");
+            }
           }
           // Create the record immediately in "queued" state so the GUI
           // can show queue position while waiting. The actual spawn
@@ -468,7 +495,8 @@ function aerisOutputServer() {
             // without copy-pasting it into scripts/.
             "-v", `${benchmarksDir}:/benchmarks:ro`,
             "-v", `${workDir}:/work:rw`,
-            SOLVER_IMAGE,
+            solverScript === "/scripts/code_aster_static.py"
+              ? CODE_ASTER_IMAGE : SOLVER_IMAGE,
             "python3", "-u",                  // -u: unbuffered, so phase
                                               // markers flush in real time
             solverScript,
