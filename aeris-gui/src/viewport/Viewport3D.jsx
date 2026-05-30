@@ -1686,6 +1686,15 @@ function updateMaxArrow(st, warpScale, visible) {
 
 /** Build a line-segment geometry tracing the (nx × ny) structured grid edges. */
 function buildGridEdges(positions, nx, ny) {
+  // Unstructured patches (Code_Aster FEM .vtu) carry no (nx, ny) grid — there
+  // is no tensor-product wireframe to draw, so return an empty edge geometry
+  // (the solid surface still renders from the explicit triangle indices).
+  if (!nx || !ny) {
+    const empty = new THREE.BufferGeometry();
+    empty.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    empty.setIndex(new THREE.Uint32BufferAttribute([], 1));
+    return empty;
+  }
   const idx = [];
   // horizontal segments (per row)
   for (let j = 0; j < ny; j++) {

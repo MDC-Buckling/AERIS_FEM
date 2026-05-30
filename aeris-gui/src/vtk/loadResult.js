@@ -1,5 +1,6 @@
 import { parsePvd } from "./parsePvd.js";
 import { parseVts, buildStructuredIndices } from "./parseVts.js";
+import { parseVtu } from "./parseVtu.js";
 
 /** Resolve and fetch the per-patch .vts files referenced by a result .pvd.
  * Returns a tidy structure ready for three.js BufferGeometry consumption:
@@ -47,8 +48,24 @@ export async function loadResult(pvdRelPath, dataBase = "/data", opts = {}) {
       const res = await fetch(ds.url);
       if (!res.ok) throw new Error(`fetch ${ds.url} failed: ${res.status}`);
       const xml = await res.text();
-      const { nx, ny, positions, solutionField } = parseVts(xml);
-      const indices = buildStructuredIndices(nx, ny);
+      // Dispatch on file type: Code_Aster FEM results are unstructured .vtu
+      // (explicit triangle connectivity); the IGA path is structured .vts
+      // (topology rebuilt from the (nx, ny) extent). Both yield the same
+      // patch contract — positions + indices + optional solutionField.
+      const isVtu =
+        ds.url.toLowerCase().includes(".vtu") ||
+        (ds.file && ds.file.toLowerCase().endsWith(".vtu"));
+      let nx = null;
+      let ny = null;
+      let positions;
+      let solutionField;
+      let indices;
+      if (isVtu) {
+        ({ positions, indices, solutionField } = parseVtu(xml));
+      } else {
+        ({ nx, ny, positions, solutionField } = parseVts(xml));
+        indices = buildStructuredIndices(nx, ny);
+      }
 
       let displacement = null;
       let magnitude = null;

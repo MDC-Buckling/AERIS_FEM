@@ -76,42 +76,44 @@ def _run_aster(export_path: Path, work_dir: Path, threads: int) -> None:
     )
 
 
-def _extract_qoi(result_med: Path, target: list[float]) -> dict:
-    """u_z at the node nearest `target` (the free-edge midpoint). Reuses the
-    meshio/h5py MED path the mesh-layer already validated.
-
-    Code_Aster writes DEPL as a nodal field (DX,DY,DZ,DRX,DRY,DRZ). meshio's
-    component layout varies by version, so the DZ lookup is defensive."""
-    import meshio
+def _find_depl3(mesh) -> "np.ndarray":
+    """Nodal displacement as an (N, 3) array (DX, DY, DZ). Code_Aster writes
+    DEPL with 6 components (translations + rotations) and meshio's layout
+    varies by version, so the lookup is defensive."""
     import numpy as np
-
-    mesh = meshio.read(str(result_med))
-    pts = np.asarray(mesh.points)
-
-    def _dz() -> "np.ndarray":
-        pd = mesh.point_data
-        # 1) a single multi-component DEPL field → column 2 is DZ
-        for k, v in pd.items():
-            if "DEPL" in k.upper():
-                a = np.asarray(v)
-                if a.ndim == 2 and a.shape[1] >= 3:
-                    return a[:, 2]
-        # 2) split component fields → the DZ-looking one
-        for k, v in pd.items():
-            ku = k.upper()
-            if "DEPL" in ku and ("DZ" in ku or ku.rstrip("0123456789").endswith("Z")):
-                return np.asarray(v).reshape(-1)
-        # 3) any 3+-component vector field, take column 2
-        for k, v in pd.items():
+    pd = mesh.point_data
+    # 1) a single multi-component DEPL field → first 3 cols are translations
+    for k, v in pd.items():
+        if "DEPL" in k.upper():
             a = np.asarray(v)
             if a.ndim == 2 and a.shape[1] >= 3:
-                return a[:, 2]
-        raise RuntimeError(
-            f"could not locate DEPL/DZ in result MED point_data; "
-            f"keys = {list(pd)}"
-        )
+                return a[:, :3].astype(np.float64)
+    # 2) split component fields DX/DY/DZ → stack them
+    cols = {}
+    for k, v in pd.items():
+        ku = k.upper()
+        if "DEPL" not in ku:
+            continue
+        for axis, key in (("X", 0), ("Y", 1), ("Z", 2)):
+            if ku.rstrip("0123456789").endswith("D" + axis) or ku.endswith("D" + axis):
+                cols[key] = np.asarray(v).reshape(-1)
+    if {0, 1, 2} <= set(cols):
+        return np.column_stack([cols[0], cols[1], cols[2]]).astype(np.float64)
+    # 3) any 3+-component vector field → first 3 cols
+    for k, v in pd.items():
+        a = np.asarray(v)
+        if a.ndim == 2 and a.shape[1] >= 3:
+            return a[:, :3].astype(np.float64)
+    raise RuntimeError(
+        f"could not locate a DEPL vector in result MED point_data; keys = {list(pd)}"
+    )
 
-    dz = _dz()
+
+def _extract_qoi(mesh, target: list[float]) -> dict:
+    """u_z at the node nearest `target` (the free-edge midpoint)."""
+    import numpy as np
+    pts = np.asarray(mesh.points)
+    dz = _find_depl3(mesh)[:, 2]
     d = np.linalg.norm(pts - np.asarray(target), axis=1)
     i = int(d.argmin())
     return {
@@ -125,8 +127,51 @@ def _extract_qoi(result_med: Path, target: list[float]) -> dict:
     }
 
 
+def _write_result_files(mesh, work_dir: Path) -> str | None:
+    """Convert the Code_Aster result into a viewport-renderable .vtu (+ a .pvd
+    wrapper so the GUI's existing .pvd→mesh machinery resolves it). Writes only
+    the triangle SHELL cells (the 1D/0D BC groups are dropped so they don't add
+    stray faces) and the displacement as a 3-component "SolutionField" — the
+    exact field name the frontend parsers look for. Best-effort: on any failure
+    we log and return None (the QoI verdict still stands, only the 3D view is
+    skipped). Returns the .pvd filename on success."""
+    import meshio
+    import numpy as np
+    try:
+        disp = _find_depl3(mesh)
+        tri = mesh.cells_dict.get("triangle")
+        if tri is None:
+            # quadratic-mesh fallback: corner-node triangles from TRIA6
+            tri6 = mesh.cells_dict.get("triangle6")
+            tri = tri6[:, :3] if tri6 is not None else None
+        if tri is None:
+            sys.stderr.write(
+                "[code_aster_static] no triangle cells in result MED; "
+                "skipping .vtu (viewport stays blank)\n"
+            )
+            return None
+        out = meshio.Mesh(
+            points=np.asarray(mesh.points),
+            cells=[("triangle", np.asarray(tri))],
+            point_data={"SolutionField": disp},
+        )
+        meshio.write(str(work_dir / "result.vtu"), out, binary=False)
+        (work_dir / "result.pvd").write_text(
+            '<?xml version="1.0"?>\n'
+            '<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">\n'
+            '  <Collection>\n'
+            '    <DataSet timestep="0" group="" part="0" file="result.vtu"/>\n'
+            '  </Collection>\n'
+            '</VTKFile>\n'
+        )
+        return "result.pvd"
+    except Exception as exc:  # best-effort — never fail the run over rendering
+        sys.stderr.write(f"[code_aster_static] result .vtu export failed: {exc}\n")
+        return None
+
+
 def _write_sidecar(work_dir: Path, model: ModelConfig, manifest: dict,
-                   qoi: dict, threads: int) -> None:
+                   qoi: dict, threads: int, solution_file: str | None = None) -> None:
     """run.json mirroring scordelis_static.py so the GUI + Hub interpreter
     read it unchanged; engine="code_aster" + a FEM mesh block distinguish it."""
     seg = model.geometry["cylinder_segment"]
@@ -157,7 +202,15 @@ def _write_sidecar(work_dir: Path, model: ModelConfig, manifest: dict,
             "magnitude": float(model.load.get("magnitude", 90.0)),
         },
         "analysis": {"kind": "static", "threads": int(threads)},
-        "files": {"result_med": "result.med", "mess": "study.mess"},
+        "files": {
+            "result_med": "result.med",
+            "mess": "study.mess",
+            # files.solution drives the ResultsPanel "LSA solution (deformed)"
+            # item → Viewport3D loads it. Present only when the .vtu export
+            # succeeded (best-effort), so a conversion failure degrades to a
+            # verdict-only run rather than a broken-link result.
+            **({"solution": solution_file} if solution_file else {}),
+        },
         "qois": [qoi],
         "convergence": [{"r": manifest.get("mesh_order"), **qoi}],
         "modes": [],
@@ -231,7 +284,11 @@ def main(argv: list[str] | None = None) -> int:
     _run_aster(export_path, work_dir, threads=args.threads)
 
     _phase("parsing")
-    qoi = _extract_qoi(work_dir / "result.med", manifest["qoi"]["target"])
+    import meshio
+    result_mesh = meshio.read(str(work_dir / "result.med"))
+    qoi = _extract_qoi(result_mesh, manifest["qoi"]["target"])
+    # MED → .vtu (+ .pvd) so the deformed shell renders in the GUI viewport.
+    solution_file = _write_result_files(result_mesh, work_dir)
 
     _phase("verdict")
     print()
@@ -246,7 +303,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  |u_z|             = {qoi['qoiAbsValue']:.8f}")
     print("(reference comparison is per-benchmark; the Hub interpreter handles it)")
 
-    _write_sidecar(work_dir, model, manifest, qoi, threads=args.threads)
+    _write_sidecar(work_dir, model, manifest, qoi, threads=args.threads,
+                   solution_file=solution_file)
+    if solution_file:
+        print(f"Viewport  : result.vtu + {solution_file} written for the 3D view")
     print(f"\nSidecar manifest written: {work_dir}/run.json")
 
     if not args.keep_files:
