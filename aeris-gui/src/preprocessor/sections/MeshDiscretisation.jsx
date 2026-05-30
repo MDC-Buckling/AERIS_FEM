@@ -275,6 +275,9 @@ function CodeAsterPanel({ ca, setCa }) {
   const family = String(ca.element_family ?? "DKT");
   const meshSize = Number(ca.mesh_size ?? 2.0);
   const info = FAMILY_INFO[family] ?? FAMILY_INFO.DKT;
+  const meshPreview = useUI((s) => s.meshPreview);
+  const busy = useUI((s) => s.meshPreviewBusy);
+  const preview = useUI((s) => s.meshPreviewResult);
   return (
     <>
       <div style={{ marginBottom: 9 }}>
@@ -347,11 +350,57 @@ function CodeAsterPanel({ ca, setCa }) {
             lineHeight: 1.4,
           }}
         >
-          The node/element count follows from geometry &amp; element size and is
-          reported in the run sidecar after meshing. Code_Aster engine wired
-          today: cylinder_segment + cylinder (static / GNA), cylinder buckling.
+          Click “Generate mesh” to mesh now (no solve) and see the actual
+          node/element counts. Code_Aster engine wired today: cylinder_segment
+          + cylinder (static / GNA), cylinder buckling.
         </div>
       </div>
+
+      <button
+        type="button"
+        onClick={() => meshPreview()}
+        disabled={busy}
+        className="codex-action-button"
+        title="Generate the FE mesh now (no solve) and report its node/element counts — the Abaqus 'Mesh Part' step"
+        style={{
+          width: "100%",
+          marginTop: 8,
+          minHeight: 34,
+          fontSize: 11,
+          fontFamily: MONO,
+          letterSpacing: 0.1,
+        }}
+      >
+        {busy ? "⏳ Meshing…" : "⚙ Generate mesh (preview)"}
+      </button>
+
+      {preview && (
+        <div
+          style={{
+            marginTop: 6,
+            padding: "8px 12px",
+            background: "var(--panel-bg-soft)",
+            border: "1px solid var(--line-soft)",
+            borderRadius: 5,
+            fontFamily: MONO,
+          }}
+        >
+          {preview.ok ? (
+            <>
+              <DerivedRow label="Nodes" value={Number(preview.n_nodes).toLocaleString()} accent />
+              <DerivedRow
+                label="Elements"
+                value={`${Number(preview.n_elements).toLocaleString()} · ${preview.element_family}`}
+              />
+              <DerivedRow label="Element size" value={`${preview.mesh_size} mm`} />
+            </>
+          ) : (
+            <div style={{ fontSize: 10, color: "var(--warning)", fontFamily: MONO, lineHeight: 1.4 }}>
+              mesh failed: {preview.error}
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 }

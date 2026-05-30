@@ -973,6 +973,47 @@ export const useUI = create((set) => ({
    * If no jobId is given, defaults to the active job. If there's no
    * active job either, creates an auto-named one on the fly (the
    * "Just Solve" Quick path — same UX as before jobs existed). */
+
+  // ---- FE mesh preview (Abaqus-style "Mesh Part" — Code_Aster engine) ----
+  meshPreviewResult: null,   // null | { ok, n_nodes, n_elements, element_family, ... }
+  meshPreviewBusy: false,
+
+  /** Mesh the current model (no solve) and report the FE-mesh counts. Ensures
+   * a job, saves the model, POSTs /mesh-preview. Code_Aster engine only — IGA
+   * has no FE mesh (it's NURBS + refinement). */
+  meshPreview: async () => {
+    const state = useUI.getState();
+    if ((state.model.solver?.engine ?? "gismo") !== "code_aster") {
+      set({ meshPreviewResult: { ok: false, error: "Mesh preview is for the Code_Aster engine (IGA has no FE mesh)." } });
+      return;
+    }
+    let jobId = state.activeJobId;
+    if (!jobId) {
+      const created = await state.createJob({
+        name: `mesh-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`,
+        threads: 1,
+      });
+      if (!created.ok) { set({ meshPreviewResult: { ok: false, error: created.error } }); return; }
+      jobId = created.job.id;
+    }
+    set({ meshPreviewBusy: true, meshPreviewResult: null });
+    try {
+      const saveRes = await fetch(`/save-model?jobId=${encodeURIComponent(jobId)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(state.serializeModel()),
+      });
+      const saveData = await saveRes.json();
+      if (!saveData.ok) throw new Error(saveData.error || "save failed");
+      const res = await fetch(`/mesh-preview?jobId=${encodeURIComponent(jobId)}`, { method: "POST" });
+      const data = await res.json();
+      set({ meshPreviewResult: data, meshPreviewBusy: false });
+      return data;
+    } catch (e) {
+      set({ meshPreviewResult: { ok: false, error: String(e?.message ?? e) }, meshPreviewBusy: false });
+    }
+  },
+
   runSolver: async ({ jobId } = {}) => {
     const POLL_INTERVAL_MS = 500;
     const state = useUI.getState();

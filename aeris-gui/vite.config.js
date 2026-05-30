@@ -161,6 +161,73 @@ function aerisOutputServer() {
         });
       });
 
+      // POST /mesh-preview?jobId=<id> — mesh-only (no solve), the Abaqus-style
+      // "Mesh Part" step. Runs gmsh_shells via mesh_preview.py and returns the
+      // FE-mesh counts + writes meshpreview.vtu/.pvd for the viewport.
+      // Code_Aster engine only (IGA has no FE mesh). Synchronous — meshing is
+      // quick — so the GUI gets counts back in one round-trip.
+      server.middlewares.use("/mesh-preview", (req, res) => {
+        if (req.method !== "POST") { res.statusCode = 405; res.end("POST only"); return; }
+        const url = new URL(req.url, "http://x");
+        const jobId = url.searchParams.get("jobId");
+        if (!jobId) {
+          res.statusCode = 400;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ ok: false, error: "jobId required" }));
+          return;
+        }
+        const workDir = jobDir(ROOT, slugifyJobName(jobId));
+        if (!fs.existsSync(path.join(workDir, "model.json"))) {
+          res.statusCode = 400;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ ok: false, error: "model.json not found — save the model first" }));
+          return;
+        }
+        const sDir = path.resolve(__dirname, "..", "scripts");
+        const args = [
+          "run", "--rm",
+          "-v", `${sDir}:/scripts:ro`,
+          "-v", `${workDir}:/work:rw`,
+          CODE_ASTER_IMAGE,
+          "python3", "-u", "/scripts/mesh_preview.py", "--model", "/work/model.json",
+        ];
+        let stderr = "";
+        let child;
+        try {
+          child = spawn("docker", args, { windowsHide: true });
+        } catch (e) {
+          res.statusCode = 500;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ ok: false, error: `docker spawn failed: ${e.message}` }));
+          return;
+        }
+        child.stderr.on("data", (c) => { stderr += c.toString("utf8"); });
+        child.on("error", (e) => {
+          res.statusCode = 500;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ ok: false, error: `docker error: ${e.message}` }));
+        });
+        child.on("close", (code) => {
+          if (code === 0) {
+            try {
+              const info = JSON.parse(fs.readFileSync(path.join(workDir, "meshpreview.json"), "utf8"));
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ ok: true, jobId, ...info }));
+              return;
+            } catch (e) {
+              stderr += `\n[read meshpreview.json] ${e}`;
+            }
+          }
+          res.statusCode = 500;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({
+            ok: false,
+            error: `mesh_preview exited ${code}`,
+            stderr: stderr.split("\n").slice(-25).join("\n"),
+          }));
+        });
+      });
+
       // GET    /jobs           — return on-disk job index
       // POST   /jobs           — create a new job
       // DELETE /jobs/<id>      — remove the folder + index entry
