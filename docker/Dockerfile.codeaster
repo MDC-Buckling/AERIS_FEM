@@ -1,0 +1,48 @@
+# aeris/codeaster — classical-FEM discretisation engine (Code_Aster).
+#
+# Step 0 of the Code_Aster integration. Why this base and not a pull:
+#   - the old community image quay.io/tianyikillua/code_aster is DEAD
+#     (legacy schema-v1 manifest, layer blobs GC'd on quay → unpullable);
+#   - Salome-Meca's Singularity bundle is overkill — it ships the GUI +
+#     SALOME mesher we deliberately replace with GMSH (scripts/meshing);
+#   - conda-forge ships a *maintained* code-aster (17.x) → the cleanest
+#     reproducible headless solver, and it co-installs cleanly with the
+#     Aeris mesh-layer deps so ONE image both meshes and solves.
+#
+# Kept entirely separate from docker/Dockerfile (the G+Smo IGA image) so the
+# validated IGA build stays untouched; the dispatcher picks the image per
+# solver.engine.
+FROM condaforge/miniforge3:latest
+
+SHELL ["/bin/bash", "-lc"]
+
+# System libs the pip gmsh wheel dlopen's even in headless API mode — the
+# exact set verified in Step 2 on Debian (libGLU.so.1 + libGL.so.1 + a few
+# libX*). The miniforge base is Debian, so apt is the reliable source.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libglu1-mesa libgl1 libxrender1 libxcursor1 libxft2 \
+        libxinerama1 libxfixes3 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Solver + Aeris mesh-layer deps in one base env. meshio/h5py read the MED
+# files; libglu provides libGLU.so.1 that the gmsh wheel dlopen's even
+# headless. NOTE: gmsh comes from pip, NOT conda — the conda-forge gmsh is
+# built WITHOUT MED support (gmsh.write('.med') raises), whereas the pip
+# wheel is MED-capable and is the one verified in Step 2 to round-trip the
+# physical-group /FAS families that the .comm BCs depend on.
+RUN mamba install -y -n base -c conda-forge \
+        code-aster \
+        meshio h5py numpy && \
+    mamba clean -afy
+
+RUN pip install --no-cache-dir gmsh
+
+WORKDIR /work
+
+# Smoke-check the launcher resolves at build time (conda-forge code-aster
+# exposes run_aster; older flows use as_run). Non-fatal so a flag rename
+# upstream doesn't break the build — the wrapper probes at run time.
+RUN (run_aster --help || as_run --help) >/dev/null 2>&1 || \
+    echo "[build] WARN: neither run_aster nor as_run responded to --help"
+
+CMD ["bash"]
