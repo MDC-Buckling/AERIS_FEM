@@ -40,6 +40,19 @@ from aster_engine.comm import build_comm, build_comm_gna, build_export  # noqa: 
 LAUNCHERS = ("run_aster", "as_run")
 
 
+def _patch_meshio_med() -> None:
+    """meshio's MED reader lacks the 9-node quad ('QU9'), which COQUE_3D
+    meshes use → registering it as meshio's 'quad9' makes result MEDs with
+    QUAD9 cells readable. No-op (best-effort) if meshio's internals move."""
+    try:
+        from meshio.med import _med as _m
+        _m.med_to_meshio_type.setdefault("QU9", "quad9")
+        if hasattr(_m, "meshio_to_med_type"):
+            _m.meshio_to_med_type.setdefault("quad9", "QU9")
+    except Exception:
+        pass
+
+
 def _phase(name: str) -> None:
     """GUI live-monitor phase marker — same protocol as the IGA scripts."""
     print(f"[AERIS-PHASE] {name}", flush=True)
@@ -141,20 +154,27 @@ def _write_result_files(mesh, work_dir: Path) -> str | None:
     import numpy as np
     try:
         disp = _find_depl3(mesh)
-        tri = mesh.cells_dict.get("triangle")
-        if tri is None:
-            # quadratic-mesh fallback: corner-node triangles from TRIA6
-            tri6 = mesh.cells_dict.get("triangle6")
-            tri = tri6[:, :3] if tri6 is not None else None
-        if tri is None:
+        # Reduce every 2D surface cell to CORNER triangles so the viewport
+        # renders any element type uniformly (TRIA3/6, QUAD4/8/9) and the
+        # frontend parser stays triangle-only. Edge/centre nodes keep their
+        # displacement in point_data; the triangles just don't reference them.
+        tri_blocks = []
+        for ct, data in mesh.cells_dict.items():
+            d = np.asarray(data)
+            if ct.startswith("triangle"):
+                tri_blocks.append(d[:, :3])
+            elif ct.startswith("quad"):
+                tri_blocks.append(d[:, [0, 1, 2]])
+                tri_blocks.append(d[:, [0, 2, 3]])
+        if not tri_blocks:
             sys.stderr.write(
-                "[code_aster_static] no triangle cells in result MED; "
+                "[code_aster_static] no surface cells in result MED; "
                 "skipping .vtu (viewport stays blank)\n"
             )
             return None
         out = meshio.Mesh(
             points=np.asarray(mesh.points),
-            cells=[("triangle", np.asarray(tri))],
+            cells=[("triangle", np.vstack(tri_blocks))],
             point_data={"SolutionField": disp},
         )
         meshio.write(str(work_dir / "result.vtu"), out, binary=False)
@@ -300,6 +320,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _phase("parsing")
     import meshio
+    _patch_meshio_med()   # teach meshio the QUAD9 ('QU9') cell type (COQUE_3D)
     result_mesh = meshio.read(str(work_dir / "result.med"))
     qoi = _extract_qoi(result_mesh, manifest["qoi"])
     # MED → .vtu (+ .pvd) so the deformed shell renders in the GUI viewport.

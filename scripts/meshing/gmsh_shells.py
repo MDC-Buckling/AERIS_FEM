@@ -53,35 +53,38 @@ from aeris_model import ModelConfig  # noqa: E402
 import gmsh  # noqa: E402  (heavy import; only the FEM engine pulls this module)
 
 
-# Mesh order each Code_Aster shell family requires. The DKT/DKTG/DST/Q4G
-# discrete-Kirchhoff family is linear (TRIA3/QUAD4) — DKT is the validated
-# default. COQUE_3D is quadratic BUT needs a *central node* (TRIA7/QUAD9):
-# gmsh setOrder(2) yields TRIA6, which Code_Aster's AFFE_MODELE rejects
-# ("aucune maille affectée"). Supporting COQUE_3D therefore means quad
-# recombination + complete 2nd order (Mesh.SecondOrderIncomplete=0) → QUAD9;
-# deferred. The "2" below is the geometric order only and is not yet enough
-# on its own to make a COQUE_3D-loadable mesh.
-_FAMILY_MESH_ORDER: Dict[str, int] = {
-    "COQUE_3D": 2,
-    "DKT": 1, "DKTG": 1, "DST": 1, "Q4G": 1, "COQUE_AXIS": 1,
+# How gmsh must mesh each Code_Aster shell family, as (recombine, order,
+# complete):
+#   recombine: triangles → quadrilaterals
+#   order:     1 = linear, 2 = quadratic
+#   complete:  for order 2, emit the CENTRE node (QUAD9 biquadratic, NOT the
+#              8-node serendipity QUAD8) — COQUE_3D needs the central node, so
+#              Mesh.SecondOrderIncomplete must be 0.
+# DKT/DKTG/DST → linear triangles (TRIA3). DKQ/DSQ/Q4G → linear quads (QUAD4).
+# COQUE_3D → biquadratic quads (QUAD9): recombine + complete 2nd order. (A bare
+# setOrder(2) on triangles gives TRIA6, which Code_Aster's COQUE_3D rejects
+# at AFFE_MODELE — it needs the centre node, hence the QUAD9 route.)
+_FAMILY_MESH: Dict[str, tuple] = {
+    "DKT":      (False, 1, False),
+    "DKTG":     (False, 1, False),
+    "DST":      (False, 1, False),
+    "DKQ":      (True,  1, False),
+    "DSQ":      (True,  1, False),
+    "Q4G":      (True,  1, False),
+    "COQUE_3D": (True,  2, True),
 }
 
 
-def _resolve_order(family: str, requested: int) -> int:
-    """Geometric mesh order for `family`, coercing an incompatible request.
-
-    A linear mesh under COQUE_3D (or a quadratic one under DKT) silently
-    produces a mesh Code_Aster rejects at AFFE_MODELE — so we coerce to the
-    family's requirement and warn rather than ship an unloadable .med."""
-    need = _FAMILY_MESH_ORDER.get(family.upper())
-    if need is None:
-        return max(1, requested)
-    if requested != need:
-        sys.stderr.write(
-            f"[gmsh_shells] element_family={family!r} needs mesh order {need}; "
-            f"coercing requested order {requested} → {need}\n"
-        )
-    return need
+def _apply_mesh_options(family: str) -> int:
+    """Set gmsh's meshing options for `family` (quad recombination + 2nd-order
+    completeness) BEFORE generate(2). Returns the geometric order to apply via
+    setOrder() afterwards. Unknown families fall back to linear triangles."""
+    recombine, order, complete = _FAMILY_MESH.get(family.upper(), (False, 1, False))
+    gmsh.option.setNumber("Mesh.RecombineAll", 1 if recombine else 0)
+    if order >= 2:
+        # 0 = complete (QUAD9 with centre node — COQUE_3D); 1 = serendipity.
+        gmsh.option.setNumber("Mesh.SecondOrderIncomplete", 0 if complete else 1)
+    return order
 
 
 def _segment_frame(R: float, phi_deg: float):
@@ -130,8 +133,7 @@ def build_cylinder_segment(model: ModelConfig, out_path: Path) -> Dict[str, Any]
     R, L, phi_deg = float(seg["R"]), float(seg["L"]), float(seg["phi_deg"])
     disc = model.disc("code_aster")
     h = float(disc.get("mesh_size", 2.0))
-    family = str(disc.get("element_family", "COQUE_3D"))
-    order = _resolve_order(family, int(disc.get("order", 2)))
+    family = str(disc.get("element_family", "DKT"))
 
     A, B, C, phi = _segment_frame(R, phi_deg)
     qoi_target = [L / 2.0, -2.0 * R * math.sin(phi), 0.0]
@@ -177,6 +179,7 @@ def build_cylinder_segment(model: ModelConfig, out_path: Path) -> Dict[str, Any]
             gid = gmsh.model.addPhysicalGroup(dim, tags)
             gmsh.model.setPhysicalName(dim, gid, name)
 
+        order = _apply_mesh_options(family)
         gmsh.model.mesh.generate(2)
         if order >= 2:
             gmsh.model.mesh.setOrder(2)
@@ -218,7 +221,6 @@ def build_cylinder(model: ModelConfig, out_path: Path) -> Dict[str, Any]:
     disc = model.disc("code_aster")
     h = float(disc.get("mesh_size", 2.0))
     family = str(disc.get("element_family", "DKT"))
-    order = _resolve_order(family, int(disc.get("order", 1)))
     qoi_target = [R, 0.0, L]   # extrusion of the circle's seam point (R,0,0)
 
     gmsh.initialize()
@@ -247,6 +249,7 @@ def build_cylinder(model: ModelConfig, out_path: Path) -> Dict[str, Any]:
             gmsh.model.setPhysicalName(dim, gid, name)
             gids[name] = (dim, gid)
 
+        order = _apply_mesh_options(family)
         gmsh.model.mesh.generate(2)
         if order >= 2:
             gmsh.model.mesh.setOrder(2)

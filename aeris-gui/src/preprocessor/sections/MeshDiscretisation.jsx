@@ -52,19 +52,18 @@ const ENGINE_OPTIONS = [
 // the mesh layer / cross-checked.
 const FAMILY_OPTIONS = [
   ["DKT",      "DKT (TRIA3)"],
+  ["COQUE_3D", "COQUE_3D (QUAD9)"],
   ["DKTG",     "DKTG",
-    { disabled: true, title: "drilling-DOF triangle — not validated against a reference yet" }],
-  ["COQUE_3D", "COQUE_3D",
-    { disabled: true, title: "thick shell; needs a central node (QUAD9/TRIA7) the mesh layer doesn't emit yet — quad recombination deferred" }],
+    { disabled: true, title: "thin shell + drilling DOF (TRIA3); used internally for GNA, not yet exposed as a static choice" }],
 ];
 
 // Per-family derived properties surfaced in the FEM panel (ansatz order,
 // element shape, shell theory). These follow from the element family — the
 // mesh layer coerces the geometric order to match, so they're read-only here.
 const FAMILY_INFO = {
-  DKT:      { ansatz: "linear (P1)",    shape: "triangle · TRIA3",        theory: "thin shell (Kirchhoff)" },
-  DKTG:     { ansatz: "linear (P1)",    shape: "triangle · TRIA3",        theory: "thin shell + drilling DOF" },
-  COQUE_3D: { ansatz: "quadratic (P2)", shape: "triangle · TRIA7 (+node)", theory: "thick shell (Mindlin)" },
+  DKT:      { ansatz: "linear (P1)",    shape: "triangle · TRIA3",       theory: "thin shell (Kirchhoff)" },
+  DKTG:     { ansatz: "linear (P1)",    shape: "triangle · TRIA3",       theory: "thin shell + drilling DOF" },
+  COQUE_3D: { ansatz: "quadratic (P2)", shape: "quad · QUAD9 (+centre)", theory: "thick/curved shell (Mindlin)" },
 };
 
 export default function MeshDiscretisation() {
@@ -304,9 +303,11 @@ function CodeAsterPanel({ ca, setCa }) {
             lineHeight: 1.45,
           }}
         >
-          DKT (discrete-Kirchhoff TRIA3) is the validated thin-shell element —
-          cross-checked against the IGA engine on Scordelis-Lo to 0.1%. COQUE_3D
-          needs a central node (QUAD9/TRIA7) the mesh layer doesn&apos;t emit yet.
+          DKT (linear TRIA3) is the thin-shell workhorse — validated vs the IGA
+          engine on Scordelis-Lo to 0.1%. COQUE_3D is the curved thick-shell
+          element (biquadratic QUAD9 with a centre node) — higher accuracy per
+          element; it converges to the Scordelis reference (|u_z|→0.302) on a
+          coarser mesh.
         </div>
       </div>
 
