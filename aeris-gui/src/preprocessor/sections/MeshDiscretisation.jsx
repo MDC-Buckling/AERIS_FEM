@@ -58,6 +58,15 @@ const FAMILY_OPTIONS = [
     { disabled: true, title: "thick shell; needs a central node (QUAD9/TRIA7) the mesh layer doesn't emit yet — quad recombination deferred" }],
 ];
 
+// Per-family derived properties surfaced in the FEM panel (ansatz order,
+// element shape, shell theory). These follow from the element family — the
+// mesh layer coerces the geometric order to match, so they're read-only here.
+const FAMILY_INFO = {
+  DKT:      { ansatz: "linear (P1)",    shape: "triangle · TRIA3",        theory: "thin shell (Kirchhoff)" },
+  DKTG:     { ansatz: "linear (P1)",    shape: "triangle · TRIA3",        theory: "thin shell + drilling DOF" },
+  COQUE_3D: { ansatz: "quadratic (P2)", shape: "triangle · TRIA7 (+node)", theory: "thick shell (Mindlin)" },
+};
+
 export default function MeshDiscretisation() {
   const mesh = useUI((s) => s.model.mesh);
   const cyl = useUI((s) => s.model.geometry.cylinder);
@@ -266,6 +275,7 @@ export default function MeshDiscretisation() {
 function CodeAsterPanel({ ca, setCa }) {
   const family = String(ca.element_family ?? "DKT");
   const meshSize = Number(ca.mesh_size ?? 2.0);
+  const info = FAMILY_INFO[family] ?? FAMILY_INFO.DKT;
   return (
     <>
       <div style={{ marginBottom: 9 }}>
@@ -277,7 +287,7 @@ function CodeAsterPanel({ ca, setCa }) {
             marginBottom: 4,
           }}
         >
-          Shell element family
+          Element type  (Code_Aster shell modelisation)
         </div>
         <ToggleGroup
           options={FAMILY_OPTIONS}
@@ -301,15 +311,15 @@ function CodeAsterPanel({ ca, setCa }) {
       </div>
 
       <NumberField
-        label="Element size  (h — target GMSH characteristic length)"
+        label="Element size  (h — target edge length of the FEM mesh)"
         symbol="h"
-        unit="–"
+        unit="mm"
         value={meshSize}
         onChange={(v) => setCa("mesh_size", v)}
         min={0.01}
         step={0.5}
         precision={3}
-        hint="smaller = finer mesh (no IGA refinement level here). The Scordelis-Lo cross-check converges by h ≈ 0.5 (|u_z| → 0.300)."
+        hint="in the model's length unit (mm). Smaller = finer mesh — there is no IGA refinement level here, GMSH meshes directly from h. Scordelis-Lo converges by h ≈ 0.5 (|u_z| → 0.300)."
       />
 
       <div
@@ -324,7 +334,10 @@ function CodeAsterPanel({ ca, setCa }) {
       >
         <DerivedRow label="Engine" value="Code_Aster (classical FEM)" />
         <DerivedRow label="Modelisation" value={family} accent />
-        <DerivedRow label="Mesh" value="GMSH → MED at solve time" />
+        <DerivedRow label="Ansatz / order" value={info.ansatz} />
+        <DerivedRow label="Element shape" value={info.shape} />
+        <DerivedRow label="Shell theory" value={info.theory} />
+        <DerivedRow label="Mesher" value="GMSH → MED (at solve)" />
         <div
           style={{
             marginTop: 6,
@@ -333,9 +346,9 @@ function CodeAsterPanel({ ca, setCa }) {
             lineHeight: 1.4,
           }}
         >
-          Node/element count depends on geometry &amp; element size and is
-          reported in the run sidecar after meshing. Today the Code_Aster engine
-          is wired for cylinder_segment + linear-static.
+          The node/element count follows from geometry &amp; element size and is
+          reported in the run sidecar after meshing. Code_Aster engine wired
+          today: cylinder_segment + cylinder (static / GNA), cylinder buckling.
         </div>
       </div>
     </>

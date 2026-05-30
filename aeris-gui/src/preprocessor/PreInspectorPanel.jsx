@@ -105,8 +105,14 @@ function LivePreviewLine({ dottedId, fallback }) {
   } else if (dottedId === "shellConstruction.sectionAssignments") {
     text = `${model.assignments.length} region · ${model.sections.length} section`;
   } else if (dottedId === "mesh.discretisation") {
-    const m = model.mesh;
-    text = `r=${m.refinement}  p=${m.degree}  s=${m.smoothness}  ·  ${m.coupling}`;
+    const engine = model.solver?.engine ?? "gismo";
+    if (engine === "code_aster") {
+      const c = model.discretization?.code_aster ?? {};
+      text = `Code_Aster FEM · ${c.element_family ?? "DKT"} · h=${c.mesh_size ?? 2.0} mm`;
+    } else {
+      const m = model.mesh;
+      text = `NURBS/IGA · r=${m.refinement} p=${m.degree} s=${m.smoothness} · ${m.coupling}`;
+    }
   } else if (dottedId === "bcsLoads.bcs") {
     text = model.bcs.kind;
   } else if (dottedId === "bcsLoads.load") {
