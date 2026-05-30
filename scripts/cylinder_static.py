@@ -490,6 +490,16 @@ def _write_sidecar(work_dir: Path, model: dict,
         },
         "retriesLog": retries_log or [],
     }
+    # For GNIA: include imperfections metadata so the Inspector can render it
+    if analysis_kind == "gnia":
+        imp = model.get("imperfections", {})
+        run_json["imperfections"] = {
+            "kind": str(imp.get("kind", "random")),
+            "mode": int(imp.get("mode", 1)),
+            "amplitude": float(imp.get("amplitude", 0.001)),
+            "lbaEigenvalue": imp.get("lbaEigenvalue"),
+            "lbaMode": imp.get("lbaMode"),
+        }
     (work_dir / "run.json").write_text(json.dumps(run_json, indent=2))
 
 

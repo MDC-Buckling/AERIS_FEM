@@ -77,15 +77,22 @@ function metaFromResults(r) {
     };
   }
 
-  // ---- GNIA (arc-length knockdown) ----
+  // ---- GNIA (arc-length knockdown OR Newton-Raphson with imperfections) ----
   if (analysisKind === "gnia") {
     const c = r.case ?? {};
     const v = r.verdict ?? {};
+    // Distinguish by presence of arcLength field:
+    // - Arc-length GNIA (cylinder_arclength.py): has arcLength field
+    // - Newton-Raphson GNIA (cylinder_static.py): has maxIncrements field
+    const isArcLength = r.analysis?.arcLength != null;
+    const driver = isArcLength
+      ? "arclength_shell_multipatch_XML"
+      : "static_shell_XML --NR";
     return {
       kind: "gnia",
       analysisKind,
       R: c.R, L: c.L, t: c.t, E: c.E, nu: c.nu,
-      driver: "arclength_shell_multipatch_XML",
+      driver,
       coupling: r.mesh?.coupling ?? "—",
       finestR: r.mesh?.refinement,
       lambdaCritical: v.lambdaCritical,
@@ -599,8 +606,9 @@ export default function InspectorPanel() {
             )}
             <div style={{ marginTop: 6, fontSize: 9.5, color: "var(--text-muted)",
                           fontFamily: MONO, lineHeight: 1.4 }}>
-              λ_cr = imperfect ÷ classical buckling load. Reference auto-scaled
-              so λ=1 ≡ classical F_cr. Arc-length traced through the limit point.
+              {LBA_META.driver?.includes("arclength")
+                ? "λ_cr = imperfect ÷ classical buckling load. Reference auto-scaled so λ=1 ≡ classical F_cr. Arc-length traced through the limit point."
+                : "Geometrically nonlinear analysis with imperfections using force-control Newton-Raphson iteration."}
             </div>
           </>
         )}
