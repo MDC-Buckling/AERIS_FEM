@@ -122,8 +122,17 @@ function previewFor(dottedId, model, lastRun) {
     return `${model.assignments?.length ?? 0} region · ${model.sections?.length ?? 0} section`;
   }
   if (dottedId === "mesh.discretisation") {
+    // Lead with the discretisation engine so it's unambiguous in the tree
+    // which solver the model targets (the toggle lives in this section's
+    // inspector). IGA shows the h/p/k refinement; Code_Aster shows the FEM
+    // element family + target element size.
+    const engine = model.solver?.engine ?? "gismo";
+    if (engine === "code_aster") {
+      const ca = model.discretization?.code_aster ?? {};
+      return `Code_Aster FEM · ${ca.element_family ?? "DKT"} · h=${ca.mesh_size ?? 2.0}`;
+    }
     const m = model.mesh;
-    return `r=${m.refinement}  p=${m.degree}  s=${m.smoothness}`;
+    return `NURBS / IGA · r=${m.refinement} p=${m.degree} s=${m.smoothness}`;
   }
   if (dottedId === "bcsLoads.bcs") {
     return model.bcs?.kind;
@@ -224,8 +233,10 @@ export default function ModelTreePanel() {
   const selectItem = useUI((s) => s.selectTreeItem);
   const sectionStatus = useUI((s) => s.sectionStatus);
   const projectName = useUI((s) => s.projectName);
+  const engine = useUI((s) => s.model.solver?.engine ?? "gismo");
   const expandedLeftPanels = useUI((s) => s.expandedLeftPanels);
   const toggleLeftPanel = useUI((s) => s.toggleLeftPanel);
+  const isFem = engine === "code_aster";
 
   return (
     <GlassPanel
@@ -242,6 +253,26 @@ export default function ModelTreePanel() {
           MODEL TREE
         </span>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {/* Always-visible engine badge — the discretisation engine drives
+              which solver (and image) runs; set it in MESH / DISCRETISATION. */}
+          <span
+            title="Discretisation engine — change it in MESH / DISCRETISATION"
+            style={{
+              fontSize: 8.5,
+              fontFamily: MONO,
+              fontWeight: 700,
+              letterSpacing: 0.05,
+              textTransform: "uppercase",
+              padding: "2px 7px",
+              borderRadius: 4,
+              border: "1px solid",
+              borderColor: isFem ? "rgba(255,170,60,0.55)" : "var(--control-border)",
+              color: isFem ? "#ffb347" : "var(--accent)",
+              background: isFem ? "rgba(255,170,60,0.10)" : "var(--control-active-bg)",
+            }}
+          >
+            {isFem ? "Code_Aster FEM" : "NURBS / IGA"}
+          </span>
           <span
             style={{
               fontSize: 9.5,
