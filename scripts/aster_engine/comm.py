@@ -137,35 +137,48 @@ def _comm_segment(model: "ModelConfig", manifest: Dict[str, Any]) -> str:  # noq
 
 
 def _comm_cylinder(model: "ModelConfig", manifest: Dict[str, Any]) -> str:  # noqa: F821
-    """Closed cylinder under axial end load: bottom rim fully clamped, top rim
-    carrying the axial load. The total force F is applied as EQUAL nodal forces
-    on the N top-rim nodes (FORCE_NODALE FZ = -F/N) — the resultant is exactly
-    -F, giving a uniform membrane axial stress. We use FORCE_NODALE rather than
-    FORCE_ARETE because gmsh's standalone edge SEGs aren't model elements, so
-    FORCE_ARETE rejects them ("n'appartiennent pas au modèle")."""
+    """Closed cylinder, bottom rim clamped. Two load cases:
+      axial    — total force F as EQUAL nodal forces on the N top-rim nodes
+                 (FORCE_NODALE FZ=-F/N; resultant exactly -F → uniform membrane
+                 axial stress). FORCE_NODALE not FORCE_ARETE because gmsh's
+                 standalone edge SEGs aren't model elements.
+      pressure — uniform lateral pressure p on the shell (PRES_REP) → membrane
+                 hoop σ_θ = pR/t (the external-pressure load case)."""
     cyl = model.geometry["cylinder"]
     thickness = float(cyl["t"])
     E, nu = _mat(model)
     family = str(manifest.get("element_family", "DKT")).upper()
     load = model.load
-    if load.get("kind") != "axial":
-        raise SystemExit(
-            f"cylinder: only load.kind='axial' is wired (Step 6); "
-            f"got {load.get('kind')!r}"
-        )
-    n_top = int(manifest.get("top_node_count", 0))
-    if n_top <= 0:
-        raise SystemExit("cylinder: manifest has no top_node_count for the nodal load")
-    F = float(load.get("magnitude", 1.0))
-    fz_node = -F / n_top
-    char = f"""CHAR = AFFE_CHAR_MECA(
+    kind = load.get("kind")
+    mag = float(load.get("magnitude", 1.0))
+    bottom_clamp = "_F(GROUP_NO='bottom', DX=0.0, DY=0.0, DZ=0.0, DRX=0.0, DRY=0.0, DRZ=0.0)"
+    if kind == "axial":
+        n_top = int(manifest.get("top_node_count", 0))
+        if n_top <= 0:
+            raise SystemExit("cylinder: manifest has no top_node_count for the nodal load")
+        fz_node = -mag / n_top
+        char = f"""CHAR = AFFE_CHAR_MECA(
     MODELE=MODE,
-    DDL_IMPO=_F(GROUP_NO='bottom', DX=0.0, DY=0.0, DZ=0.0, DRX=0.0, DRY=0.0, DRZ=0.0),
+    DDL_IMPO={bottom_clamp},
     FORCE_NODALE=_F(GROUP_NO='top', FZ={fz_node:.10g}),
 )"""
+        bc_groups = ["bottom", "top"]
+    elif kind in ("pressure", "extpress", "intpress"):
+        # PRES_REP: uniform pressure normal to the shell. Sign follows the
+        # element normal; the membrane hoop magnitude is pR/t either way.
+        char = f"""CHAR = AFFE_CHAR_MECA(
+    MODELE=MODE,
+    DDL_IMPO={bottom_clamp},
+    PRES_REP=_F(GROUP_MA='shell', PRES={mag:.10g}),
+)"""
+        bc_groups = ["bottom"]
+    else:
+        raise SystemExit(
+            f"cylinder: load.kind in {{'axial','pressure'}} wired; got {kind!r}"
+        )
     # VECTEUR=(0,0,1): the cylinder axis is tangent everywhere → defines the
     # shell local frame for the EFGE/stress recovery (NXX = axial membrane).
-    return _preamble("shell", family, E, nu, thickness, ["bottom", "top"],
+    return _preamble("shell", family, E, nu, thickness, bc_groups,
                      cara_vector=(0.0, 0.0, 1.0)) + _static_tail(char)
 
 
