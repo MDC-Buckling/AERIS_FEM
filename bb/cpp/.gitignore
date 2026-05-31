@@ -1,0 +1,6 @@
+# ignore all (compiled test binaries are extensionless), keep sources only
+*
+!.gitignore
+!*.cpp
+!*.hpp
+!*.py

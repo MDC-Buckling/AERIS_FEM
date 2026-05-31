@@ -21,7 +21,7 @@ on novel problems.
 | Benchmark | Type | Deformation regime | Reference QoI | Status |
 |---|---|---|---|---|
 | [scordelis_lo](scordelis_lo/) | static linear | membrane-dominated bending | `u_z = 0.3006` at free-edge midpoint (KL shell) | **PASS** (0.031 % at r=6) |
-| _scordelis_lo_multipatch_ | static linear | + multipatch C¹ moment transfer | same as above | planned |
+| [scordelis_lo_multipatch](scordelis_lo_multipatch/) | static linear | + multipatch G¹ moment transfer | same as above | **PASS** (0.016 % at r=5, seam C⁰ gap = 0) |
 | _pinched_cylinder_ | static linear | bending-dominated, point load | `u = 1.8248e-5` under load (KL shell) | planned |
 | _pinched_hemisphere_ | static linear | inextensional bending | `u_x = 0.0924` at load point (KL shell) | planned |
 | _cylinder_axial_lba_ | linear buckling | bifurcation eigenvalue | classical Lorenz/Timoshenko | shipped (`scripts/cylinder_lba.py`) |
