@@ -97,9 +97,16 @@ differentiating (7.4) with Θ fixed:
 ∂â₃⁻/∂u_ki = cosΘ · ∂a₃⁻/∂u_ki − sinΘ · ∂a_N⁻/∂u_ki
 ```
 
-(so the penalty also needs ∂a_N/∂u — a small extension of the δn apparatus: a_N =
-a_S × a₃, ∂a_N/∂u = a_S × ∂a₃/∂u for a fixed edge tangent a_S, plus the ∂a_S/∂u
-term if the edge tangent varies with u.)
+(so the penalty also needs ∂a_N/∂u. a_N = a_S × a₃ ⇒
+   **∂a_N/∂u = ∂a_S/∂u × a₃ + a_S × ∂a₃/∂u   [FULL — both terms REQUIRED]**
+The ∂a_S/∂u term is the variation of the normalized edge tangent: a_S = ê/|ê|,
+ê = a₁t₁+a₂t₂, ∂ê/∂u_ki = (N₁_k t₁ + N₂_k t₂) e_i, ∂a_S/∂u = (I−a_S a_Sᵀ)/|ê| · ∂ê/∂u.
+This is part of ∂R(Θ)/∂u (linear-CONSISTENT; only 7.9's 2nd-derivative geometric
+term is dropped, NOT this). **Dropping ∂a_S/∂u is WRONG** — G0.5-Part-A null-space
+patch test refutes it: the partial form leaks the rigid-body ROTATION modes out of
+null(K_penalty) by O(1e-1) at Θ=90° (worst), while the FULL form holds them at
+machine zero. The "small for bending-dominated modes" guess is refuted; the term
+is required.)
 
 K_penalty,s (from 7.9) is symmetric PSD, a small dense block on the ℙ DOFs,
 **added** to global K. No dependent-constraint removal, no congruence — simpler
@@ -170,11 +177,18 @@ for the penalty.
   kink-preserving motion (reference + rigid-body), nonzero for an incompatible
   re-fold; Θ-from-frames = fold angle (consistent outward normals); aN=aS×a₃ sign
   verified. Across Θ ∈ {0,30,90,150}°. Fold analog of Step-4 consistency.
-- **G0.5 — penalty-parameter sweep (penalty-specific gate)**: vary P over decades;
-  the result must **plateau** over a range (too low → continuity not enforced,
-  residual gap; too high → ill-conditioning). The penalty method's analog of a
-  convergence gate; no equivalent in master–slave. Read at the eigenvalue level for
-  buckling (see §2 LBA note). Needs the penalty stiffness assembly (7.9 + ∂a_N/∂u).
+- **G0.5 — penalty-parameter sweep (penalty-specific gate)**: ✅ GREEN.
+  - **Part A** (`bb/cpp/test_bb_g1_penalty.cpp`, gismo-free): penalty-stiffness null-space
+    patch test — the 6 rigid modes are in null(K_penalty) at machine zero with the **FULL**
+    ∂a_N/∂u; the PARTIAL form (drop ∂a_S/∂u×a₃) leaks the rigid ROTATIONS by O(1e-1) at
+    Θ=90°. **Resolves the ∂a_S/∂u question: the full term is REQUIRED.**
+  - **Part B** (`bb/cpp/test_bb_g1_kappa.cpp`, gismo-linked, fold Θ=90°, η=μt³/L): static
+    κ-PLATEAU. Small P → hinge (near-null mode = the penalty analog of the Step-9 seam-slit
+    7th mode; huge tip deflection); plateau at **P ≳ 1e³ (κ ≳ 1e³·η)** where tip deflection
+    + low spectrum are flat-stable (G¹ enforced); static upper conditioning bound not reached
+    by P=1e⁶ (static plateau is WIDE). Production P ~ 1e³–1e⁵.
+  - The eigenvalue plateau (the BINDING refinement) reads at the buckling-eigenvalue level
+    where large κ pollutes the low spectrum — deferred to G3 (needs K_geom; §2 LBA note).
 - **G1 — moment transfer across the kink**: applied bending moment on "+" → correct
   reaction on "−" (moment equilibrium across Θ), vs analytic/NURBS reference.
 - **G2 — cone–cylinder junction**: static convergence vs NURBS-multipatch reference
