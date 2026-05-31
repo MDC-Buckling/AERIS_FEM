@@ -193,66 +193,97 @@ def _write_result_files(mesh, work_dir: Path) -> str | None:
 
 
 def _find_efge(mesh):
-    """Nodal generalised membrane efforts (NXX, NYY, NXY) as (N,3) from the
-    result's EFGE_NOEU field. Defensive about meshio's key/component layout."""
+    """Nodal generalised shell efforts (NXX,NYY,NXY, MXX,MYY,MXY) as (N,6) from
+    the result's EFGE_NOEU field. Defensive about meshio's key/component layout."""
     import numpy as np
     for k, v in mesh.point_data.items():
         if "EFGE" in k.upper():
             a = np.asarray(v)
-            if a.ndim == 2 and a.shape[1] >= 3:
-                return a[:, :3].astype(np.float64)
+            if a.ndim == 2 and a.shape[1] >= 6:
+                return a[:, :6].astype(np.float64)
     return None
 
 
-def _write_stress_files(mesh, thickness: float, work_dir: Path):
-    """Membrane von-Mises stress (σ = N/t from the shell's membrane efforts) as
-    a nodal scalar → stress.vtu + stress.pvd, rendered by the viewport's scalar
-    path. Best-effort. Returns (pvd_name|None, median_vm|None) — the median is a
-    robust membrane estimate (the few clamped-edge bending peaks don't shift
-    it), so it's the value to sanity-check against σ = F/(2πRt)."""
+def _vm_plane(sx, sy, sxy):
+    """Plane-stress von Mises (the shell membrane/surface stress state)."""
+    import numpy as np
+    return np.sqrt(np.maximum(sx * sx - sx * sy + sy * sy + 3.0 * sxy * sxy, 0.0))
+
+
+def _write_scalar_vtu(mesh, scalar, work_dir: Path, stem: str):
+    """Write a nodal-scalar VTU (corner triangles + 1-comp SolutionField) + its
+    .pvd, for the viewport's scalar render. Returns '<stem>.pvd' or None."""
     import meshio
+    import numpy as np
+    tri_blocks = []
+    for ct, data in mesh.cells_dict.items():
+        d = np.asarray(data)
+        if ct.startswith("triangle"):
+            tri_blocks.append(d[:, :3])
+        elif ct.startswith("quad"):
+            tri_blocks.append(d[:, [0, 1, 2]])
+            tri_blocks.append(d[:, [0, 2, 3]])
+    if not tri_blocks:
+        return None
+    out = meshio.Mesh(
+        points=np.asarray(mesh.points),
+        cells=[("triangle", np.vstack(tri_blocks))],
+        point_data={"SolutionField": np.asarray(scalar).reshape(-1, 1)},
+    )
+    meshio.write(str(work_dir / f"{stem}.vtu"), out, binary=False)
+    (work_dir / f"{stem}.pvd").write_text(
+        '<?xml version="1.0"?>\n'
+        '<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">\n'
+        '  <Collection>\n'
+        f'    <DataSet timestep="0" group="" part="0" file="{stem}.vtu"/>\n'
+        '  </Collection>\n'
+        '</VTKFile>\n'
+    )
+    return f"{stem}.pvd"
+
+
+def _write_stress_files(mesh, thickness: float, work_dir: Path):
+    """Membrane AND surface (membrane ± bending) von-Mises stress from the shell
+    efforts EFGE_NOEU, as two nodal-scalar results:
+      membrane σ = N/t                           → stress.pvd      (files.stressVonMises)
+      surface  σ = N/t ± 6M/t² (max top|bottom)  → stress_surf.pvd (yield check)
+    Best-effort. Returns (files_dict, info_dict). The membrane median is the
+    value to sanity-check against σ = F/(2πRt)."""
     import numpy as np
     try:
         efge = _find_efge(mesh)
         if efge is None:
             sys.stderr.write("[code_aster_static] no EFGE_NOEU field; skipping stress\n")
-            return None, None
+            return {}, {}
         t = float(thickness)
-        sx, sy, sxy = efge[:, 0] / t, efge[:, 1] / t, efge[:, 2] / t
-        vm = np.sqrt(np.maximum(sx * sx - sx * sy + sy * sy + 3.0 * sxy * sxy, 0.0))
-        tri_blocks = []
-        for ct, data in mesh.cells_dict.items():
-            d = np.asarray(data)
-            if ct.startswith("triangle"):
-                tri_blocks.append(d[:, :3])
-            elif ct.startswith("quad"):
-                tri_blocks.append(d[:, [0, 1, 2]])
-                tri_blocks.append(d[:, [0, 2, 3]])
-        if not tri_blocks:
-            return None, None
-        out = meshio.Mesh(
-            points=np.asarray(mesh.points),
-            cells=[("triangle", np.vstack(tri_blocks))],
-            point_data={"SolutionField": vm.reshape(-1, 1)},
+        mx, my, mxy = efge[:, 0] / t, efge[:, 1] / t, efge[:, 2] / t          # membrane σ
+        bx = 6.0 * efge[:, 3] / (t * t)                                       # ±bending σ at the fibre
+        by = 6.0 * efge[:, 4] / (t * t)
+        bxy = 6.0 * efge[:, 5] / (t * t)
+        vm_membrane = _vm_plane(mx, my, mxy)
+        vm_surface = np.maximum(
+            _vm_plane(mx + bx, my + by, mxy + bxy),
+            _vm_plane(mx - bx, my - by, mxy - bxy),
         )
-        meshio.write(str(work_dir / "stress.vtu"), out, binary=False)
-        (work_dir / "stress.pvd").write_text(
-            '<?xml version="1.0"?>\n'
-            '<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">\n'
-            '  <Collection>\n'
-            '    <DataSet timestep="0" group="" part="0" file="stress.vtu"/>\n'
-            '  </Collection>\n'
-            '</VTKFile>\n'
-        )
-        return "stress.pvd", float(np.median(vm))
+        files = {}
+        p = _write_scalar_vtu(mesh, vm_membrane, work_dir, "stress")
+        if p:
+            files["stressVonMises"] = p
+        p = _write_scalar_vtu(mesh, vm_surface, work_dir, "stress_surf")
+        if p:
+            files["stressVonMisesSurface"] = p
+        return files, {
+            "membrane_median": float(np.median(vm_membrane)),
+            "surface_max": float(np.max(vm_surface)),
+        }
     except Exception as exc:  # best-effort — stress is a nice-to-have
         sys.stderr.write(f"[code_aster_static] stress export failed: {exc}\n")
-        return None, None
+        return {}, {}
 
 
 def _write_sidecar(work_dir: Path, model: ModelConfig, manifest: dict,
                    qoi: dict, threads: int, solution_file: str | None = None,
-                   analysis_kind: str = "static", stress_file: str | None = None) -> None:
+                   analysis_kind: str = "static", stress_files: dict | None = None) -> None:
     """run.json mirroring scordelis_static.py so the GUI + Hub interpreter
     read it unchanged; engine="code_aster" + a FEM mesh block distinguish it."""
     shape = model.geometry.get("shape")
@@ -291,7 +322,7 @@ def _write_sidecar(work_dir: Path, model: ModelConfig, manifest: dict,
             # membrane von-Mises scalar result (same key the IGA path uses).
             # Both present only when their .vtu export succeeded (best-effort).
             **({"solution": solution_file} if solution_file else {}),
-            **({"stressVonMises": stress_file} if stress_file else {}),
+            **(stress_files or {}),
         },
         "qois": [qoi],
         "convergence": [{"r": manifest.get("mesh_order"), **qoi}],
@@ -384,9 +415,9 @@ def main(argv: list[str] | None = None) -> int:
     qoi = _extract_qoi(result_mesh, manifest["qoi"])
     # MED → .vtu (+ .pvd) so the deformed shell renders in the GUI viewport.
     solution_file = _write_result_files(result_mesh, work_dir)
-    # Membrane von-Mises stress → stress.vtu (+ .pvd), a second selectable
-    # result (no EFGE on the GNA path → returns None there, gracefully).
-    stress_file, vm_med = _write_stress_files(result_mesh, float(geom["t"]), work_dir)
+    # Membrane + surface von-Mises stress → two selectable results (no EFGE on
+    # the GNA path → returns empty, gracefully).
+    stress_files, stress_info = _write_stress_files(result_mesh, float(geom["t"]), work_dir)
 
     _phase("verdict")
     print()
@@ -399,13 +430,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  nearest node dist = {qoi['nodeDistance']:.4f}")
     print(f"  u_z (signed)      = {qoi['qoiValue']:+.8f}")
     print(f"  |u_z|             = {qoi['qoiAbsValue']:.8f}")
-    if vm_med is not None:
-        print(f"  σ_vm membrane (median) = {vm_med:.5g}")
+    if "membrane_median" in stress_info:
+        print(f"  σ_vm membrane (median) = {stress_info['membrane_median']:.5g}")
+        print(f"  σ_vm surface  (max)    = {stress_info['surface_max']:.5g}")
     print("(reference comparison is per-benchmark; the Hub interpreter handles it)")
 
     _write_sidecar(work_dir, model, manifest, qoi, threads=args.threads,
                    solution_file=solution_file, analysis_kind=kind,
-                   stress_file=stress_file)
+                   stress_files=stress_files)
     if solution_file:
         print(f"Viewport  : result.vtu + {solution_file} written for the 3D view")
     print(f"\nSidecar manifest written: {work_dir}/run.json")
