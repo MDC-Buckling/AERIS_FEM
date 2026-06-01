@@ -244,6 +244,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Aspect ratio L/R = {case.L / case.R:.2f}")
     sigma_cl_ref = classical_sigma_cr(case.R, case.t, case.E, case.nu)
     print(f"Classical sigma_cl = E*t/(R*sqrt(3(1-nu^2))) = {sigma_cl_ref:.8e}")
+    # Cheap DOF / cost heads-up. The dense eigensolve is ~O(nd^3); past a few
+    # thousand free DOFs it gets slow and can hit the timeout below. Warn before
+    # the (potentially long) solve so the user isn't surprised by a 30-min wait.
+    nd_est = 3 * Nx * Nt * p_deg * p_deg
+    print(f"Est. DOF (approx)  : nd ≈ 3·Nx·Nt·p² ≈ {nd_est:,}")
+    if nd_est > 9000:
+        print("  ⚠ LARGE for the DENSE solver (cost ~ O(nd³)). Expect a long run; it")
+        print("    may hit the 30-min cap. Reduce Nx·Nt (Nt dominates, ~cubically), or")
+        print("    work at R/t≈20 (set t≈R/20 — dense is validated + fast there).")
     print()
 
     build_dir = (plot_dir / ".bb_build") if plot_dir is not None else Path("/tmp/bb_build")
@@ -252,8 +261,26 @@ def main(argv: list[str] | None = None) -> int:
     _phase("solving")
     print(f"Driving BB element: closed cylinder, uniform axial N_xx, SS ends, "
           f"dense generalized eig (nmodes={nmodes}).")
-    sigma_cl, modes = run_driver(
-        exe, case.R, case.L, case.t, case.E, case.nu, Nx, Nt, p_deg, nmodes, out_dir)
+    solve_timeout = 1800
+    try:
+        sigma_cl, modes = run_driver(
+            exe, case.R, case.L, case.t, case.E, case.nu, Nx, Nt, p_deg, nmodes,
+            out_dir, timeout=solve_timeout)
+    except subprocess.TimeoutExpired:
+        # Not a bug — the dense wall. Fail with actionable guidance, not a traceback.
+        _phase("verdict")
+        print()
+        print("=" * 70)
+        print(f"TIMED OUT — dense BB eigensolve did not finish in {solve_timeout // 60} min.")
+        print("=" * 70)
+        print(f"Mesh Nx={Nx}, Nt={Nt}, p={p_deg} → ~{nd_est:,} DOF is too large for the")
+        print("dense solver (cost ~ O(nd³)). This is the known dense wall, not a bug.")
+        print("Options:")
+        print("  • reduce Nx·Nt — Nt dominates (enters cubically), or")
+        print("  • work at R/t≈20 (set t≈R/20): dense path is validated + fast there, or")
+        print("  • thin shells (R/t≫50) need the sparse eigensolver (separate upgrade).")
+        _phase("done")
+        return 2
 
     _phase("verdict")
     # The buckling load = the lowest member of the cluster (smallest sigma).
