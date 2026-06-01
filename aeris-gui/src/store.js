@@ -699,6 +699,20 @@ export const useUI = create((set) => ({
       const nextModel = { ...s.model, [key]: { ...s.model[key], sets } };
       return { model: nextModel, sectionStatus: computeModelReadiness(nextModel) };
     }),
+  /** Batch-append picked coords to the active pickTarget set (box-select). */
+  addPickedNodes: (coords) =>
+    set((s) => {
+      const t = s.pickTarget;
+      if (!t || !coords || !coords.length) return {};
+      const key = t.kind === "bc" ? "bcs" : "load";
+      const sets = (s.model[key].sets ?? []).map((x) =>
+        x.id === t.id
+          ? { ...x, region: "picked", pickedNodes: [...(x.pickedNodes ?? []), ...coords] }
+          : x
+      );
+      const nextModel = { ...s.model, [key]: { ...s.model[key], sets } };
+      return { model: nextModel, sectionStatus: computeModelReadiness(nextModel) };
+    }),
 
   /** Set the load-case preset (model.load.kind). "axial" and "bending" are
    * wired end-to-end as of Session 3.6; "torsion" / "extpress" / "intpress"
@@ -887,7 +901,7 @@ export const useUI = create((set) => ({
       // 5) Poll until terminal.
       while (true) {
         await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-        const statusRes = await fetch(`/run-status?id=${encodeURIComponent(runId)}`);
+        const statusRes = await fetch(`/run-status?id=${encodeURIComponent(runId)}&tail=65536`);
         const statusData = await statusRes.json();
         if (!statusData.ok) throw new Error(`poll failed: ${statusData.error}`);
         useUI.getState().setLastRun({
@@ -1225,7 +1239,7 @@ export const useUI = create((set) => ({
       // 3) Poll loop
       while (true) {
         await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-        const statusRes = await fetch(`/run-status?id=${encodeURIComponent(runId)}`);
+        const statusRes = await fetch(`/run-status?id=${encodeURIComponent(runId)}&tail=65536`);
         const statusData = await statusRes.json();
         if (!statusData.ok) throw new Error(`poll failed: ${statusData.error}`);
         useUI.getState().setLastRun({

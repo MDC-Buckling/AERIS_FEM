@@ -15,7 +15,7 @@ export default function PickControls({ kind, set }) {
   const active = pickTarget && pickTarget.kind === kind && pickTarget.id === set.id;
 
   return (
-    <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginBottom: 8 }}>
       <button
         onClick={() => setPickTarget(active ? null : { kind, id: set.id })}
         title="Toggle picking, then click nodes on the 3D model"
@@ -52,6 +52,14 @@ export default function PickControls({ kind, set }) {
         >
           clear
         </button>
+      )}
+      {active && (
+        <span
+          style={{ flexBasis: "100%", fontSize: 9, color: "var(--text-muted)", fontFamily: MONO }}
+        >
+          click = 1 node · <span style={{ color: "var(--accent-muted)" }}>Shift+drag</span> = box
+          (needs a generated mesh)
+        </span>
       )}
     </div>
   );

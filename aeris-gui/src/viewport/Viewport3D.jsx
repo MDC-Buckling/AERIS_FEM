@@ -64,6 +64,8 @@ function makeRampTexture(rgbBytes) {
 export default function Viewport3D() {
   const containerRef = useRef(null);
   const stateRef = useRef({});
+  // Box-select rubber-band rectangle (container-relative px), or null.
+  const [boxRect, setBoxRect] = React.useState(null);
 
   const theme = useUI((s) => s.theme);
   const mode = useUI((s) => s.mode);
@@ -382,12 +384,73 @@ export default function Viewport3D() {
     // rotate freely, click to pick. (View buttons give quick reorientation.)
     let downX = 0, downY = 0;
     const DRAG_PX = 5;
-    const onPointerDown = (e) => { downX = e.clientX; downY = e.clientY; };
+    let boxing = false, boxStart = null;
+    const relPos = (e) => {
+      const r = st.renderer.domElement.getBoundingClientRect();
+      return { r, x: e.clientX - r.left, y: e.clientY - r.top };
+    };
+
+    const onPointerDown = (e) => {
+      downX = e.clientX; downY = e.clientY;
+      // Shift+drag over an active expert pick target = rubber-band box select.
+      if (e.shiftKey && useUI.getState().pickTarget) {
+        const { x, y } = relPos(e);
+        boxing = true; boxStart = { x, y };
+        st.controls.enabled = false;       // suppress orbit during the box
+        setBoxRect({ x, y, w: 0, h: 0 });
+        e.preventDefault();
+      }
+    };
+    const onPointerMove = (e) => {
+      if (!boxing) return;
+      const { x, y } = relPos(e);
+      setBoxRect({
+        x: Math.min(boxStart.x, x), y: Math.min(boxStart.y, y),
+        w: Math.abs(x - boxStart.x), h: Math.abs(y - boxStart.y),
+      });
+    };
     const onPointerUp = (e) => {
+      if (boxing) {
+        boxing = false;
+        st.controls.enabled = true;
+        const { r, x, y } = relPos(e);
+        const x0 = Math.min(boxStart.x, x), x1 = Math.max(boxStart.x, x);
+        const y0 = Math.min(boxStart.y, y), y1 = Math.max(boxStart.y, y);
+        setBoxRect(null);
+        if (x1 - x0 < 3 || y1 - y0 < 3) return;   // accidental tiny box → ignore
+        const edges = useUI.getState().meshPreviewEdges;
+        const setStatus = useUI.getState().setStatus;
+        if (!edges || !edges.length) {
+          setStatus && setStatus("Box-select needs the FE mesh — click ‘Generate mesh’ first.");
+          return;
+        }
+        // Project every (deduped) mesh node and keep those inside the rectangle.
+        // NB: selects front AND back of the cylinder (no occlusion test in v1).
+        const seen = new Set(), picks = [];
+        const v = new THREE.Vector3();
+        for (let i = 0; i + 2 < edges.length; i += 3) {
+          const px = edges[i], py = edges[i + 1], pz = edges[i + 2];
+          const key = `${px.toFixed(3)},${py.toFixed(3)},${pz.toFixed(3)}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          v.set(px, py, pz).project(st.camera);
+          if (v.z > 1) continue;                 // behind the camera
+          const sx = (v.x * 0.5 + 0.5) * r.width, sy = (-v.y * 0.5 + 0.5) * r.height;
+          if (sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1) picks.push({ x: px, y: py, z: pz });
+        }
+        if (picks.length) {
+          useUI.getState().addPickedNodes(picks);
+          setStatus && setStatus(`Box-select: +${picks.length} node(s)`);
+        } else {
+          setStatus && setStatus("Box-select: no nodes inside the rectangle.");
+        }
+        return;
+      }
+      // Single click vs drag (orbit).
       if (Math.hypot(e.clientX - downX, e.clientY - downY) > DRAG_PX) return;
-      const rect = st.renderer.domElement.getBoundingClientRect();
-      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      const r = st.renderer.domElement.getBoundingClientRect();
+      mouse.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+      mouse.y = -((e.clientY - r.top) / r.height) * 2 + 1;
       raycaster.setFromCamera(mouse, st.camera);
       const surfaceChildren = st.meshGroup.children.filter(
         (c) => c.userData.kind === "surface"
@@ -397,8 +460,6 @@ export default function Viewport3D() {
       const pos = intersects[0].point;
       const { addPickedNode, addLoadNode, pickTarget: tgt } = useUI.getState();
       if (tgt) {
-        // Expert set: append the surface-hit coordinate (the .comm snaps it to
-        // the nearest mesh node via ENV_SPHERE).
         addPickedNode({ x: pos.x, y: pos.y, z: pos.z });
       } else {
         addLoadNode({ x: pos.x, y: pos.y, z: pos.z, fx: 0, fy: 0, fz: 0 });
@@ -407,10 +468,13 @@ export default function Viewport3D() {
 
     const el = st.renderer.domElement;
     el.addEventListener("pointerdown", onPointerDown);
+    el.addEventListener("pointermove", onPointerMove);
     el.addEventListener("pointerup", onPointerUp);
     return () => {
       el.removeEventListener("pointerdown", onPointerDown);
+      el.removeEventListener("pointermove", onPointerMove);
       el.removeEventListener("pointerup", onPointerUp);
+      st.controls.enabled = true;
     };
   }, [pickingMode, pickTarget, mode]);
 
@@ -576,7 +640,26 @@ export default function Viewport3D() {
       return out;
     };
     for (const s of loadSets ?? []) {
-      if (s.type === "pressure") continue;
+      if (s.type === "pressure") {
+        // Pressure → a grid of radial arrows on the shell showing the normal
+        // direction + sign (+p = external/inward compression, −p = outward).
+        const p = Number(s.pressure) || 0;
+        if (Math.abs(p) < 1e-12) continue;
+        const sign = p > 0 ? -1 : 1;          // +p pushes inward (toward axis)
+        const nA = 12, nZ = 4;
+        for (let iz = 0; iz <= nZ; iz++) {
+          const z = (iz / nZ) * L;
+          for (let i = 0; i < nA; i++) {
+            const th = (i / nA) * 2 * Math.PI;
+            const radial = new THREE.Vector3(Math.cos(th), Math.sin(th), 0);
+            addArrow(
+              new THREE.Vector3(R * Math.cos(th), R * Math.sin(th), z),
+              radial.multiplyScalar(sign), GREEN, false
+            );
+          }
+        }
+        continue;
+      }
       const f = s.force ?? {}, m = s.moment ?? {};
       const fvec = new THREE.Vector3(f.f1 || 0, f.f2 || 0, f.f3 || 0);
       const mvec = new THREE.Vector3(m.m1 || 0, m.m2 || 0, m.m3 || 0);
@@ -1205,14 +1288,25 @@ export default function Viewport3D() {
   }, [selectedId, resultCache, cacheResult, setStatus, showEdges, currentResults, displayField]);
 
   return (
-    <div
-      ref={containerRef}
-      style={{
-        position: "absolute",
-        inset: 0,
-        background: "transparent",
-      }}
-    />
+    <div style={{ position: "absolute", inset: 0 }}>
+      <div
+        ref={containerRef}
+        style={{ position: "absolute", inset: 0, background: "transparent" }}
+      />
+      {boxRect && (
+        <div
+          style={{
+            position: "absolute",
+            left: boxRect.x, top: boxRect.y,
+            width: boxRect.w, height: boxRect.h,
+            border: "1px solid var(--accent)",
+            background: "rgba(0,180,210,0.12)",
+            pointerEvents: "none",
+            zIndex: 7,
+          }}
+        />
+      )}
+    </div>
   );
 }
 

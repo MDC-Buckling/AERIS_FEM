@@ -87,6 +87,42 @@ export default function SolverSettings() {
 
   return (
     <>
+      {/* Thread/CPU scaling guidance — which analyses actually benefit from
+          more threads (set per job in the Run panel). Mirrors why Abaqus
+          *BUCKLE / Subspace ignore added CPUs. */}
+      <div
+        style={{
+          marginBottom: 12,
+          padding: "8px 10px",
+          background: "var(--panel-bg-soft)",
+          border: "1px dashed var(--line-soft)",
+          borderRadius: 4,
+          fontSize: 10,
+          color: "var(--text-muted)",
+          fontFamily: MONO,
+          lineHeight: 1.5,
+        }}
+      >
+        <span style={{ color: "var(--accent-muted)", fontWeight: 700 }}>
+          ⚙ Thread / CPU scaling
+        </span>{" "}
+        {analysis.kind === "lba" ? (
+          <>
+            buckling (LBA) scales <span style={{ color: "var(--warning)" }}>poorly</span> —
+            the eigensolver iteration (Lanczos/Sorensen) is largely serial; extra
+            threads only speed the matrix factorization. Same reason Abaqus
+            *BUCKLE / Subspace ignore added CPUs. A few threads (≈4) help; beyond
+            that, diminishing returns.
+          </>
+        ) : (
+          <>
+            this analysis scales <span style={{ color: "var(--success)" }}>well</span> —
+            it's dominated by the matrix factorization (MUMPS, Code_Aster FEM),
+            which parallelizes across threads. More cores = faster.
+          </>
+        )}
+      </div>
+
       {isLinear && (
         <div
           style={{
