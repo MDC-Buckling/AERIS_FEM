@@ -81,9 +81,16 @@ def main(argv: list[str] | None = None) -> int:
     area = 2.0 * math.pi * R * t
     sigma_cl = _classical_sigma_cr(E, nu, R, t)
     F_ref = sigma_cl * area
+    # Load pattern: axial (uniform) or bending (cos θ). For both, F_ref is
+    # scaled so the PEAK compressive membrane stress = σ_classical, so the
+    # reported σ_cr = λ₁·σ_cl is the critical (peak) compressive stress and the
+    # CENTRE eigensolver shift is valid for either pattern.
+    load_kind = (model.load or {}).get("kind", "axial")
+    if load_kind not in ("axial", "bending"):
+        load_kind = "axial"  # LBA reference supports axial/bending; others → axial
 
     print("=" * 70)
-    print("Aeris Code_Aster · LBA (linear buckling) · cylinder + axial")
+    print(f"Aeris Code_Aster · LBA (linear buckling) · cylinder + {load_kind}")
     print("=" * 70)
     print(f"Geometry : R={R}, L={L}, t={t}  (R/t={R / t:.0f})")
     print(f"Material : E={E}, nu={nu}")
@@ -190,7 +197,9 @@ def main(argv: list[str] | None = None) -> int:
             "n_nodes": manifest.get("n_nodes"),
             "n_elements": manifest.get("n_elements"),
         },
-        "load": {"kind": "axial", "magnitude": F_ref},
+        "load": {"kind": load_kind, "magnitude": F_ref,
+                 "note": ("σ_cr is the peak compressive membrane stress (bending)"
+                          if load_kind == "bending" else "uniform axial")},
         "analysis": {"kind": "lba", "nmodes": nmodes, "threads": int(args.threads)},
         "eigenvalues": positive[:nmodes],
         "criticalLoad": F_cr,

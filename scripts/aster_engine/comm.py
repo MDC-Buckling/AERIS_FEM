@@ -159,6 +159,15 @@ def _comm_cylinder(model: "ModelConfig", manifest: Dict[str, Any]) -> str:  # no
                         cara_vector=(0.0, 0.0, 1.0))
         return pre + picked_defi + _static_tail(_expert_char(model, gmap))
     bottom_clamp = "_F(GROUP_NO='bottom', DX=0.0, DY=0.0, DZ=0.0, DRX=0.0, DRY=0.0, DRZ=0.0)"
+    if not bool(load.get("active", True)):
+        # Load switched OFF (beginner toggle): solve with the clamp only — no
+        # force/pressure (trivial zero response, but a valid BC-only run).
+        char = f"""CHAR = AFFE_CHAR_MECA(
+    MODELE=MODE,
+    DDL_IMPO={bottom_clamp},
+)"""
+        return _preamble("shell", family, E, nu, thickness, ["bottom"],
+                         cara_vector=(0.0, 0.0, 1.0)) + _static_tail(char)
     if kind == "axial":
         n_top = int(manifest.get("top_node_count", 0))
         if n_top <= 0:
@@ -435,6 +444,32 @@ def build_comm_buckling(model: "ModelConfig", manifest: Dict[str, Any],  # noqa:
     # critical load factor λ₁ ≈ 1 — the eigensolver finds it near 1 instead of
     # at ~thousands (where OPTION='PLUS_PETITE' returns 0 modes).
     fz_node = -float(f_ref) / n_top
+    # Reference-load pattern for the pre-buckling stress. The eigenvalue is the
+    # critical multiplier of THIS pattern, so it sets axial vs bending buckling.
+    R = float(cyl["R"])
+    load_kind = (model.load or {}).get("kind", "axial")
+    if load_kind == "bending":
+        # Bending = linear axial traction FZ ∝ X (cos θ): compression on −X,
+        # tension on +X, zero net axial → a pure bending moment. Scaled so the
+        # PEAK compressive membrane stress equals σ_classical (coef = f_ref/(n·R)
+        # → |FZ|_peak = f_ref/n → σ_peak = σ_cl), so λ₁≈1 and the CENTRE shift
+        # at 1.2 still brackets the cluster — and the perfect-shell bending
+        # critical stress equals the axial classical (compression-fibre rule).
+        coef = float(f_ref) / (n_top * R)
+        load_block = (
+            "FZB = FORMULE(NOM_PARA=('X', 'Y'), VALE='%.10g*X')\n"
+            "CHLO = AFFE_CHAR_MECA_F(\n"
+            "    MODELE=MODE,\n"
+            "    FORCE_NODALE=_F(GROUP_NO='top', FZ=FZB),\n"
+            ")"
+        ) % coef
+    else:
+        load_block = (
+            "CHLO = AFFE_CHAR_MECA(\n"
+            "    MODELE=MODE,\n"
+            "    FORCE_NODALE=_F(GROUP_NO='top', FZ=%.10g),\n"
+            ")"
+        ) % fz_node
     # VECTEUR=(0,0,1): the cylinder axis is tangent to the shell everywhere, so
     # the local frame is well-defined (default global-X projection is normal to
     # the surface at θ=0 → PLATE1_40). Needed once SIEF_ELGA is computed.
@@ -472,10 +507,7 @@ CHBC = AFFE_CHAR_MECA(
 {bc_ddl}
     ),
 )
-CHLO = AFFE_CHAR_MECA(
-    MODELE=MODE,
-    FORCE_NODALE=_F(GROUP_NO='top', FZ={fz_node:.10g}),
-)
+{load_block}
 
 RESU = MECA_STATIQUE(
     MODELE=MODE, CHAM_MATER=CHMAT, CARA_ELEM=CARA,
