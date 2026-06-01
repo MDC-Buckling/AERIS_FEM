@@ -292,6 +292,35 @@ _BUCKLING_BC = {
 }
 
 
+# Expert-mode component → Code_Aster nodal DOF (global Cartesian frame).
+_EXPERT_DOF_MAP = {"u1": "DX", "u2": "DY", "u3": "DZ",
+                   "ur1": "DRX", "ur2": "DRY", "ur3": "DRZ"}
+
+
+def _expert_ddl_impo(model: "ModelConfig") -> str:  # noqa: F821
+    """Build DDL_IMPO _F blocks from expert bcs.sets (Abaqus-style per-region
+    component constraints). Each set binds a named region (→ GROUP_NO) to its
+    constrained components — dof null = free (omitted), a number = prescribed
+    value (0 = clamped) — in the GLOBAL Cartesian frame (u1→DX … ur3→DRZ; the
+    cylindrical-frame option is a later phase). Returns the 8-space-indented
+    block spliced into DDL_IMPO=( ... )."""
+    blocks = []
+    for s in model.bcs.get("sets", []) or []:
+        region = s.get("region")
+        dofs = s.get("dofs", {}) or {}
+        terms = [f"{_EXPERT_DOF_MAP[c]}={float(v):.10g}"
+                 for c, v in dofs.items()
+                 if c in _EXPERT_DOF_MAP and v is not None]
+        if region and terms:
+            blocks.append(f"        _F(GROUP_NO='{region}', {', '.join(terms)}),")
+    if not blocks:
+        raise SystemExit(
+            "expert BC: no set with a constrained component — add a BC set or "
+            "switch to beginner mode."
+        )
+    return "\n".join(blocks)
+
+
 def build_comm_buckling(model: "ModelConfig", manifest: Dict[str, Any],  # noqa: F821
                         work_dir: str = "/work", nmodes: int = 5,
                         f_ref: float = 1.0) -> str:
@@ -332,16 +361,23 @@ def build_comm_buckling(model: "ModelConfig", manifest: Dict[str, Any],  # noqa:
     # bcs.kind may still carry an IGA-vocabulary value (e.g. 'clamped_neumann')
     # if the user came from the NURBS engine — those have no FEM meaning, so map
     # them to the classical SS-SS case. See _BUCKLING_BC for the DOF each sets.
-    bc_kind = (model.bcs or {}).get("kind", "ss_both")
-    if bc_kind not in _BUCKLING_BC:
-        bc_kind = "ss_both"
-    bc = _BUCKLING_BC[bc_kind]
+    if (model.uiMode or "beginner") == "expert" and (model.bcs.get("sets")):
+        # Expert mode: per-region component constraints from bcs.sets.
+        bc_doc = "EXPERT per-region component constraints (bcs.sets)"
+        bc_ddl = _expert_ddl_impo(model)
+    else:
+        bc_kind = (model.bcs or {}).get("kind", "ss_both")
+        if bc_kind not in _BUCKLING_BC:
+            bc_kind = "ss_both"
+        bc = _BUCKLING_BC[bc_kind]
+        bc_doc = f"preset '{bc_kind}': {bc['doc']}"
+        bc_ddl = bc["ddl"]
     return pre + f"""
-# Boundary condition preset '{bc_kind}': {bc['doc']}
+# Boundary condition — {bc_doc}
 CHBC = AFFE_CHAR_MECA(
     MODELE=MODE,
     DDL_IMPO=(
-{bc['ddl']}
+{bc_ddl}
     ),
 )
 CHLO = AFFE_CHAR_MECA(

@@ -186,6 +186,12 @@ DEFAULT_BCS: Dict[str, Any] = {
     # shell-normal rotation). Top (boundary 4): Neumann line force (0,0,T).
     # See feedback_gismo_xml_quirks.md: a TRUE engineering clamp needs BOTH
     # Dirichlet AND `<bc type="Clamped">`, not Dirichlet alone.
+    #
+    # Expert mode (uiMode='expert') ignores `kind` and uses `sets`: a list of
+    #   {id, name, region, frame, dofs:{u1,u2,u3,ur1,ur2,ur3}} — each dof null
+    #   (free) or a number (prescribed; 0 = clamped). region ∈ named groups
+    #   (bottom/top/shell). See aster_engine/comm.py::_expert_ddl_impo.
+    "sets": [],
 }
 
 DEFAULT_LOAD: Dict[str, Any] = {
@@ -322,6 +328,10 @@ class Case:
 @dataclass
 class ModelConfig:
     name: str = "Cylinder LBA"
+    # "beginner" (preset bcs.kind/load.kind) | "expert" (per-region component
+    # constraints in bcs.sets — Abaqus-style). The solver reads this to decide
+    # whether to dispatch the preset BC or the expert sets.
+    uiMode: str = "beginner"
     geometry: Dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_GEOMETRY))
     materials: list = field(
         default_factory=lambda: [dict(m) for m in DEFAULT_MATERIALS]
@@ -404,6 +414,7 @@ class ModelConfig:
         }
         return cls(
             name=d.get("name", "Cylinder LBA"),
+            uiMode=d.get("uiMode", "beginner"),
             geometry={**DEFAULT_GEOMETRY, **d.get("geometry", {})},
             materials=list(d.get("materials") or [dict(m) for m in DEFAULT_MATERIALS]),
             sections=list(d.get("sections") or [dict(s) for s in DEFAULT_SECTIONS]),
@@ -426,6 +437,7 @@ class ModelConfig:
         return {
             "schemaVersion": self.schemaVersion,
             "name": self.name,
+            "uiMode": self.uiMode,
             "geometry": self.geometry,
             "materials": self.materials,
             "sections": self.sections,

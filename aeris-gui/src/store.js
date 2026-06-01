@@ -218,7 +218,14 @@ export const useUI = create((set) => ({
       refinement: 5, degree: 3, smoothness: 2,
       coupling: "gsSmoothInterfaces",
     },
-    bcs: { kind: "clamped_neumann" },
+    // uiMode: "beginner" = preset BCs/loads (bcs.kind / load.kind);
+    // "expert" = Abaqus-style per-region component constraints (bcs.sets).
+    uiMode: "beginner",
+    // bcs.kind drives beginner mode; bcs.sets drives expert mode. Each set:
+    //   { id, name, region: "top"|"bottom"|"shell", frame: "global"|"cyl",
+    //     dofs: { u1,u2,u3,ur1,ur2,ur3 } }  — each dof null=free or a number
+    //     (prescribed displacement/rotation; 0 = clamped).
+    bcs: { kind: "clamped_neumann", sets: [] },
     // ABAQUS-LBA convention: magnitude is the applied F (axial) or M (bending)
     // in the user's consistent unit system. Default 1 means the eigenvalue
     // reads as the critical load directly (multiply by your real applied
@@ -577,6 +584,48 @@ export const useUI = create((set) => ({
         model: nextModel,
         sectionStatus: computeModelReadiness(nextModel),
       };
+    }),
+
+  /** Beginner ↔ Expert mode (model.uiMode). Beginner = preset BCs/loads;
+   * Expert = Abaqus-style per-region component constraints (bcs.sets). */
+  setUiMode: (mode) =>
+    set((s) => {
+      const nextModel = { ...s.model, uiMode: mode };
+      return { model: nextModel, sectionStatus: computeModelReadiness(nextModel) };
+    }),
+
+  /** Expert-mode BC set CRUD (model.bcs.sets). A "set" binds one geometry
+   * region to a 6-component constraint (u1..u3, ur1..ur3 — null=free, number=
+   * prescribed value, 0=clamped). */
+  addBcSet: () =>
+    set((s) => {
+      const n = (s.model.bcs.sets ?? []).length + 1;
+      const set_ = {
+        id: `bc-${Date.now()}`,
+        name: `BC-${n}`,
+        region: "bottom",
+        frame: "global",
+        dofs: { u1: 0, u2: 0, u3: 0, ur1: null, ur2: null, ur3: null },
+      };
+      const nextModel = {
+        ...s.model,
+        bcs: { ...s.model.bcs, sets: [...(s.model.bcs.sets ?? []), set_] },
+      };
+      return { model: nextModel, sectionStatus: computeModelReadiness(nextModel) };
+    }),
+  updateBcSet: (id, patch) =>
+    set((s) => {
+      const sets = (s.model.bcs.sets ?? []).map((b) =>
+        b.id === id ? { ...b, ...patch } : b
+      );
+      const nextModel = { ...s.model, bcs: { ...s.model.bcs, sets } };
+      return { model: nextModel, sectionStatus: computeModelReadiness(nextModel) };
+    }),
+  removeBcSet: (id) =>
+    set((s) => {
+      const sets = (s.model.bcs.sets ?? []).filter((b) => b.id !== id);
+      const nextModel = { ...s.model, bcs: { ...s.model.bcs, sets } };
+      return { model: nextModel, sectionStatus: computeModelReadiness(nextModel) };
     }),
 
   /** Set the load-case preset (model.load.kind). "axial" and "bending" are

@@ -2,6 +2,12 @@ import React from "react";
 import ToggleGroup from "../../components/ui/ToggleGroup.jsx";
 import { MONO } from "../../constants.js";
 import { useUI } from "../../store.js";
+import ExpertBcEditor from "./ExpertBcEditor.jsx";
+
+const MODE_OPTIONS = [
+  ["beginner", "Beginner"],
+  ["expert", "Expert"],
+];
 
 /** Functional inspector for BOUNDARY CONDITIONS & LOADS > Boundary Conditions.
  *
@@ -125,6 +131,8 @@ export default function BcsKind() {
   const bcs = useUI((s) => s.model.bcs);
   const engine = useUI((s) => s.model.solver?.engine) ?? "gismo";
   const setKind = useUI((s) => s.setBcsKind);
+  const uiMode = useUI((s) => s.model.uiMode) ?? "beginner";
+  const setUiMode = useUI((s) => s.setUiMode);
 
   const isFem = engine === "code_aster";
   const options = isFem ? FEM_OPTIONS : IGA_OPTIONS;
@@ -147,6 +155,31 @@ export default function BcsKind() {
 
   return (
     <>
+      {/* Beginner ↔ Expert mode toggle — controls BC (and, from Phase 2, Load)
+          across the whole BCs & Loads section. */}
+      <div style={{ marginBottom: 12 }}>
+        <div
+          style={{
+            color: "var(--text-secondary)",
+            fontSize: 10.5,
+            fontFamily: MONO,
+            marginBottom: 4,
+          }}
+        >
+          Mode
+        </div>
+        <ToggleGroup
+          options={MODE_OPTIONS}
+          value={uiMode}
+          onChange={setUiMode}
+          fullWidth
+        />
+      </div>
+
+      {uiMode === "expert" ? (
+        <ExpertBcEditor />
+      ) : (
+      <>
       <div style={{ marginBottom: 9 }}>
         <div
           style={{
@@ -206,6 +239,8 @@ export default function BcsKind() {
           {info.note}
         </div>
       </div>
+      </>
+      )}
     </>
   );
 }
