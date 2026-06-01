@@ -337,6 +337,29 @@ function BbPanel({ bb, setBb, cyl }) {
 
   return (
     <>
+      <div
+        style={{
+          marginBottom: 11,
+          padding: "9px 11px",
+          background: "var(--panel-bg-soft)",
+          border: "1px solid var(--line-soft)",
+          borderRadius: 5,
+          fontFamily: MONO,
+          fontSize: 9.5,
+          color: "var(--text-muted)",
+          lineHeight: 1.5,
+        }}
+      >
+        <div style={{ color: "var(--text-secondary)", fontWeight: 700, marginBottom: 4, fontSize: 10 }}>
+          Choosing the four parameters
+        </div>
+        <div><b style={{ color: "var(--accent-muted)" }}>p</b> — leave at 5 (locking-safe, Ludwig). Higher rarely pays off; lower risks membrane locking.</div>
+        <div><b style={{ color: "var(--accent-muted)" }}>Nx</b> — ~4 for L/R≈1; scale with L/R for longer cylinders.</div>
+        <div><b style={{ color: "var(--accent-muted)" }}>Nt</b> — the critical one: resolve n_cr≈√(R/t) → Nt ≳ 2.2·n_cr. Watch the warning below.</div>
+        <div><b style={{ color: "var(--accent-muted)" }}>N</b> — 8 captures the Koiter cluster; raise only to inspect more modes.</div>
+        <div style={{ marginTop: 4 }}>Dense solve → keep R/t ≈ 20 (set t≈R/20 in Geometry). Cost grows ≈ (Nx·Nt·p²)³.</div>
+      </div>
+
       <NumberField
         label="Bernstein degree  (p — triangle polynomial order)"
         symbol="p"
@@ -351,38 +374,33 @@ function BbPanel({ bb, setBb, cyl }) {
         hint="p=5 is the validated default — Ludwig 9.3.2: p≥5 avoids membrane locking on arbitrary triangulations. The element carries 2nd derivatives (rotation-free KL)."
       />
 
-      <div style={{ display: "flex", gap: 8 }}>
-        <div style={{ flex: 1 }}>
-          <NumberField
-            label="Axial elements"
-            symbol="Nx"
-            unit="–"
-            value={Nx}
-            onChange={(v) => setBb("Nx", v)}
-            min={2}
-            max={16}
-            step={1}
-            precision={0}
-            showRange
-            hint="number of quad cells along the cylinder axis (each split into 2 BB triangles)"
-          />
-        </div>
-        <div style={{ flex: 1 }}>
-          <NumberField
-            label="Circumferential elements"
-            symbol="Nt"
-            unit="–"
-            value={Nt}
-            onChange={(v) => setBb("Nt", v)}
-            min={4}
-            max={48}
-            step={1}
-            precision={0}
-            showRange
-            hint="cells around the circumference — must resolve the short n_cr≈√(R/t) wave of the critical mode"
-          />
-        </div>
-      </div>
+      <NumberField
+        label="Axial elements  (Nx — cells along the axis)"
+        symbol="Nx"
+        unit="–"
+        value={Nx}
+        onChange={(v) => setBb("Nx", v)}
+        min={2}
+        max={16}
+        step={1}
+        precision={0}
+        showRange
+        hint="along the cylinder length (each quad cell → 2 BB triangles). ~4 is enough for L/R≈1; scale up roughly with L/R for long cylinders."
+      />
+
+      <NumberField
+        label="Circumferential elements  (Nt — cells around)"
+        symbol="Nt"
+        unit="–"
+        value={Nt}
+        onChange={(v) => setBb("Nt", v)}
+        min={4}
+        max={48}
+        step={1}
+        precision={0}
+        showRange
+        hint="the key knob: must resolve the short n_cr≈√(R/t) wave → Nt ≳ 2.2·n_cr. The box below warns when it's too coarse."
+      />
 
       <NumberField
         label="Modes to report  (lowest cluster size)"
