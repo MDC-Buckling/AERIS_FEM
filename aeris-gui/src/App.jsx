@@ -159,12 +159,13 @@ export default function App() {
             display: "grid",
             gridTemplateColumns: (() => {
               if (mode !== "pre") return "400px minmax(640px, 1.15fr) 400px";
-              const hasModels = expandedLeftPanels.has("models");
-              const hasTree = expandedLeftPanels.has("tree");
-              if (hasModels && hasTree) return "280px 400px minmax(640px, 1.15fr) 400px";
-              if (hasModels) return "280px minmax(640px, 1.15fr) 400px";
-              if (hasTree) return "400px minmax(640px, 1.15fr) 400px";
-              return "minmax(640px, 1.15fr) 400px";
+              // Abaqus-style: ONE left column (model list stacked above the
+              // model tree), not two side-by-side — keeps the left narrow.
+              const hasLeft = expandedLeftPanels.has("models")
+                || expandedLeftPanels.has("tree");
+              return hasLeft
+                ? "340px minmax(640px, 1.15fr) 400px"
+                : "minmax(640px, 1.15fr) 400px";
             })(),
             gridTemplateRows: "1fr",
             gap: 18,
@@ -172,8 +173,26 @@ export default function App() {
             minHeight: 0,
           }}
         >
-          {mode === "pre" && expandedLeftPanels.has("models") && <ModelsPanel />}
-          {mode === "pre" && expandedLeftPanels.has("tree") ? <ModelTreePanel /> : mode !== "pre" ? <ResultsPanel /> : null}
+          {mode === "pre"
+            ? ((expandedLeftPanels.has("models") || expandedLeftPanels.has("tree")) && (
+                <div
+                  style={{
+                    display: "grid",
+                    // models list on top (capped), model tree fills the rest —
+                    // both stretch to their row cell like the outer grid does.
+                    gridTemplateRows:
+                      expandedLeftPanels.has("models") && expandedLeftPanels.has("tree")
+                        ? "minmax(120px, 240px) 1fr"
+                        : "1fr",
+                    gap: 12,
+                    minHeight: 0,
+                  }}
+                >
+                  {expandedLeftPanels.has("models") && <ModelsPanel />}
+                  {expandedLeftPanels.has("tree") && <ModelTreePanel />}
+                </div>
+              ))
+            : <ResultsPanel />}
 
           {/* Central viewport is shared between pre and post. */}
           <div
