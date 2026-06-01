@@ -225,7 +225,16 @@ export default function ModelsPanel() {
           className="model-action-btn"
           onClick={() => toggleLeftPanel("models")}
           title="Collapse the Models panel"
-          style={{ opacity: 0.75 }}
+          style={{
+            color: "var(--accent)",
+            background: "rgba(0,180,210,0.12)",
+            border: "1px solid var(--accent)",
+            borderRadius: 5,
+            fontWeight: 700,
+            letterSpacing: 0.05,
+            textShadow: "var(--shadow-accent)",
+            boxShadow: "0 0 10px rgba(0,180,210,0.30)",
+          }}
         >
           ⌃ Collapse
         </button>
