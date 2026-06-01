@@ -19,21 +19,29 @@ import { useUI } from "../../store.js";
  * bit the Session-3.3 large-E audit. Eigenvalues are then NORMALISED:
  * σ_cr_computed = |λ_1| · E. */
 
-const LOAD_OPTIONS = [
-  ["axial",   "Axial Compression"],
-  ["bending", "Bending"],
-  ["gravity", "Gravity (body force)"],
-  ["point_load", "Point load (concentrated)",
-    { title: "concentrated load(s) at specified node(s). Positions set per-benchmark in the catalog." }],
-  ["torsion", "Torsion",
-    { disabled: true, title: "needs an N·t shear-Neumann pattern on the top edge and a Donnell-style classical reference — not wired yet" }],
-  ["extpress", "External Pressure",
-    { disabled: true, title: "uniform pressure load (body / surface), different classical (Batdorf z-parameter) — not wired yet" }],
-  ["intpress", "Internal Pressure",
-    { disabled: true, title: "stabilising for axial buckling — needs combined-load path first" }],
-  ["combined", "Combined",
-    { disabled: true, title: "axial + bending + pressure superposition — needs each individual case wired first" }],
-];
+/** Load options depend on the engine: External Pressure is wired in the
+ * Code_Aster engine for the cylinder (uniform lateral PRES_REP → membrane
+ * hoop σ=pR/t, validated 0.26%). The IGA path doesn't have it yet, so it
+ * stays disabled there. */
+function loadOptions(engine, shape) {
+  const caCyl = engine === "code_aster" && shape === "cylinder";
+  return [
+    ["axial",   "Axial Compression"],
+    ["bending", "Bending"],
+    ["gravity", "Gravity (body force)"],
+    ["point_load", "Point load (concentrated)",
+      { title: "concentrated load(s) at specified node(s). Positions set per-benchmark in the catalog." }],
+    ["torsion", "Torsion",
+      { disabled: true, title: "needs an N·t shear-Neumann pattern on the top edge and a Donnell-style classical reference — not wired yet" }],
+    ["extpress", "External Pressure", caCyl
+      ? { title: "uniform lateral pressure on the shell (Code_Aster) → membrane hoop σ_θ = pR/t" }
+      : { disabled: true, title: "Code_Aster engine + cylinder only — switch the engine in MESH / DISCRETISATION" }],
+    ["intpress", "Internal Pressure",
+      { disabled: true, title: "stabilising for axial buckling — needs combined-load path first" }],
+    ["combined", "Combined",
+      { disabled: true, title: "axial + bending + pressure superposition — needs each individual case wired first" }],
+  ];
+}
 
 // Brief one-liner for each load (shown in the derived block below the
 // selector so the user knows what the solver will actually do with the
@@ -78,11 +86,19 @@ const MAGNITUDE_META = {
     step: 0.1,
     hint: "force magnitude at each load point in your consistent unit system. Positions set by the benchmark; see the catalog entry for which nodes are loaded.",
   },
+  extpress: {
+    symbol: "p",
+    label: "Applied pressure  (p)",
+    step: 0.1,
+    hint: "uniform lateral pressure in your consistent unit system. Code_Aster forms the membrane hoop σ_θ = pR/t; set p to your real external pressure.",
+  },
 };
 
 export default function LoadCase() {
   const load = useUI((s) => s.model.load);
   const analysisKind = useUI((s) => s.model.analysis.kind);
+  const engine = useUI((s) => s.model.solver?.engine ?? "gismo");
+  const shape = useUI((s) => s.model.geometry.shape);
   const pickingMode = useUI((s) => s.pickingMode);
   const setKind = useUI((s) => s.setLoadKind);
   const setMagnitude = useUI((s) => s.setLoadMagnitude);
@@ -125,7 +141,7 @@ export default function LoadCase() {
           Load type
         </div>
         <ToggleGroup
-          options={LOAD_OPTIONS}
+          options={loadOptions(engine, shape)}
           value={load.kind}
           onChange={setKind}
           fullWidth
