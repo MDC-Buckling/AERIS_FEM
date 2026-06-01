@@ -52,12 +52,22 @@ export default function ModelsPanel() {
       ],
       assignments: [{ region: 'shell_full', section_ref: 'shell_full' }],
       mesh: { refinement: 3, degree: 2, smoothness: 1, coupling: 0 },
-      bcs: { kind: 'clamped_neumann' },
-      load: { kind: 'axial', magnitude: 100, controlMode: 'force', nodes: [] },
+      uiMode: 'beginner',
+      solver: { engine: 'gismo' },
+      discretization: {
+        gismo: { refinement: 3, degree: 2, smoothness: 1, coupling: 'gsSmoothInterfaces' },
+        code_aster: { element_family: 'DKT', element_shape: 'quad', technique: 'free', mesh_size: 5, order: 1 },
+      },
+      bcs: { kind: 'clamped_neumann', sets: [] },
+      load: { kind: 'axial', magnitude: 100, controlMode: 'force', nodes: [], sets: [], active: false },
       analysis: { kind: 'lba', solver: 'auto', shift: 0.05, nmodes: 5, tolerance: 1e-6 },
       imperfections: { kind: 'none', mode: 1, amplitude: 0 },
     };
-    saveModel(name, defaultModel);
+    // Create AND open/select the new model, so the very next "Save" UPDATES it
+    // (not create another) and it has a list row that can be renamed.
+    const result = saveModel(name, defaultModel);
+    openModel(result.id);
+    setSelectedModelId(result.id);
     setShowNewDialog(false);
     setNewModelName('');
   };
@@ -172,6 +182,17 @@ export default function ModelsPanel() {
                     </div>
                   </div>
                   <div className="models-item-actions" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      className="models-action"
+                      onClick={() => {
+                        updateModel(m.id, serializeModel());
+                        setSelectedModelId(m.id);
+                      }}
+                      title="Save current edits into this model"
+                      style={{ color: "var(--accent)" }}
+                    >
+                      💾
+                    </button>
                     <button
                       className="models-action"
                       onClick={() => handleStartRename(m.id, m.name)}

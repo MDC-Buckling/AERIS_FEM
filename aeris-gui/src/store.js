@@ -247,7 +247,11 @@ export const useUI = create((set) => ({
     //   [{ id, name, region, type:"force"|"pressure", frame,
     //      force:{f1,f2,f3}, moment:{m1,m2,m3}, pressure }]
     // (force/moment = per-node nodal components; pressure = uniform on region).
-    load: { kind: "axial", magnitude: 1.0, controlMode: "force", nodes: [], sets: [] },
+    // Default ships with NO load active — a fresh model shouldn't display a
+    // load the user never set. They flip "Active" (or add an expert set) when
+    // they actually want one. (LBA still uses the load as buckling reference
+    // regardless, so the eigenvalue path is unaffected.)
+    load: { kind: "axial", magnitude: 1.0, controlMode: "force", nodes: [], sets: [], active: false },
     analysis: {
       kind: "lba",
       nmodes: 5,
@@ -703,6 +707,18 @@ export const useUI = create((set) => ({
   setLoadKind: (kind) =>
     set((s) => {
       const nextModel = { ...s.model, load: { ...s.model.load, kind } };
+      return {
+        model: nextModel,
+        sectionStatus: computeModelReadiness(nextModel),
+      };
+    }),
+
+  /** Toggle the beginner-mode load on/off. Inactive → the solver applies no
+   * force/pressure (static/GNA solve with BCs only). LBA always uses the load
+   * as its buckling reference, so this flag is moot there. */
+  setLoadActive: (active) =>
+    set((s) => {
+      const nextModel = { ...s.model, load: { ...s.model.load, active } };
       return {
         model: nextModel,
         sectionStatus: computeModelReadiness(nextModel),
@@ -1425,15 +1441,20 @@ export const useUI = create((set) => ({
   renameModel: (id, newName) => {
     if (!newName || !newName.trim()) return { ok: false, error: "Name cannot be empty" };
     set((s) => {
+      const nm = newName.trim();
       const updated = s.models.map((m) =>
-        m.id === id ? { ...m, name: newName.trim() } : m
+        m.id === id ? { ...m, name: nm } : m
       );
       try {
         window.localStorage.setItem("aeris_models", JSON.stringify(updated));
       } catch (e) {
         console.error("Failed to rename model:", e);
       }
-      return { models: updated };
+      const patch = { models: updated };
+      // If the renamed model is the one open in the editor, reflect the new
+      // name in the live model too (the tree/title reads model.name).
+      if (s.selectedModelId === id) patch.model = { ...s.model, name: nm };
+      return patch;
     });
     return { ok: true };
   },

@@ -109,6 +109,7 @@ export default function LoadCase() {
   const uiMode = useUI((s) => s.model.uiMode) ?? "beginner";
   const setUiMode = useUI((s) => s.setUiMode);
   const setKind = useUI((s) => s.setLoadKind);
+  const setLoadActive = useUI((s) => s.setLoadActive);
   const setMagnitude = useUI((s) => s.setLoadMagnitude);
   const setControlMode = useUI((s) => s.setLoadControlMode);
   const setPickingMode = useUI((s) => s.setPickingMode);
@@ -149,7 +150,24 @@ export default function LoadCase() {
         <ExpertLoadEditor />
       ) : (
       <>
-      <div style={{ marginBottom: 9 }}>
+      {/* Load on/off — inactive = solver applies no force/pressure (static/GNA
+          run with BCs only). LBA always uses the load as buckling reference. */}
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ color: "var(--text-secondary)", fontSize: 10.5, fontFamily: MONO, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
+          <span>Load state</span>
+          {analysisKind === "lba" && (
+            <span style={{ color: "var(--accent-muted)", fontSize: 9 }}>LBA uses load as reference</span>
+          )}
+        </div>
+        <ToggleGroup
+          options={[["active", "● Active"], ["inactive", "○ Inactive"]]}
+          value={load.active === false ? "inactive" : "active"}
+          onChange={(v) => setLoadActive(v === "active")}
+          fullWidth
+        />
+      </div>
+
+      <div style={{ marginBottom: 9, opacity: load.active === false ? 0.5 : 1 }}>
         <div
           style={{
             color: "var(--text-secondary)",

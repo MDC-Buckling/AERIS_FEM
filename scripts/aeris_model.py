@@ -205,6 +205,9 @@ DEFAULT_LOAD: Dict[str, Any] = {
     # numerical conditioning (see build_cylinder_xml) — magnitude here is
     # purely a verdict-side scaling, the eigenvalue is invariant.
     "magnitude": 1.0,
+    # Beginner-mode on/off switch: active=False → static/GNA apply no load
+    # (BCs only). LBA ignores it (the load is the buckling reference).
+    "active": True,
     # Expert mode (uiMode='expert') uses `sets` instead of kind/magnitude:
     #   [{id, name, region, type:"force"|"pressure", frame, force:{f1,f2,f3},
     #     moment:{m1,m2,m3}, pressure}] — force/moment = per-node components,
