@@ -88,6 +88,13 @@ def main(argv: list[str] | None = None) -> int:
     load_kind = (model.load or {}).get("kind", "axial")
     if load_kind not in ("axial", "bending"):
         load_kind = "axial"  # LBA reference supports axial/bending; others → axial
+    # Expert mode with load.sets → the buckling reference IS that arbitrary load
+    # pattern (no classical σ_cl to compare to); the .comm uses PLUS_PETITE and
+    # the eigenvalue λ₁ is the critical MULTIPLIER of the user's applied load.
+    expert_load = (getattr(model, "uiMode", "beginner") == "expert"
+                   and bool((model.load or {}).get("sets")))
+    if expert_load:
+        load_kind = "expert"
 
     print("=" * 70)
     print(f"Aeris Code_Aster · LBA (linear buckling) · cylinder + {load_kind}")
@@ -133,9 +140,14 @@ def main(argv: list[str] | None = None) -> int:
     if not positive:
         raise RuntimeError(f"no positive critical load factor in {lambdas}")
     lam1 = positive[0]
-    F_cr = lam1 * F_ref
-    sigma_cr = F_cr / area
-    ratio = sigma_cr / sigma_cl
+    if expert_load:
+        # Arbitrary load pattern → λ₁ is the critical MULTIPLIER of the user's
+        # applied load; there's no single σ_cr / classical to compare against.
+        F_cr = sigma_cr = ratio = None
+    else:
+        F_cr = lam1 * F_ref
+        sigma_cr = F_cr / area
+        ratio = sigma_cr / sigma_cl
 
     # Convert each per-mode MED (written by the .comm's IMPR_RESU loop) into a
     # viewport-renderable .vtu (+.pvd) and assemble the modes[] list the
@@ -166,7 +178,10 @@ def main(argv: list[str] | None = None) -> int:
             "pvd": pvd,
             "label": f"Buckling mode {k}",
             "lambda": lam_k,
-            "sigmaComputed": (lam_k * sigma_cl) if lam_k is not None else None,
+            # Expert load: λ_k is a load factor (no σ comparison). Beginner:
+            # σ_cr,k = λ_k·σ_cl (peak compressive stress).
+            "sigmaComputed": None if expert_load
+                             else ((lam_k * sigma_cl) if lam_k is not None else None),
         })
     print(f"  wrote {len(modes)} mode shape(s) → mode*.vtu")
 
@@ -177,10 +192,15 @@ def main(argv: list[str] | None = None) -> int:
     print("=" * 70)
     print(f"Critical load factors λ : {[round(x, 6) for x in positive[:nmodes]]}")
     print(f"λ₁ (first mode)         : {lam1:.6g}")
-    print(f"F_cr = λ₁·F_ref         : {F_cr:.6g}   (F_ref={F_ref})")
-    print(f"σ_cr = F_cr/(2πRt)      : {sigma_cr:.6g}")
-    print(f"σ_classical (Lorenz)    : {sigma_cl:.6g}")
-    print(f"σ_cr / σ_classical      : {ratio:.4f}")
+    if expert_load:
+        print("Load pattern            : EXPERT (per-region load.sets)")
+        print(f"Critical load factor    : {lam1:.6g}  "
+              f"→ buckles at λ₁ × your applied load (no classical σ_cr to compare).")
+    else:
+        print(f"F_cr = λ₁·F_ref         : {F_cr:.6g}   (F_ref={F_ref})")
+        print(f"σ_cr = F_cr/(2πRt)      : {sigma_cr:.6g}")
+        print(f"σ_classical (Lorenz)    : {sigma_cl:.6g}")
+        print(f"σ_cr / σ_classical      : {ratio:.4f}")
 
     run_json = {
         "schemaVersion": 1,
@@ -197,21 +217,27 @@ def main(argv: list[str] | None = None) -> int:
             "n_nodes": manifest.get("n_nodes"),
             "n_elements": manifest.get("n_elements"),
         },
-        "load": {"kind": load_kind, "magnitude": F_ref,
-                 "note": ("σ_cr is the peak compressive membrane stress (bending)"
+        "load": {"kind": load_kind,
+                 "magnitude": (None if expert_load else F_ref),
+                 "note": ("λ₁ = critical multiplier of your applied expert load"
+                          if expert_load
+                          else "σ_cr is the peak compressive membrane stress (bending)"
                           if load_kind == "bending" else "uniform axial")},
         "analysis": {"kind": "lba", "nmodes": nmodes, "threads": int(args.threads)},
         "eigenvalues": positive[:nmodes],
         "criticalLoad": F_cr,
         "criticalStress": sigma_cr,
-        "classicalStress": sigma_cl,
+        "classicalStress": (None if expert_load else sigma_cl),
         "stressRatio": ratio,
+        "criticalLoadFactor": lam1,
         "files": {"mess": "study.mess"},
         "modes": modes,
         "verdict": {
             "lambda1": lam1,
+            "criticalLoadFactor": lam1,
+            "expertLoad": bool(expert_load),
             "criticalStress": sigma_cr,
-            "classicalStress": sigma_cl,
+            "classicalStress": (None if expert_load else sigma_cl),
             "stressRatio": ratio,
             "solverOk": True,
         },

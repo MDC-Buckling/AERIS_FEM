@@ -458,6 +458,39 @@ def _expert_char(model: "ModelConfig", gmap=None) -> str:  # noqa: F821
     return "CHAR = AFFE_CHAR_MECA(\n    MODELE=MODE,\n" + "\n".join(lines) + "\n)"
 
 
+def _expert_load_char(model: "ModelConfig", gmap=None) -> str:  # noqa: F821
+    """LOAD-only CHLO for the buckling pre-stress in expert mode: FORCE_NODALE
+    (f1→FX … m3→MZ) + PRES_REP from load.sets (no DDL_IMPO — the BC is the
+    separate CHBC). The eigenvalue is then the critical multiplier of THIS
+    load pattern. Returns 'CHLO = AFFE_CHAR_MECA(...)'."""
+    forces, pres = [], []
+    for s in (model.load.get("sets") or []):
+        region = s.get("region")
+        if not region:
+            continue
+        if s.get("type") == "pressure":
+            pres.append(f"_F(GROUP_MA='{region}', PRES={float(s.get('pressure') or 0):.10g})")
+        else:
+            comps = {**(s.get("force") or {}), **(s.get("moment") or {})}
+            terms = [f"{_EXPERT_FORCE_MAP[k]}={float(v):.10g}"
+                     for k, v in comps.items()
+                     if k in _EXPERT_FORCE_MAP and v]
+            gno = _region_group_no(region, s.get("id"), gmap)
+            if gno and terms:
+                forces.append(f"_F(GROUP_NO={gno}, {', '.join(terms)})")
+    lines = []
+    if forces:
+        lines.append("    FORCE_NODALE=(" + ", ".join(forces) + ",),")
+    if pres:
+        lines.append("    PRES_REP=(" + ", ".join(pres) + ",),")
+    if not lines:
+        raise SystemExit(
+            "expert LBA: no load in load.sets — add a force/pressure set or "
+            "switch to beginner mode (axial/bending)."
+        )
+    return "CHLO = AFFE_CHAR_MECA(\n    MODELE=MODE,\n" + "\n".join(lines) + "\n)"
+
+
 def build_comm_buckling(model: "ModelConfig", manifest: Dict[str, Any],  # noqa: F821
                         work_dir: str = "/work", nmodes: int = 5,
                         f_ref: float = 1.0) -> str:
@@ -525,6 +558,7 @@ def build_comm_buckling(model: "ModelConfig", manifest: Dict[str, Any],  # noqa:
     # if the user came from the NURBS engine — those have no FEM meaning, so map
     # them to the classical SS-SS case. See _BUCKLING_BC for the DOF each sets.
     picked_defi = ""
+    gmap = {}
     if (model.uiMode or "beginner") == "expert" and (model.bcs.get("sets")):
         # Expert mode: per-region component constraints from bcs.sets (incl.
         # 3D-picked node groups via ENV_SPHERE).
@@ -538,6 +572,36 @@ def build_comm_buckling(model: "ModelConfig", manifest: Dict[str, Any],  # noqa:
         bc = _BUCKLING_BC[bc_kind]
         bc_doc = f"preset '{bc_kind}': {bc['doc']}"
         bc_ddl = bc["ddl"]
+
+    # Expert-load LBA: use the per-region load.sets as the buckling reference
+    # (arbitrary pattern → no classical σ_cl to scale to), and find the smallest
+    # critical multiplier with PLUS_PETITE. Reported λ₁ is then the factor on
+    # the user's applied load. Beginner axial/bending keep the classical-scaled
+    # CENTRE shift-invert (cluster pre-positioned at λ≈1).
+    expert_load = (model.uiMode or "beginner") == "expert" and bool(model.load.get("sets"))
+    if expert_load:
+        load_block = _expert_load_char(model, gmap)
+        calc_modes_block = (
+            "FLAMB = CALC_MODES(\n"
+            "    MATR_RIGI=K_AS, MATR_RIGI_GEOM=G_AS,\n"
+            "    OPTION='PLUS_PETITE', TYPE_RESU='MODE_FLAMB',\n"
+            f"    CALC_CHAR_CRIT=_F(NMAX_CHAR_CRIT={nmodes}),\n"
+            "    SOLVEUR_MODAL=_F(METHODE='SORENSEN', NMAX_ITER_SOREN=80,\n"
+            "                     PREC_SOREN=1.0E-4, COEF_DIM_ESPACE=10),\n"
+            "    VERI_MODE=_F(STURM='NON', STOP_ERREUR='NON'),\n"
+            ")"
+        )
+    else:
+        calc_modes_block = (
+            "FLAMB = CALC_MODES(\n"
+            "    MATR_RIGI=K_AS, MATR_RIGI_GEOM=G_AS,\n"
+            "    OPTION='CENTRE', TYPE_RESU='MODE_FLAMB',\n"
+            f"    CALC_CHAR_CRIT=_F(CHAR_CRIT=1.2, NMAX_CHAR_CRIT={nmodes}),\n"
+            "    SOLVEUR_MODAL=_F(METHODE='SORENSEN', NMAX_ITER_SOREN=60,\n"
+            "                     PREC_SOREN=1.0E-4, COEF_DIM_ESPACE=8),\n"
+            "    VERI_MODE=_F(STURM='NON', STOP_ERREUR='NON'),\n"
+            ")"
+        )
     return pre + picked_defi + f"""
 # Boundary condition — {bc_doc}
 CHBC = AFFE_CHAR_MECA(
@@ -571,32 +635,10 @@ NUM = NUME_DDL(MATR_RIGI=MEL_R)
 K_AS = ASSE_MATRICE(MATR_ELEM=MEL_R, NUME_DDL=NUM)
 G_AS = ASSE_MATRICE(MATR_ELEM=MEL_G, NUME_DDL=NUM)
 
-# Axial-cylinder buckling has a DENSE cluster of modes near σ_classical (many
-# (m,n) wave combos at almost the same λ). The eigensolver choice is delicate:
-#   - 'BANDE' computes EVERY mode in its bracket → the cluster grows with mesh
-#     refinement → times out at h=2/h=1.
-#   - 'PLUS_PETITE' (shift at 0) → Sorensen/IRAM can't separate the cluster
-#     sitting far from the shift → hits NMAX_ITER_SOREN, returns 0 modes.
-# 'CENTRE' is shift-INVERT: factor (K + σ₀·K_g) once at a shift σ₀ near the
-# cluster, which makes the wanted modes dominant → IRAM converges in a few
-# iterations regardless of mesh, returning only NMAX_CHAR_CRIT modes. f_ref is
-# scaled to the classical F_cr so the cluster sits at λ≈1; σ₀=1.2 is close
-# (fast) but off any exact eigenvalue (CHAR_CRIT exactly ON a mode → singular
-# factor → 0 modes). DKTG drilling stiffness keeps the spectrum clean; bumped
-# Sorensen budget for the clustered pairs; STURM='NON' skips the multiplicity
-# check that trips on the near-degenerate sin/cos pairs.
-FLAMB = CALC_MODES(
-    MATR_RIGI=K_AS, MATR_RIGI_GEOM=G_AS,
-    OPTION='CENTRE', TYPE_RESU='MODE_FLAMB',
-    CALC_CHAR_CRIT=_F(CHAR_CRIT=1.2, NMAX_CHAR_CRIT={nmodes}),
-    # COEF_DIM_ESPACE=8 → Lanczos subspace 8×nmodes: with clustered buckling
-    # eigenvalues a small subspace under-resolves the modes and they fail the
-    # residual check (ALGELINE2_74). STOP_ERREUR='NON' keeps a marginal mode a
-    # warning instead of an abort.
-    SOLVEUR_MODAL=_F(METHODE='SORENSEN', NMAX_ITER_SOREN=60,
-                     PREC_SOREN=1.0E-4, COEF_DIM_ESPACE=8),
-    VERI_MODE=_F(STURM='NON', STOP_ERREUR='NON'),
-)
+# Eigensolver — CENTRE shift-invert (beginner axial/bending, load scaled so the
+# cluster sits at λ≈1) or PLUS_PETITE (expert load: unknown scale, find the
+# smallest critical multiplier directly). See the builder for which + why.
+{calc_modes_block}
 
 # Dump the critical load factors λ for the wrapper (the .comm is Python).
 _tab = RECU_TABLE(CO=FLAMB, NOM_PARA='CHAR_CRIT')
