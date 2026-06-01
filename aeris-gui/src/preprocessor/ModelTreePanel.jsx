@@ -249,9 +249,32 @@ export default function ModelTreePanel() {
           justifyContent: "space-between",
         }}
       >
-        <span className="codex-brand-title" style={{ fontSize: 11, letterSpacing: 0.1 }}>
-          MODEL TREE
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {/* Always-visible Models toggle — the only way back once the Models
+              panel is collapsed (its in-panel Collapse button hides it). */}
+          <button
+            onClick={() => toggleLeftPanel("models")}
+            title={expandedLeftPanels.has("models") ? "Hide the Models panel" : "Show the Models panel"}
+            style={{
+              fontSize: 9,
+              fontFamily: MONO,
+              fontWeight: 700,
+              letterSpacing: 0.04,
+              padding: "2px 7px",
+              borderRadius: 4,
+              cursor: "pointer",
+              border: "1px solid var(--accent)",
+              color: "var(--accent)",
+              background: expandedLeftPanels.has("models") ? "var(--control-active-bg)" : "rgba(0,180,210,0.12)",
+              textShadow: "var(--shadow-accent)",
+            }}
+          >
+            {expandedLeftPanels.has("models") ? "▾ Models" : "▸ Models"}
+          </button>
+          <span className="codex-brand-title" style={{ fontSize: 11, letterSpacing: 0.1 }}>
+            MODEL TREE
+          </span>
+        </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {/* Always-visible engine badge — the discretisation engine drives
               which solver (and image) runs; set it in MESH / DISCRETISATION. */}
