@@ -401,9 +401,18 @@ def main(argv: list[str] | None = None) -> int:
     comm_path = work_dir / "study.comm"
     export_path = work_dir / "study.export"
     if kind == "gna":
-        if shape != "cylinder_segment":
+        # GNA is wired for the roof segment (gravity) and — in expert mode —
+        # the cylinder (BC + load from the per-region sets); build_comm_gna
+        # dispatches internally on uiMode/shape.
+        is_expert_cyl = (
+            shape == "cylinder"
+            and getattr(model, "uiMode", "beginner") == "expert"
+            and (model.bcs or {}).get("sets")
+        )
+        if shape != "cylinder_segment" and not is_expert_cyl:
             raise SystemExit(
-                "code_aster_static.py: GNA is wired for cylinder_segment only (Step 8)"
+                "code_aster_static.py: GNA is wired for cylinder_segment (gravity) "
+                "and expert-mode cylinder (BC+load sets) only."
             )
         comm_text = build_comm_gna(model, manifest)
     else:

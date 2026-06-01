@@ -217,6 +217,45 @@ def build_comm_gna(model: "ModelConfig", manifest: Dict[str, Any],  # noqa: F821
     load ramped over the pseudo-time [0,1] in `nsteps` increments. At the
     Scordelis load the deflection is small relative to R, so GNA ≈ LSA — the
     degenerate check that the nonlinear path correctly reduces to linear."""
+    # Expert-mode CYLINDER GNA: BC + load from the per-region sets, large-
+    # displacement. Reuses the static expert CHAR builder, wrapped in the same
+    # STAT_NON_LINE/GROT_GDEP/ramp recipe as the roof. (The validated roof path
+    # below is left untouched.) DKTG for drilling stiffness (nonlinear tangent).
+    if (getattr(model, "uiMode", "beginner") == "expert" and model.bcs.get("sets")
+            and model.geometry.get("shape") == "cylinder"):
+        cyl = model.geometry["cylinder"]
+        thick = float(cyl["t"])
+        Ec, nuc = _mat(model)
+        pre = _preamble("shell", "DKTG", Ec, nuc, thick, ["bottom", "top"],
+                        cara_vector=(0.0, 0.0, 1.0))
+        picked_defi, gmap = _expert_picked_groups(model)
+        return pre + picked_defi + "\n" + _expert_char(model, gmap) + f"""
+
+LREEL = DEFI_LIST_REEL(DEBUT=0.0, INTERVALLE=_F(JUSQU_A=1.0, NOMBRE={int(nsteps)}))
+DLIST = DEFI_LIST_INST(
+    METHODE='AUTO', DEFI_LIST=_F(LIST_INST=LREEL),
+    ECHEC=_F(EVENEMENT='ERREUR', ACTION='DECOUPE',
+             SUBD_METHODE='MANUEL', SUBD_PAS=4, SUBD_NIVEAU=5),
+)
+RAMPE = DEFI_FONCTION(
+    NOM_PARA='INST', VALE=(0.0, 0.0, 1.0, 1.0),
+    PROL_DROITE='CONSTANT', PROL_GAUCHE='CONSTANT',
+)
+RESU = STAT_NON_LINE(
+    MODELE=MODE, CHAM_MATER=CHMAT, CARA_ELEM=CARA,
+    EXCIT=_F(CHARGE=CHAR, FONC_MULT=RAMPE),
+    COMPORTEMENT=_F(RELATION='ELAS', DEFORMATION='GROT_GDEP'),
+    INCREMENT=_F(LIST_INST=DLIST),
+    NEWTON=_F(MATRICE='TANGENTE', REAC_ITER=1),
+    CONVERGENCE=_F(RESI_GLOB_RELA=1e-5, ITER_GLOB_MAXI=50),
+)
+IMPR_RESU(
+    FORMAT='MED', UNITE={UNITE_RESU_OUT},
+    RESU=_F(RESULTAT=RESU, NOM_CHAM=('DEPL',), INST=1.0),
+)
+FIN()
+"""
+
     seg = model.geometry["cylinder_segment"]
     thickness = float(seg["t"])
     E, nu = _mat(model)
