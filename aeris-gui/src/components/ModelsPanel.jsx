@@ -217,6 +217,19 @@ export default function ModelsPanel() {
         )}
       </div>
 
+      {/* Bottom-centre collapse button — folds the Models panel away to give
+          the tree/viewport more room. Re-open via the left-panel toggle in
+          the top bar. */}
+      <div style={{ display: "flex", justifyContent: "center", padding: "6px 0 2px" }}>
+        <button
+          className="model-action-btn"
+          onClick={() => toggleLeftPanel("models")}
+          title="Collapse the Models panel"
+          style={{ opacity: 0.75 }}
+        >
+          ⌃ Collapse
+        </button>
+      </div>
     </div>
   );
 }
