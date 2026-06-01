@@ -44,6 +44,7 @@ const COUPLING_OPTIONS = [
 // are cosmetic; the values are what the dispatcher routes on.
 const ENGINE_OPTIONS = [
   ["gismo",      "NURBS / IGA"],
+  ["bb",         "Bernstein-Bézier"],
   ["code_aster", "Code_Aster / FEM"],
 ];
 
@@ -81,6 +82,7 @@ const TECHNIQUE_OPTIONS = [
 // cached" → Maximum update depth). Models saved before the discretization
 // schema simply have no code_aster block; we default to this shared ref.
 const CA_EMPTY = {};
+const BB_EMPTY = {};
 
 export default function MeshDiscretisation() {
   const mesh = useUI((s) => s.model.mesh);
@@ -90,6 +92,8 @@ export default function MeshDiscretisation() {
   const setEngine = useUI((s) => s.setSolverEngine);
   const ca = useUI((s) => s.model.discretization?.code_aster) ?? CA_EMPTY;
   const setCa = useUI((s) => s.setCaDiscField);
+  const bb = useUI((s) => s.model.discretization?.bb) ?? BB_EMPTY;
+  const setBb = useUI((s) => s.setBbDiscField);
 
   const r = Number(mesh.refinement);
   const p = Number(mesh.degree);
@@ -170,9 +174,10 @@ export default function MeshDiscretisation() {
             lineHeight: 1.45,
           }}
         >
-          NURBS/IGA (G+Smo multipatch, the validated default) vs classical FEM
-          (Code_Aster). The model is engine-agnostic — switching changes how it
-          is discretised &amp; solved, not the geometry/material/load.
+          NURBS/IGA (G+Smo multipatch, the validated default), Bernstein-Bézier
+          triangle KL-shell (Ludwig/Hühne — cylinder axial LBA), or classical
+          FEM (Code_Aster). The model is engine-agnostic — switching changes how
+          it is discretised &amp; solved, not the geometry/material/load.
         </div>
       </div>
 
@@ -292,9 +297,144 @@ export default function MeshDiscretisation() {
       </>
       )}
 
+      {engine === "bb" && (
+        <BbPanel bb={bb} setBb={setBb} cyl={cyl} />
+      )}
+
       {engine === "code_aster" && (
         <CodeAsterPanel ca={ca} setCa={setCa} />
       )}
+    </>
+  );
+}
+
+/** Bernstein-Bézier triangle KL-shell branch of the mesh inspector. No IGA
+ * r/p/k and no FE element-size: the mesh is a structured Nx×Nt triangulation
+ * of the cylinder, each quad cell split into two degree-p BB triangles. The
+ * three knobs (degree p, Nx, Nt) map 1:1 onto model.discretization.bb, which
+ * bb_cylinder_lba.py forwards to the BB driver. The dense generalized
+ * eigensolve makes this best suited to the moderate-R/t regime; the panel
+ * warns when Nt is too coarse to resolve the short circumferential wave
+ * n_cr ≈ √(R/t) of the critical Koiter mode. */
+function BbPanel({ bb, setBb, cyl }) {
+  const p = Number(bb.degree ?? 5);
+  const Nx = Number(bb.Nx ?? 4);
+  const Nt = Number(bb.Nt ?? 20);
+  const nmodes = Number(bb.nmodes ?? 8);
+
+  const RoverT = cyl.t > 0 ? cyl.R / cyl.t : 0;
+  const nCr = RoverT > 0 ? Math.sqrt(RoverT) : 0;
+  // The circumferential mesh must resolve the n_cr full waves of the critical
+  // mode — at least ~2 elements per wave, i.e. Nt ≳ 2·n_cr (Nyquist-ish). The
+  // validated R/t=20 case uses Nt=20 against n_cr≈4.5 (≈4.4 elems/wave).
+  const NtMin = Math.ceil(2.2 * nCr);
+  const underResolved = nCr > 0 && Nt < NtMin;
+  const tooThin = RoverT > 60;   // dense BB gets expensive past here
+
+  const nTri = 2 * Nx * Nt;
+  const cpPerTri = ((p + 1) * (p + 2)) / 2;
+  const ndApprox = 3 * Nx * Nt * p * p;   // empirical ≈ (R/t=20: ~6.3k actual)
+
+  return (
+    <>
+      <NumberField
+        label="Bernstein degree  (p — triangle polynomial order)"
+        symbol="p"
+        unit="–"
+        value={p}
+        onChange={(v) => setBb("degree", v)}
+        min={2}
+        max={6}
+        step={1}
+        precision={0}
+        showRange
+        hint="p=5 is the validated default — Ludwig 9.3.2: p≥5 avoids membrane locking on arbitrary triangulations. The element carries 2nd derivatives (rotation-free KL)."
+      />
+
+      <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ flex: 1 }}>
+          <NumberField
+            label="Axial elements"
+            symbol="Nx"
+            unit="–"
+            value={Nx}
+            onChange={(v) => setBb("Nx", v)}
+            min={2}
+            max={16}
+            step={1}
+            precision={0}
+            showRange
+            hint="number of quad cells along the cylinder axis (each split into 2 BB triangles)"
+          />
+        </div>
+        <div style={{ flex: 1 }}>
+          <NumberField
+            label="Circumferential elements"
+            symbol="Nt"
+            unit="–"
+            value={Nt}
+            onChange={(v) => setBb("Nt", v)}
+            min={4}
+            max={48}
+            step={1}
+            precision={0}
+            showRange
+            hint="cells around the circumference — must resolve the short n_cr≈√(R/t) wave of the critical mode"
+          />
+        </div>
+      </div>
+
+      <NumberField
+        label="Modes to report  (lowest cluster size)"
+        symbol="N"
+        unit="–"
+        value={nmodes}
+        onChange={(v) => setBb("nmodes", v)}
+        min={1}
+        max={16}
+        step={1}
+        precision={0}
+        showRange
+        hint="the closed-cylinder spectrum is densely near-degenerate at σ_cl (Koiter circle) — read the cluster, not bare λ_min"
+      />
+
+      <div
+        style={{
+          marginTop: 8,
+          padding: "10px 12px",
+          background: "var(--panel-bg-soft)",
+          border: "1px solid var(--line-soft)",
+          borderRadius: 5,
+          fontFamily: MONO,
+        }}
+      >
+        <DerivedRow label="Engine" value="Bernstein-Bézier triangle (KL, Ludwig)" />
+        <DerivedRow label="Mesh" value={`${nTri} triangles  (2 × ${Nx} × ${Nt})`} />
+        <DerivedRow label="CPs / triangle" value={`${cpPerTri}  (p=${p})`} />
+        <DerivedRow
+          label="DOFs  (approx)"
+          value={`≈ ${ndApprox.toLocaleString()}`}
+          accent
+        />
+        <DerivedRow
+          label="n_cr ≈ √(R/t)"
+          value={RoverT > 0 ? `${nCr.toFixed(1)}  (R/t = ${RoverT.toFixed(0)})` : "—"}
+        />
+        <div
+          style={{
+            marginTop: 6,
+            fontSize: 9.5,
+            color: underResolved || tooThin ? "var(--warning)" : "var(--text-muted)",
+            lineHeight: 1.45,
+          }}
+        >
+          {underResolved
+            ? `⚠ Nt = ${Nt} is coarse for n_cr ≈ ${nCr.toFixed(1)} — raise Nt ≳ ${NtMin} so the circumferential wave is resolved (else the cluster reads too stiff).`
+            : tooThin
+              ? `⚠ R/t = ${RoverT.toFixed(0)} is thin — the dense BB eigensolve grows O(nd³); the validated regime is R/t ≈ 20. Expect long runs / coarse resolution here.`
+              : "Closed-cylinder axial LBA: uniform axial prestress (by construction), SS hinged ends, dense generalized eigensolve. Validated at R/t≈20 → lowest cluster [m0,n8] ≈ 0.90·σ_cl (the classical Koiter short-wave mode)."}
+        </div>
+      </div>
     </>
   );
 }

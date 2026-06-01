@@ -154,6 +154,29 @@ function metaFromResults(r) {
       isFallback: false,
     };
   }
+  if (r.engine === "bb") {
+    // Bernstein-Bézier triangle KL-shell element. Same IGA-shaped verdict /
+    // criticalLoad fields (so the blocks below render unchanged), but honest
+    // driver + mesh labels: there is no IGA coupling/refinement — the mesh is
+    // an Nx×Nt BB triangulation of degree p.
+    const c = r.case ?? {};
+    const cm = r.verdict?.criticalMode;
+    return {
+      kind: "lba",
+      R: c.R, L: c.L, t: c.t, E: c.E, nu: c.nu,
+      finestR: null,                 // BB meshes by Nx/Nt, not r-refinement
+      classical: r.verdict?.sigmaClassical,
+      computed: r.verdict?.sigmaFinest,
+      deviationPct: r.verdict?.deviationPct,
+      driver: "bb_cylinder_lba_driver (BB triangle KL)",
+      coupling: `BB C¹ · p=${r.mesh?.degree} · ${r.mesh?.Nx}×${r.mesh?.Nt} tris`
+        + (cm ? ` · crit (m${cm.m},n${cm.n})` : ""),
+      modeEigs,
+      criticalLoad: r.criticalLoad,  // { kind, label, applied, computed, classical }
+      generatedAt: r.generatedAt,
+      isFallback: false,
+    };
+  }
   return {
     kind: "lba",
     R: r.case.R, L: r.case.L, t: r.case.t,

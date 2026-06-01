@@ -332,8 +332,12 @@ export const useUI = create((set) => ({
     // engine reads its own discretization.<engine> block. The IGA params
     // live in model.mesh above (Python mirrors mesh ↔ discretization.gismo
     // on load), so only the Code_Aster FEM params are carried here.
-    solver: { engine: "gismo" },   // "gismo" (NURBS/IGA) | "code_aster" (FEM)
+    solver: { engine: "gismo" },   // "gismo" (NURBS/IGA) | "bb" (BB triangle) | "code_aster" (FEM)
     discretization: {
+      // BB = Bernstein-Bézier triangle KL-shell element (Ludwig/Hühne).
+      // Nx×Nt structured triangulation, Bernstein degree p. Defaults =
+      // the validated R/t≈20 acceptance mesh (lowest cluster [m0,n8]~0.90σ_cl).
+      bb: { degree: 5, Nx: 4, Nt: 20, nmodes: 8 },
       code_aster: { element_family: "DKT", mesh_size: 2.0, order: 1 },
     },
   },
@@ -550,7 +554,7 @@ export const useUI = create((set) => ({
    * engines are always valid choices. */
   setSolverEngine: (engine) =>
     set((s) => {
-      if (!["gismo", "code_aster"].includes(engine)) return {};
+      if (!["gismo", "bb", "code_aster"].includes(engine)) return {};
       const nextModel = { ...s.model, solver: { ...s.model.solver, engine } };
       return {
         model: nextModel,
@@ -579,6 +583,29 @@ export const useUI = create((set) => ({
         // Changing the element type / size invalidates the previewed mesh.
         meshPreviewResult: null,
         meshPreviewEdges: null,
+      };
+    }),
+
+  /** Patch one field on model.discretization.bb (degree p / Nx / Nt / nmodes).
+   * Used by the Bernstein-Bézier branch of the mesh inspector. Integers are
+   * clamped to sane minima; the validated mesh is the default. */
+  setBbDiscField: (key, value) =>
+    set((s) => {
+      const v = Number(value);
+      if (!Number.isFinite(v)) return {};
+      // p≥2 (BB needs deriv2; p≥5 is locking-safe), Nx/Nt≥2, nmodes≥1.
+      const floor = key === "nmodes" ? 1 : 2;
+      const bb = {
+        ...s.model.discretization.bb,
+        [key]: Math.max(floor, Math.round(v)),
+      };
+      const nextModel = {
+        ...s.model,
+        discretization: { ...s.model.discretization, bb },
+      };
+      return {
+        model: nextModel,
+        sectionStatus: computeModelReadiness(nextModel),
       };
     }),
 
