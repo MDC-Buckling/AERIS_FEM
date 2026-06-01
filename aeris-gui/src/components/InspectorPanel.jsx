@@ -107,21 +107,63 @@ function metaFromResults(r) {
     };
   }
 
-  // ---- LBA (existing path) ----
+  // ---- LBA (eigen-buckling) — the two engines write different run.json
+  // shapes, so branch on engine. IGA (buckling_shell_multipatch_XML) carries
+  // verdict.sigma{Classical,Finest}/deviationPct + a criticalLoad OBJECT;
+  // Code_Aster MODE_FLAMB carries verdict.{criticalStress,classicalStress,
+  // stressRatio} + criticalLoad as a bare NUMBER (F_cr). Mapping the wrong
+  // shape makes `.toExponential` read undefined and crashes the panel.
   const modeEigs = {};
   for (const m of r.modes ?? []) {
     if (m.sigmaComputed != null) modeEigs[m.id] = m.sigmaComputed;
+  }
+  if (r.engine === "code_aster") {
+    const c = r.case ?? {};
+    const v = r.verdict ?? {};
+    const computed = v.criticalStress ?? r.criticalStress;
+    const classical = v.classicalStress ?? r.classicalStress;
+    const ratio = v.stressRatio ?? r.stressRatio;
+    const deviationPct = ratio != null
+      ? (ratio - 1) * 100
+      : (computed != null && classical ? (computed / classical - 1) * 100 : null);
+    return {
+      kind: "lba",
+      R: c.R, L: c.L, t: c.t, E: c.E, nu: c.nu,
+      finestR: null,                 // FE meshes by element-size, not r-refinement
+      classical,
+      computed,
+      deviationPct,
+      driver: "code_aster MODE_FLAMB",
+      coupling: r.mesh?.element_family
+        ? `${r.mesh.element_family} · h=${r.mesh.mesh_size}`
+        : "—",
+      modeEigs,
+      // Rebuild the {applied,computed,classical} object the critical-load
+      // block expects from the flat numbers. F_ref is scaled to the classical
+      // F_cr estimate, so applied ≈ classical here.
+      criticalLoad: r.criticalLoad != null
+        ? {
+            kind: r.load?.kind ?? "F",
+            label: r.load?.kind ?? "load",
+            applied: r.load?.magnitude,
+            computed: r.criticalLoad,
+            classical: r.load?.magnitude,
+          }
+        : null,
+      generatedAt: r.generatedAt,
+      isFallback: false,
+    };
   }
   return {
     kind: "lba",
     R: r.case.R, L: r.case.L, t: r.case.t,
     E: r.case.E, nu: r.case.nu,
-    finestR: r.verdict.finestR,
-    classical: r.verdict.sigmaClassical,
-    computed: r.verdict.sigmaFinest,
-    deviationPct: r.verdict.deviationPct,
+    finestR: r.verdict?.finestR,
+    classical: r.verdict?.sigmaClassical,
+    computed: r.verdict?.sigmaFinest,
+    deviationPct: r.verdict?.deviationPct,
     driver: "buckling_shell_multipatch_XML",
-    coupling: `${r.mesh.coupling} (m=${r.mesh.couplingMethod})`,
+    coupling: `${r.mesh?.coupling} (m=${r.mesh?.couplingMethod})`,
     modeEigs,
     criticalLoad: r.criticalLoad,    // { kind, label, applied, computed, classical }
     generatedAt: r.generatedAt,
@@ -400,11 +442,13 @@ export default function InspectorPanel() {
                   />
                   <KeyMetric
                     label="σ_cr (classical)"
-                    value={LBA_META.classical.toExponential(3)}
+                    value={LBA_META.classical != null ? LBA_META.classical.toExponential(3) : "—"}
                   />
                   <KeyMetric
                     label="Δ vs classical"
-                    value={`${((eig - LBA_META.classical) / LBA_META.classical * 100).toFixed(2)}`}
+                    value={LBA_META.classical
+                      ? `${((eig - LBA_META.classical) / LBA_META.classical * 100).toFixed(2)}`
+                      : "—"}
                     unit="%"
                   />
                 </div>
@@ -416,13 +460,13 @@ export default function InspectorPanel() {
                 <SectionHeader>validation</SectionHeader>
                 <KeyMetric
                   variant="primary"
-                  label="σ_cr (finest r=5)"
-                  value={LBA_META.computed.toExponential(3)}
+                  label={LBA_META.finestR != null ? "σ_cr (finest r=5)" : "σ_cr (computed)"}
+                  value={LBA_META.computed != null ? LBA_META.computed.toExponential(3) : "—"}
                 />
                 <div style={{ height: 6 }} />
                 <KeyMetric
                   label="vs classical"
-                  value={`${LBA_META.deviationPct.toFixed(2)}`}
+                  value={LBA_META.deviationPct != null ? `${LBA_META.deviationPct.toFixed(2)}` : "—"}
                   unit="%"
                 />
               </>
@@ -434,17 +478,17 @@ export default function InspectorPanel() {
                 <KeyMetric
                   variant="primary"
                   label={`${LBA_META.criticalLoad.kind}_cr (computed)`}
-                  value={LBA_META.criticalLoad.computed.toExponential(3)}
+                  value={LBA_META.criticalLoad.computed != null ? LBA_META.criticalLoad.computed.toExponential(3) : "—"}
                 />
                 <div style={{ height: 4 }} />
                 <KeyMetric
                   label={`${LBA_META.criticalLoad.kind}_cr (classical)`}
-                  value={LBA_META.criticalLoad.classical.toExponential(3)}
+                  value={LBA_META.criticalLoad.classical != null ? LBA_META.criticalLoad.classical.toExponential(3) : "—"}
                 />
                 <div style={{ height: 4 }} />
                 <KeyMetric
                   label={`applied ${LBA_META.criticalLoad.label}`}
-                  value={LBA_META.criticalLoad.applied.toExponential(3)}
+                  value={LBA_META.criticalLoad.applied != null ? LBA_META.criticalLoad.applied.toExponential(3) : "—"}
                 />
               </>
             )}

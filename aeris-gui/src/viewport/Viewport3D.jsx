@@ -533,10 +533,15 @@ export default function Viewport3D() {
   useEffect(() => {
     const st = stateRef.current;
     if (!st.camera || !st.controls) return;
-    // Camera snaps auto-scale to the current geometry bounding box so the
-    // procedural preview stays in frame across user-edited R/L. Post-mode
-    // results are also dimensioned at R=1, L=1 for now so this works there
-    // too; later the result loader will set its own bounds.
+    // Post-mode: frame the ACTUAL loaded result. FE meshes (and warped mode
+    // shapes) don't necessarily sit in the procedural R/L box, so clicking
+    // OBLIQUE/SIDE/END fits the real bbox — that's the "center" behaviour.
+    if (mode === "post" && st.resultBBox) {
+      fitCameraToBox(st, st.resultBBox.center, st.resultBBox.diag, viewPreset);
+      return;
+    }
+    // Pre-mode (or no result yet): snap to the geometry bounding box so the
+    // procedural preview stays in frame across user-edited R/L.
     const presets = viewPresets(activeR, activeL);
     const p = presets[viewPreset];
     if (!p) return;
@@ -544,7 +549,7 @@ export default function Viewport3D() {
     st.camera.up.set(...p.up);
     st.controls.target.set(...p.target);
     st.controls.update();
-  }, [viewPreset, activeR, activeL]);
+  }, [viewPreset, activeR, activeL, mode]);
 
   // -------------------------------------------------------------------
   // Pre-mode: procedural cylinder driven LIVE by the model dimensions.
@@ -912,9 +917,9 @@ export default function Viewport3D() {
       // Anchor the max-field arrow on the vertex with the largest |field|
       // value across all patches. Position is recomputed each frame against
       // the live warp scale via updateMaxArrow().
+      const bb = bboxOfPatches(data.patches);
       const maxInfo = findMaxFieldVertex(data.patches, proj.perPatch);
       if (maxInfo) {
-        const bb = bboxOfPatches(data.patches);
         st.maxAnchor = {
           posUndef: maxInfo.posUndef,
           dispVec: maxInfo.dispVec,
@@ -924,6 +929,16 @@ export default function Viewport3D() {
         };
       } else {
         st.maxAnchor = null;
+      }
+      // Remember the result's real bounds so the view-preset buttons frame the
+      // actual mesh, and auto-fit ONCE per distinct result (cacheKey). We must
+      // NOT re-fit on field/colormap/edge toggles — apply() re-runs for those
+      // with the same mesh, and re-fitting would yank a camera the user just
+      // orbited.
+      st.resultBBox = { center: bb.center, diag: bb.diag };
+      if (st.lastFitKey !== cacheKey) {
+        st.lastFitKey = cacheKey;
+        fitCameraToBox(st, bb.center, bb.diag, useUI.getState().viewPreset);
       }
       const liveState = useUI.getState();
       updateMaxArrow(st, liveState.warpScale, liveState.showMaxArrow);
@@ -1680,6 +1695,41 @@ function bboxOfPatches(patches) {
     diag: Math.sqrt(dx * dx + dy * dy + dz * dz),
     center: new THREE.Vector3((xmin + xmax) / 2, (ymin + ymax) / 2, (zmin + zmax) / 2),
   };
+}
+
+/** Frame the camera on a bounding box (center + space diagonal), keeping the
+ * orientation implied by the named view preset. The distance is derived from
+ * the vertical FOV so the box fills the frame with a small margin. This is the
+ * "center / fit" behaviour: whatever the loaded result's real coordinates are
+ * (FE meshes don't necessarily sit in the procedural R=33,L=100 box), it lands
+ * centred and fully in view instead of squashed against the edge. */
+function fitCameraToBox(st, center, diag, viewPreset = "oblique") {
+  if (!st.camera || !st.controls || !center) return;
+  const c = center.clone
+    ? center.clone()
+    : new THREE.Vector3(center[0], center[1], center[2]);
+  const d = Math.max(diag, 1e-3);
+  const fov = (st.camera.fov * Math.PI) / 180;
+  const margin = 1.35;
+  const dist = Math.max((d * 0.5 * margin) / Math.tan(fov / 2), d * 0.5 + 0.01);
+  const DIRS = {
+    oblique: new THREE.Vector3(1, -1, 0.35).normalize(),
+    side: new THREE.Vector3(0, -1, 0),
+    end: new THREE.Vector3(0, 0, 1),
+  };
+  const dir = DIRS[viewPreset] || DIRS.oblique;
+  st.controls.target.copy(c);
+  st.camera.position.copy(c).addScaledVector(dir, dist);
+  st.camera.up.set(...(viewPreset === "end" ? [0, 1, 0] : [0, 0, 1]));
+  st.camera.near = Math.max(dist - d, d * 0.001, 0.001);
+  st.camera.far = dist + d * 4;
+  st.camera.updateProjectionMatrix();
+  // Widen orbit limits so the freshly-fitted frame isn't immediately clamped
+  // (the geometry-keyed effect sets these from R/L, which can be far off for
+  // an FE result).
+  st.controls.minDistance = Math.min(st.controls.minDistance, dist * 0.2);
+  st.controls.maxDistance = Math.max(st.controls.maxDistance, dist * 4);
+  st.controls.update();
 }
 
 /** Reposition + resize the persistent ArrowHelper so its tip lands on the

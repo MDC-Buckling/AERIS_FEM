@@ -965,7 +965,11 @@ export const useUI = create((set) => ({
       const data = await res.json();
       // Stash the jobId alongside so consumers know which job this is.
       const tagged = { ...data, jobId };
-      set({ currentResults: tagged });
+      // Clear the per-(jobId:resultId) mesh cache: a re-fetched manifest means
+      // the on-disk results changed (e.g. a re-solve that added mode shapes),
+      // so any cached meshes for this job are stale. Without this, re-selecting
+      // an already-loaded job keeps showing the old (empty) result.
+      set({ currentResults: tagged, resultCache: {} });
       return tagged;
     } catch {
       return null;
@@ -1111,10 +1115,13 @@ export const useUI = create((set) => ({
             const hasLinear = !!(manifest?.files?.linearPrestress
                                   || manifest?.files?.solution);
             const fallbackId = firstMode ?? (hasLinear ? "linear" : "geometry");
+            // Pre-select the result + clear the stale mesh cache so the
+            // post-processor is ready the moment the user switches to it — but
+            // do NOT auto-switch modes. The user stays in the pre-processor and
+            // sees the "success" status; switching to Post is their choice.
             useUI.setState((s) => ({
               ...s,
               selectedResultId: fallbackId,
-              mode: "post",
               resultCache: {},
             }));
           }
