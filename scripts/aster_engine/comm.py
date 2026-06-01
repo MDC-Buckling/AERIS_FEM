@@ -263,6 +263,35 @@ FIN()
 """
 
 
+# Buckling BC presets in Code_Aster DKTG nodal DOF (translations DX/DY/DZ +
+# rotations DRX/DRY/DRZ). For a z-axis cylinder, DX=DY=0 at a rim pins the
+# radial (w) and circumferential (v) translation. The loaded top ALWAYS leaves
+# DZ free so the axial reference load compresses the shell. 'ddl' is spliced
+# verbatim into DDL_IMPO=( ... ) (8-space indent matches the comm body).
+_BUCKLING_BC = {
+    "ss_both": {
+        "doc": "simply-supported both ends (classical Lorenz σ_cr) — radial+hoop "
+               "pinned each rim, rotations free; bottom also pins axial DZ.",
+        "ddl": ("        _F(GROUP_NO='bottom', DX=0.0, DY=0.0, DZ=0.0),\n"
+                "        _F(GROUP_NO='top', DX=0.0, DY=0.0),"),
+    },
+    "clamped_both": {
+        "doc": "clamped both ends — translations + rotations fixed each rim, "
+               "top axial DZ free for the load.",
+        "ddl": ("        _F(GROUP_NO='bottom', DX=0.0, DY=0.0, DZ=0.0, "
+                "DRX=0.0, DRY=0.0, DRZ=0.0),\n"
+                "        _F(GROUP_NO='top', DX=0.0, DY=0.0, "
+                "DRX=0.0, DRY=0.0, DRZ=0.0),"),
+    },
+    "clamped_free": {
+        "doc": "clamped bottom / free loaded top (IGA-style) — in FEM this gives "
+               "a free-rim EDGE mode well below classical σ_cr.",
+        "ddl": ("        _F(GROUP_NO='bottom', DX=0.0, DY=0.0, DZ=0.0, "
+                "DRX=0.0, DRY=0.0, DRZ=0.0),"),
+    },
+}
+
+
 def build_comm_buckling(model: "ModelConfig", manifest: Dict[str, Any],  # noqa: F821
                         work_dir: str = "/work", nmodes: int = 5,
                         f_ref: float = 1.0) -> str:
@@ -291,20 +320,29 @@ def build_comm_buckling(model: "ModelConfig", manifest: Dict[str, Any],  # noqa:
     # VECTEUR=(0,0,1): the cylinder axis is tangent to the shell everywhere, so
     # the local frame is well-defined (default global-X projection is normal to
     # the surface at θ=0 → PLATE1_40). Needed once SIEF_ELGA is computed.
-    pre = _preamble("shell", family, E, nu, thickness, ["bottom", "top"],
+    # Buckling needs drilling stiffness: the SS rims below leave rotations
+    # free, and DKT has ZERO stiffness on the drilling DOF (DRZ) → a singular K
+    # and a swarm of spurious near-zero modes that swamp the eigensolver. DKTG
+    # adds drilling (as on the GNA path); COQUE_3D is a true 3-DOF/node shell
+    # with no drilling defect, so leave it alone.
+    family_buck = "DKTG" if family == "DKT" else family
+    pre = _preamble("shell", family_buck, E, nu, thickness, ["bottom", "top"],
                     cara_vector=(0.0, 0.0, 1.0))
+    # Boundary-condition preset, read from the model (no longer hardcoded). The
+    # bcs.kind may still carry an IGA-vocabulary value (e.g. 'clamped_neumann')
+    # if the user came from the NURBS engine — those have no FEM meaning, so map
+    # them to the classical SS-SS case. See _BUCKLING_BC for the DOF each sets.
+    bc_kind = (model.bcs or {}).get("kind", "ss_both")
+    if bc_kind not in _BUCKLING_BC:
+        bc_kind = "ss_both"
+    bc = _BUCKLING_BC[bc_kind]
     return pre + f"""
-# Dirichlet BC (kinematic) and the axial reference load kept separate so the
-# stiffness assembly takes only the BC, the static solve takes both. Clamped
-# bottom / free loaded top (mirrors the IGA cylinder_lba clamped_neumann).
-# NOTE: simply-supported ends (both rims DX=DY=0) are the classical-σ_cr BC,
-# but that produces a DENSE clustered spectrum the shift-invert eigensolver
-# here doesn't resolve (CENTRE applies a 0 shift → 0 modes; BANDE finds 800+
-# and diverges). Cracking the classical match is a dedicated Code_Aster
-# eigensolver-tuning task — see the honest note in code_aster_buckling.py.
+# Boundary condition preset '{bc_kind}': {bc['doc']}
 CHBC = AFFE_CHAR_MECA(
     MODELE=MODE,
-    DDL_IMPO=_F(GROUP_NO='bottom', DX=0.0, DY=0.0, DZ=0.0, DRX=0.0, DRY=0.0, DRZ=0.0),
+    DDL_IMPO=(
+{bc['ddl']}
+    ),
 )
 CHLO = AFFE_CHAR_MECA(
     MODELE=MODE,
@@ -334,18 +372,31 @@ NUM = NUME_DDL(MATR_RIGI=MEL_R)
 K_AS = ASSE_MATRICE(MATR_ELEM=MEL_R, NUME_DDL=NUM)
 G_AS = ASSE_MATRICE(MATR_ELEM=MEL_G, NUME_DDL=NUM)
 
-# Axial-cylinder buckling has a DENSE cluster of modes near the critical load
-# (many circumferential-wave combinations at almost the same λ). 'BANDE' would
-# compute all of them (hundreds) and not converge; 'PLUS_PETITE' returns
-# nothing. Shift-invert ('CENTRE') finds just the NMAX nearest a shift — and
-# the shift must sit OFF the cluster: f_ref is scaled so the cluster is ≈ 1.0,
-# so we shift at 0.7 (below it). Shifting AT 1.0 makes (K + σ·K_geom) singular
-# → 0 modes. STURM='NON' skips the a-posteriori check that trips on multiples.
+# Axial-cylinder buckling has a DENSE cluster of modes near σ_classical (many
+# (m,n) wave combos at almost the same λ). The eigensolver choice is delicate:
+#   - 'BANDE' computes EVERY mode in its bracket → the cluster grows with mesh
+#     refinement → times out at h=2/h=1.
+#   - 'PLUS_PETITE' (shift at 0) → Sorensen/IRAM can't separate the cluster
+#     sitting far from the shift → hits NMAX_ITER_SOREN, returns 0 modes.
+# 'CENTRE' is shift-INVERT: factor (K + σ₀·K_g) once at a shift σ₀ near the
+# cluster, which makes the wanted modes dominant → IRAM converges in a few
+# iterations regardless of mesh, returning only NMAX_CHAR_CRIT modes. f_ref is
+# scaled to the classical F_cr so the cluster sits at λ≈1; σ₀=1.2 is close
+# (fast) but off any exact eigenvalue (CHAR_CRIT exactly ON a mode → singular
+# factor → 0 modes). DKTG drilling stiffness keeps the spectrum clean; bumped
+# Sorensen budget for the clustered pairs; STURM='NON' skips the multiplicity
+# check that trips on the near-degenerate sin/cos pairs.
 FLAMB = CALC_MODES(
     MATR_RIGI=K_AS, MATR_RIGI_GEOM=G_AS,
-    OPTION='BANDE', TYPE_RESU='MODE_FLAMB',
-    CALC_CHAR_CRIT=_F(CHAR_CRIT=(0.0, 3.0)),
-    VERI_MODE=_F(STURM='NON'),
+    OPTION='CENTRE', TYPE_RESU='MODE_FLAMB',
+    CALC_CHAR_CRIT=_F(CHAR_CRIT=1.2, NMAX_CHAR_CRIT={nmodes}),
+    # COEF_DIM_ESPACE=8 → Lanczos subspace 8×nmodes: with clustered buckling
+    # eigenvalues a small subspace under-resolves the modes and they fail the
+    # residual check (ALGELINE2_74). STOP_ERREUR='NON' keeps a marginal mode a
+    # warning instead of an abort.
+    SOLVEUR_MODAL=_F(METHODE='SORENSEN', NMAX_ITER_SOREN=60,
+                     PREC_SOREN=1.0E-4, COEF_DIM_ESPACE=8),
+    VERI_MODE=_F(STURM='NON', STOP_ERREUR='NON'),
 )
 
 # Dump the critical load factors λ for the wrapper (the .comm is Python).

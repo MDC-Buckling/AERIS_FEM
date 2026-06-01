@@ -110,11 +110,14 @@ def main(argv: list[str] | None = None) -> int:
     # reservation: Code_Aster allocates only what it needs (~2.5 GB at h=2.5);
     # 16 GB gives headroom for finer meshes / more modes on a 64 GB host.
     export_path.write_text(
-        build_export(str(work_dir), memory_mb=16384, n_mode_files=nmodes)
+        build_export(str(work_dir), time_limit_s=3600, memory_mb=16384,
+                     n_mode_files=nmodes)
     )
 
     _phase("solving")
-    _run_aster(export_path, work_dir, threads=args.threads)
+    # Fine buckling meshes have an expensive factorization; give the subprocess
+    # a generous wall-clock (PLUS_PETITE keeps the eigensolve itself cheap).
+    _run_aster(export_path, work_dir, threads=args.threads, timeout_s=3700)
 
     _phase("parsing")
     lambdas = json.loads((work_dir / "charcrit.json").read_text())

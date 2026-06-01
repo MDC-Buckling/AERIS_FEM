@@ -58,8 +58,13 @@ def _phase(name: str) -> None:
     print(f"[AERIS-PHASE] {name}", flush=True)
 
 
-def _run_aster(export_path: Path, work_dir: Path, threads: int) -> None:
-    """Invoke the first available Code_Aster launcher on the .export."""
+def _run_aster(export_path: Path, work_dir: Path, threads: int,
+               timeout_s: int = 900) -> None:
+    """Invoke the first available Code_Aster launcher on the .export.
+
+    `timeout_s` is the wall-clock kill for the subprocess (the .export's own
+    P time_limit is Code_Aster's internal budget). Fine buckling meshes have an
+    expensive factorization, so the buckling wrapper passes a larger value."""
     env = dict(os.environ)
     env["OMP_NUM_THREADS"] = str(max(1, threads))
     last_err: Exception | None = None
@@ -67,7 +72,7 @@ def _run_aster(export_path: Path, work_dir: Path, threads: int) -> None:
         cmd = [exe, str(export_path)]
         try:
             res = subprocess.run(cmd, capture_output=True, text=True,
-                                 timeout=900, env=env)
+                                 timeout=timeout_s, env=env)
         except FileNotFoundError as exc:
             last_err = exc
             continue

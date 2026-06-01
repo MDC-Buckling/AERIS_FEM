@@ -5,15 +5,21 @@ import { useUI } from "../../store.js";
 
 /** Functional inspector for BOUNDARY CONDITIONS & LOADS > Boundary Conditions.
  *
- * Today only `clamped_neumann` is wired in cylinder_lba.py (Session 2.7
- * validated). The other three presets are real shell-BC configurations
- * the multipatch driver could support, but each needs its own XML <bc>
- * block AND a re-derived classical reference for the verdict comparison,
- * so they stay disabled until a session pulls them in.
+ * Engine-aware: the BC vocabulary is FORMULATION-specific, so the preset list
+ * + explainer copy switch on solver.engine.
+ *   - NURBS / G+Smo (Kirchhoff-Love shell): displacement-only C¹ DOF, where
+ *     "Clamped" is a normal-ROTATION (derivative) condition + a Neumann line
+ *     force for the load.
+ *   - Code_Aster (DKT/DKTG): displacement + 3 rotation DOF per node, where
+ *     "simply supported" = rotations FREE and "clamped" = rotations fixed.
+ * The same physical support is therefore expressed differently per engine —
+ * you cannot copy the IGA BC to FEM. The buckling .comm reads model.bcs.kind
+ * (see aster_engine/comm.py::_BUCKLING_BC) and builds the matching DDL_IMPO.
  *
  * Lives at model.bcs.kind in the schema. */
 
-const BCS_OPTIONS = [
+// ── NURBS / Kirchhoff-Love presets (G+Smo) ──────────────────────────────
+const IGA_OPTIONS = [
   ["clamped_neumann", "Clamped + Neumann"],
   ["scordelis_diaphragm", "Scordelis Diaphragm"],
   ["clamped_both", "Both Clamped",
@@ -24,11 +30,14 @@ const BCS_OPTIONS = [
     { disabled: true, title: "bottom clamped, top free — degenerate stress state for an LBA, not wired yet" }],
 ];
 
-/** Per-preset explainer copy — swaps in/out the description block under
- * the toggle so the user sees what the picked BC actually constrains
- * before they hit SOLVE. Each entry: rows = list of [edge, condition]
- * pairs + note that names the geometry the preset was designed for. */
-const BCS_INFO = {
+// ── Code_Aster / DKTG presets (FEM) ─────────────────────────────────────
+const FEM_OPTIONS = [
+  ["ss_both", "Simply supported"],
+  ["clamped_both", "Clamped both"],
+  ["clamped_free", "Clamped / free top"],
+];
+
+const IGA_INFO = {
   clamped_neumann: {
     title: "Cylinder buckling BC (Session-2.7 validated)",
     rows: [
@@ -63,10 +72,78 @@ const BCS_INFO = {
   },
 };
 
+const FEM_INFO = {
+  ss_both: {
+    title: "Simply-supported both ends — classical Lorenz σ_cr",
+    rows: [
+      ["Bottom rim  (z = 0)", "DX=DY=DZ=0  (radial w + hoop v pinned, axial fixed)"],
+      ["Top rim  (z = L)", "DX=DY=0  (radial+hoop pinned, axial DZ FREE for the load)"],
+      ["Rotations", "FREE at both rims (= simply supported)"],
+    ],
+    note: (
+      <>
+        The textbook axial-buckling BC. Both rims hold the shell round (no edge
+        mode); the loaded top slides axially. Needs the{" "}
+        <span style={{ color: "var(--accent-muted)" }}>DKTG</span> element
+        (drilling stiffness) since rotations are free. Validated: h-converges to
+        σ_classical from above (h=2 → +8 %, h=1 → +2 %).
+      </>
+    ),
+  },
+  clamped_both: {
+    title: "Clamped both ends",
+    rows: [
+      ["Bottom rim  (z = 0)", "DX=DY=DZ=0  +  DRX=DRY=DRZ=0  (fully fixed)"],
+      ["Top rim  (z = L)", "DX=DY=0  +  DRX=DRY=DRZ=0  (axial DZ free for load)"],
+    ],
+    note: (
+      <>
+        Rotations fixed at both rims. Slightly stiffer than simply-supported, so
+        σ_cr lands a touch ABOVE classical for short/medium cylinders — converges
+        to the same interior buckling pattern.
+      </>
+    ),
+  },
+  clamped_free: {
+    title: "Clamped bottom / free top  (IGA-style — NOT classical σ_cr)",
+    rows: [
+      ["Bottom rim  (z = 0)", "DX=DY=DZ=0  +  DRX=DRY=DRZ=0  (fully clamped)"],
+      ["Top rim  (z = L)", "FREE  (loaded only)"],
+    ],
+    note: (
+      <>
+        Mirrors the nominal IGA clamped-bottom/free-top setup — but in FEM the
+        free rim produces an <span style={{ color: "var(--warning)" }}>edge mode</span> at
+        ~0.6·σ_classical (buckles only at the top, λ ~40 % low). Kept for
+        cross-engine comparison; use simply-supported for the classical value.
+      </>
+    ),
+  },
+};
+
 export default function BcsKind() {
   const bcs = useUI((s) => s.model.bcs);
+  const engine = useUI((s) => s.model.solver?.engine) ?? "gismo";
   const setKind = useUI((s) => s.setBcsKind);
-  const info = BCS_INFO[bcs.kind] ?? BCS_INFO.clamped_neumann;
+
+  const isFem = engine === "code_aster";
+  const options = isFem ? FEM_OPTIONS : IGA_OPTIONS;
+  const infoTable = isFem ? FEM_INFO : IGA_INFO;
+  const defaultKind = isFem ? "ss_both" : "clamped_neumann";
+
+  // Normalise: if the stored kind has no meaning for the active engine (e.g.
+  // 'clamped_neumann' carried over after switching to Code_Aster), reset it to
+  // the engine's default so the UI selection and the solved BC stay in sync.
+  // Only ENABLED options count as valid — disabled IGA presets share keys with
+  // the FEM presets (ss_both, clamped_both), so a FEM key must not "stick"
+  // (and stay selected-but-disabled) when switching back to NURBS.
+  const validKeys = options.filter(([, , opt]) => !opt?.disabled).map(([k]) => k);
+  React.useEffect(() => {
+    if (!validKeys.includes(bcs.kind)) setKind(defaultKind);
+  }, [engine, bcs.kind]);
+
+  const effectiveKind = validKeys.includes(bcs.kind) ? bcs.kind : defaultKind;
+  const info = infoTable[effectiveKind] ?? infoTable[defaultKind];
 
   return (
     <>
@@ -77,13 +154,18 @@ export default function BcsKind() {
             fontSize: 10.5,
             fontFamily: MONO,
             marginBottom: 4,
+            display: "flex",
+            justifyContent: "space-between",
           }}
         >
-          BC preset
+          <span>BC preset</span>
+          <span style={{ color: isFem ? "var(--warning)" : "var(--accent-muted)" }}>
+            {isFem ? "Code_Aster · DKTG DOF" : "NURBS · KL-shell"}
+          </span>
         </div>
         <ToggleGroup
-          options={BCS_OPTIONS}
-          value={bcs.kind}
+          options={options}
+          value={effectiveKind}
           onChange={setKind}
           fullWidth
         />
