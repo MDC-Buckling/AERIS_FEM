@@ -30,6 +30,7 @@
 //       -I/opt/gismo/external bb_cylinder_lba_driver.cpp -L/opt/gismo/build/lib \
 //       -lgismo -Wl,-rpath,/opt/gismo/build/lib -o bb_cylinder_lba_driver
 #include <gismo.h>
+#include <gsSpectra/gsSpectra.h>
 #include "bb_triangle_basis.hpp"
 #include "bb_triangle_quadrature.hpp"
 #include "bb_kl_strains.hpp"
@@ -48,6 +49,8 @@ using aeris::BBTriangleBasis; using aeris::BasisDerivs; using aeris::Bmat;
 using aeris::analytic_B; using aeris::Geom; using aeris::V3; using aeris::dot3; using aeris::cross3;
 using aeris::quad_triangle;
 typedef gsEigen::Matrix<real_t,gsEigen::Dynamic,gsEigen::Dynamic> EMat;
+typedef gsSparseMatrix<real_t> SpMat;
+typedef gsEigen::Triplet<real_t> Trip;
 static const double PI=3.14159265358979323846;
 
 // Geometry/material — set from argv in main(). Defaults = validated case.
@@ -72,32 +75,51 @@ static V3<double> radial(double th){ return {std::cos(th),std::sin(th),0.0}; }
 
 struct Mode{ double sig; int m,n; std::string pvd; };
 
-// --- minimal VTK XML StructuredGrid writers (match aeris-gui parseVts/parsePvd) -
-static void write_vts(const std::string&path,int nx,int nt,
-                      const std::vector<double>&pos,const std::vector<double>*disp){
+// --- minimal VTK XML UnstructuredGrid writer (match aeris-gui parseVtu/parsePvd) -
+// Writes the ACTUAL BB triangle mesh: each of the nT BB elements is sub-tessellated
+// into `sub^2` flat display triangles (so the degree-p curvature + the mode shape
+// render smoothly while the mesh stays genuinely triangular — the user SEES the
+// triangle elements, especially with the viewport's edge overlay). Points are
+// duplicated per element (one contiguous block of nSub points each); cells are
+// VTK type 5 (triangle). `disp` (per-point 3-vector, already normalised) is written
+// as SolutionField for the warpable mode shape, or null for bare geometry.
+static void write_vtu(const std::string&path,const std::vector<double>&pts,
+                      const std::vector<double>*disp,int nT,int nSub,
+                      const std::vector<std::array<int,3>>&subTri){
+    int NP=pts.size()/3; long nCells=(long)nT*subTri.size();
     std::ofstream f(path);
     f<<"<?xml version=\"1.0\"?>\n";
-    f<<"<VTKFile type=\"StructuredGrid\" version=\"0.1\" byte_order=\"LittleEndian\">\n";
-    f<<"  <StructuredGrid WholeExtent=\"0 "<<nx-1<<" 0 "<<nt-1<<" 0 0\">\n";
-    f<<"    <Piece Extent=\"0 "<<nx-1<<" 0 "<<nt-1<<" 0 0\">\n";
+    f<<"<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" byte_order=\"LittleEndian\">\n";
+    f<<"  <UnstructuredGrid>\n";
+    f<<"    <Piece NumberOfPoints=\""<<NP<<"\" NumberOfCells=\""<<nCells<<"\">\n";
     f<<"      <Points>\n";
     f<<"        <DataArray type=\"Float32\" NumberOfComponents=\"3\" format=\"ascii\">\n";
-    for(size_t i=0;i<pos.size();i+=3) f<<pos[i]<<" "<<pos[i+1]<<" "<<pos[i+2]<<"\n";
+    for(size_t i=0;i<pts.size();i+=3) f<<pts[i]<<" "<<pts[i+1]<<" "<<pts[i+2]<<"\n";
     f<<"        </DataArray>\n      </Points>\n";
+    f<<"      <Cells>\n";
+    f<<"        <DataArray type=\"Int32\" Name=\"connectivity\" format=\"ascii\">\n";
+    for(int k=0;k<nT;++k){int base=k*nSub;for(auto&t:subTri)f<<base+t[0]<<" "<<base+t[1]<<" "<<base+t[2]<<"\n";}
+    f<<"        </DataArray>\n";
+    f<<"        <DataArray type=\"Int32\" Name=\"offsets\" format=\"ascii\">\n";
+    for(long c=1;c<=nCells;++c)f<<3*c<<" ";
+    f<<"\n        </DataArray>\n";
+    f<<"        <DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">\n";
+    for(long c=0;c<nCells;++c)f<<"5 ";
+    f<<"\n        </DataArray>\n      </Cells>\n";
     if(disp){
         f<<"      <PointData>\n";
         f<<"        <DataArray type=\"Float32\" Name=\"SolutionField\" NumberOfComponents=\"3\" format=\"ascii\">\n";
         for(size_t i=0;i<disp->size();i+=3) f<<(*disp)[i]<<" "<<(*disp)[i+1]<<" "<<(*disp)[i+2]<<"\n";
         f<<"        </DataArray>\n      </PointData>\n";
     }
-    f<<"    </Piece>\n  </StructuredGrid>\n</VTKFile>\n";
+    f<<"    </Piece>\n  </UnstructuredGrid>\n</VTKFile>\n";
 }
-static void write_pvd(const std::string&path,const std::string&vtsRel){
+static void write_pvd(const std::string&path,const std::string&fileRel){
     std::ofstream f(path);
     f<<"<?xml version=\"1.0\"?>\n";
     f<<"<VTKFile type=\"Collection\" version=\"0.1\" byte_order=\"LittleEndian\">\n";
     f<<"  <Collection>\n";
-    f<<"    <DataSet timestep=\"0\" part=\"0\" file=\""<<vtsRel<<"\"/>\n";
+    f<<"    <DataSet timestep=\"0\" part=\"0\" file=\""<<fileRel<<"\"/>\n";
     f<<"  </Collection>\n</VTKFile>\n";
 }
 
@@ -166,10 +188,11 @@ static std::vector<Mode> run_lba(int Nx,int Nt,double thick,int p,int nmodes,
         if(std::fabs(z)<1e-7||std::fabs(z-L)<1e-7){ pin(cp,0); pin(cp,1); if(firstEnd<0)firstEnd=cp; } }  // SS: x,y pinned at both ends
     if(firstEnd>=0) pin(firstEnd,2);   // kill axial rigid translation
     std::vector<int> fcl;int rank; auto Cs=nullsp(A3,nd,fcl,rank); int nF=fcl.size(); out_nF=nF;
-    EMat C(nd,nF); for(int i=0;i<nd;++i)for(int f=0;f<nF;++f)C(i,f)=Cs[i][f];
-    // K_e + K_geom (uniform axial N_xx=1)
-    EMat Kf=EMat::Zero(nd,nd), Kg=EMat::Zero(nd,nd);
-    V3<double> tax{0,0,1};
+    std::vector<Mode> out;     // result modes (declared early so a Spectra-fail can return it)
+    // SPARSE C (nd × nF) from the null-space vectors Cs.
+    SpMat C(nd,nF); { std::vector<Trip> tc; for(int row=0;row<nd;++row)for(int f=0;f<nF;++f) if(Cs[row][f]!=0) tc.emplace_back(row,f,Cs[row][f]); C.setFromTriplets(tc.begin(),tc.end()); }
+    // SPARSE K_e, K_geom (uniform axial N_xx=1) — same per-quad math, emitted as triplets.
+    std::vector<Trip> tF,tG; V3<double> tax{0,0,1};
     for(int k=0;k<nT;++k){ const Tri&T=tris[k];
         for(auto&q:quad_triangle(2*p)){ auto d=BasisDerivs::at(B,q.xi1,q.xi2); Geom<double> G=Geom<double>::build(T.X,d);
             double A[3][3],D[3][3]; eval3D_ABD(G.a1,G.a2,thick,A,D);
@@ -181,12 +204,26 @@ static std::vector<Mode> run_lba(int Nx,int Nt,double thick,int p,int nmodes,
             for(int a=0;a<nK;++a)for(int i=0;i<3;++i){int ga=3*gmap[k][a]+i;
                 for(int b=0;b<nK;++b)for(int j=0;j<3;++j){int gb=3*gmap[k][b]+j;
                     double v=0; for(int r=0;r<3;++r){double Am=0,Dm=0;for(int s2=0;s2<3;++s2){Am+=A[r][s2]*Bm.at(s2,3*b+j);Dm+=D[r][s2]*Bb.at(s2,3*b+j);}v+=Bm.at(r,3*a+i)*Am+Bb.at(r,3*a+i)*Dm;}
-                    Kf(ga,gb)+=q.w*Jac*v; if(i==j)Kg(ga,gb)+=q.w*Jac*g[a]*g[b]; }}
+                    tF.emplace_back(ga,gb,q.w*Jac*v); if(i==j)tG.emplace_back(ga,gb,q.w*Jac*g[a]*g[b]); }}
         }}
-    EMat Ke=C.transpose()*Kf*C, Kge=C.transpose()*Kg*C;
-    gsEigen::SelfAdjointEigenSolver<EMat> esKe(Ke); out_kemin=esKe.eigenvalues()(0)/esKe.eigenvalues()(nF-1);
-    gsEigen::GeneralizedSelfAdjointEigenSolver<EMat> ges(Kge,Ke);
-    auto mu=ges.eigenvalues(); auto V=ges.eigenvectors();
+    SpMat Kf(nd,nd),Kg(nd,nd); Kf.setFromTriplets(tF.begin(),tF.end()); Kg.setFromTriplets(tG.begin(),tG.end());
+    SpMat Ke=(C.transpose()*Kf*C); Ke.makeCompressed();
+    SpMat Kge=(C.transpose()*Kg*C); Kge.makeCompressed();
+    out_kemin=0.0;   // (dense Ke condition diagnostic skipped on the sparse path)
+    // SPARSE Spectra Buckling shift-invert: Ke x = lam Kge x ; smallest positive lam = N_cr.
+    // Shift 0.8·sigma_cl·t sits BELOW the lowest mode (~0.9 sigma_cl) so shift-invert
+    // catches the true lowest cluster (validated == dense in test_bb_cylinder_lba_sparse).
+    double sigma_cl_loc=E*thick/(R*std::sqrt(3.0*(1-nu*nu)));
+    double shift=0.8*sigma_cl_loc*thick;
+    int nev=std::min(std::max(nmodes+6,14),nF-1), ncv=std::min(3*nev,nF);
+    gsMatrix<real_t> vals, vecs; bool spok=false;
+    try{
+        gsSpectraGenSymShiftSolver<SpMat,Spectra::GEigsMode::Buckling> solver(Ke,Kge,nev,ncv,shift);
+        solver.compute(Spectra::SortRule::LargestMagn,1000,1e-10,Spectra::SortRule::SmallestMagn);
+        spok=(solver.info()==Spectra::CompInfo::Successful);
+        if(spok){ vals=solver.eigenvalues(); vecs=solver.eigenvectors(); }
+    }catch(...){ spok=false; }
+    if(!spok){ fprintf(stderr,"  [Spectra] FAILED to converge (nF=%d nev=%d ncv=%d) — try a coarser mesh.\n",nF,nev,ncv); return out; }
     // classification grid (VERBATIM from the validated test — keeps (m,n) bit-identical)
     const int NXS=9,NTS=33;
     std::vector<double> gx,gth; for(int ia=0;ia<NXS;++ia)for(int it=0;it<NTS;++it){gx.push_back(L*ia/(NXS-1));gth.push_back(2*PI*it/(NTS-1));}
@@ -199,50 +236,59 @@ static std::vector<Mode> run_lba(int Nx,int Nt,double thick,int p,int nmodes,
         n=0;for(int ia=0;ia<NXS;++ia){int sc=0;double pv=0;for(int it=0;it<NTS;++it){double v=w[ia*NTS+it];if(std::fabs(v)<tol)continue;if(pv!=0&&(v>0)!=(pv>0))++sc;pv=v;}n=std::max(n,sc);}
         m=0;for(int it=0;it<NTS;++it){int sc=0;double pv=0;for(int ia=0;ia<NXS;++ia){double v=w[ia*NTS+it];if(std::fabs(v)<tol)continue;if(pv!=0&&(v>0)!=(pv>0))++sc;pv=v;}m=std::max(m,sc);}};
 
-    // viz grid (denser, for ParaView mode-shape export) + geometry write
+    // ParaView export of the ACTUAL BB triangle mesh: sub-tessellate each element
+    // into sub^2 display triangles. The parametric sub-lattice + basis values are
+    // identical for every element, so precompute them once; per element only the
+    // control points X[] (geometry) and the CP displacements (mode) differ.
     bool wantViz = !outdir.empty();
-    int NXV = std::min(4*Nx+1, 41), NTV = std::min(4*Nt+1, 161);
-    std::vector<double> vpos;            // (NXV*NTV)*3, i (axial) fastest then j (circ)
-    std::vector<int> vtri(NXV*NTV,-1);
-    std::vector<std::vector<double>> vN(NXV*NTV);
+    const int sub=4;                      // display subdivisions per element edge
+    std::vector<std::array<int,2>> latt; std::map<std::pair<int,int>,int> lidx;
+    for(int j=0;j<=sub;++j)for(int i=0;i<=sub-j;++i){lidx[{i,j}]=(int)latt.size();latt.push_back({i,j});}
+    int nSub=(int)latt.size();
+    std::vector<std::vector<double>> subN(nSub,std::vector<double>(nK,0.0));
+    for(int s=0;s<nSub;++s){double l1=latt[s][0]/(double)sub,l2=latt[s][1]/(double)sub;for(int a=0;a<nK;++a)subN[s][a]=B.eval_one(a,l1,l2);}
+    std::vector<std::array<int,3>> subTri;     // local sub-triangles within one element
+    for(int j=0;j<sub;++j)for(int i=0;i<sub-j;++i){
+        int A=lidx[{i,j}],Bx=lidx[{i+1,j}],C=lidx[{i,j+1}]; subTri.push_back({A,Bx,C});
+        if(i<sub-1-j){int Dd=lidx[{i+1,j+1}]; subTri.push_back({Bx,Dd,C});} }
+    std::vector<double> geomPts;          // undeformed positions, nT*nSub points × 3
     if(wantViz){
         ::mkdir(outdir.c_str(),0777); std::string md=outdir+"/modes"; ::mkdir(md.c_str(),0777);
-        vpos.resize((size_t)NXV*NTV*3);
-        for(int jt=0;jt<NTV;++jt)for(int ia=0;ia<NXV;++ia){
-            double x=L*ia/(NXV-1), th=2*PI*jt/(NTV-1);
-            size_t idx=(size_t)jt*NXV+ia; V3<double> P=cyl(x,th);
-            vpos[3*idx]=P[0];vpos[3*idx+1]=P[1];vpos[3*idx+2]=P[2];
-            std::array<double,2> PP{x,th}; int f=-1; std::array<double,2> bc{};
-            for(int k=0;k<nT;++k){auto b=baryParam(tris[k],PP);double b0=1-b[0]-b[1];if(b[0]>=-1e-7&&b[1]>=-1e-7&&b0>=-1e-7){f=k;bc=b;break;}}
-            vtri[idx]=f; vN[idx].assign(nK,0.0); if(f>=0)for(int k=0;k<nK;++k)vN[idx][k]=B.eval_one(k,bc[0],bc[1]);
-        }
-        write_vts(outdir+"/mp.vts",NXV,NTV,vpos,nullptr);
-        write_pvd(outdir+"/mp.pvd","mp.vts");
+        geomPts.resize((size_t)nT*nSub*3);
+        for(int k=0;k<nT;++k)for(int s=0;s<nSub;++s){double X=0,Y=0,Z=0;
+            for(int a=0;a<nK;++a){const V3<double>&P=tris[k].X[a];double w=subN[s][a];X+=w*P[0];Y+=w*P[1];Z+=w*P[2];}
+            size_t idx=((size_t)k*nSub+s)*3; geomPts[idx]=X;geomPts[idx+1]=Y;geomPts[idx+2]=Z;}
+        write_vtu(outdir+"/mp.vtu",geomPts,nullptr,nT,nSub,subTri);
+        write_pvd(outdir+"/mp.pvd","mp.vtu");
     }
 
-    double sigma_cl=E*thick/(R*std::sqrt(3.0*(1-nu*nu)));
-    std::vector<Mode> out;
-    for(int i=0;i<nmodes;++i){int col=nF-1-i;if(col<0)break;double m=mu(col);if(!(m>0))continue;
-        EMat phi=V.col(col); EMat uf=C*phi;
+    // Iterate the sparse eigenpairs in ascending lam (= N_cr); the smallest
+    // positive ones are the lowest Koiter cluster. Classify (m,n) + write viz.
+    std::vector<int> ord; for(int i=0;i<vals.rows();++i) ord.push_back(i);
+    std::sort(ord.begin(),ord.end(),[&](int a,int b){return vals(a,0)<vals(b,0);});
+    for(int t:ord){ double lam=vals(t,0); if(!(lam>1e-9)) continue;
+        gsMatrix<real_t> uf=C*vecs.col(t);
         // radial scalar on classification grid -> (m,n)
         std::vector<double> w(gx.size(),0.0);
         for(size_t s=0;s<gx.size();++s){const Loc&Lc=loc[s];if(Lc.tri<0)continue;V3<double>rd=radial(Lc.th);double ww=0;
             for(int k=0;k<nK;++k){int cp=gmap[Lc.tri][k];ww+=Lc.N[k]*(uf(3*cp,0)*rd[0]+uf(3*cp+1,0)*rd[1]+uf(3*cp+2,0)*rd[2]);}w[s]=ww;}
         int mm,nn; wavenums(w,mm,nn);
-        Mode M; M.sig=(1.0/m)/thick; M.m=mm; M.n=nn; M.pvd="-";
+        Mode M; M.sig=lam/thick; M.m=mm; M.n=nn; M.pvd="-";
         if(wantViz){
-            // full 3-comp displacement on the viz grid, normalised so |u|_max=1
-            std::vector<double> disp((size_t)NXV*NTV*3,0.0); double mx=0;
-            for(size_t idx=0;idx<(size_t)NXV*NTV;++idx){int f=vtri[idx];if(f<0)continue;
-                double ux=0,uy=0,uz=0;for(int k=0;k<nK;++k){int cp=gmap[f][k];double Nk=vN[idx][k];ux+=Nk*uf(3*cp,0);uy+=Nk*uf(3*cp+1,0);uz+=Nk*uf(3*cp+2,0);}
-                disp[3*idx]=ux;disp[3*idx+1]=uy;disp[3*idx+2]=uz; mx=std::max(mx,std::sqrt(ux*ux+uy*uy+uz*uz));}
+            // displacement on the sub-tessellated mesh, normalised so |u|_max=1
+            std::vector<double> disp((size_t)nT*nSub*3,0.0); double mx=0;
+            for(int k=0;k<nT;++k)for(int s=0;s<nSub;++s){double ux=0,uy=0,uz=0;
+                for(int a=0;a<nK;++a){int cp=gmap[k][a];double w=subN[s][a];ux+=w*uf(3*cp,0);uy+=w*uf(3*cp+1,0);uz+=w*uf(3*cp+2,0);}
+                size_t idx=((size_t)k*nSub+s)*3; disp[idx]=ux;disp[idx+1]=uy;disp[idx+2]=uz;
+                mx=std::max(mx,std::sqrt(ux*ux+uy*uy+uz*uz));}
             if(mx>0)for(auto&d:disp)d/=mx;
-            std::string vts="mode"+std::to_string((int)out.size())+".vts";
-            write_vts(outdir+"/modes/"+vts,NXV,NTV,vpos,&disp);
-            write_pvd(outdir+"/modes/mode"+std::to_string((int)out.size())+".pvd",vts);
-            M.pvd="modes/mode"+std::to_string((int)out.size())+".pvd";
+            int mi=(int)out.size();
+            write_vtu(outdir+"/modes/mode"+std::to_string(mi)+".vtu",geomPts,&disp,nT,nSub,subTri);
+            write_pvd(outdir+"/modes/mode"+std::to_string(mi)+".pvd","mode"+std::to_string(mi)+".vtu");
+            M.pvd="modes/mode"+std::to_string(mi)+".pvd";
         }
         out.push_back(M);
+        if((int)out.size()>=nmodes) break;
     }
     return out;
 }
