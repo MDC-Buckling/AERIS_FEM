@@ -383,6 +383,7 @@ function aerisOutputServer() {
 
           const scriptsDir   = path.resolve(__dirname, "..", "scripts");
           const benchmarksDir = path.resolve(__dirname, "..", "benchmarks");
+          const bbDir        = path.resolve(__dirname, "..", "bb");
           const outputDir    = path.resolve(__dirname, "..", "output");
           const jobId = opts.jobId ? slugifyJobName(opts.jobId) : null;
           // Per-job folder if jobId given (the GUI flow always sets it now),
@@ -447,6 +448,27 @@ function aerisOutputServer() {
                   ok: false,
                   error: `Code_Aster engine: no solver wired for (shape=${shape}, analysis.kind=${akind})`,
                   hint: "Code_Aster today supports (cylinder_segment | cylinder, static) and (cylinder, lba). Switch the engine back to NURBS/IGA, or pick one of those.",
+                }));
+                return;
+              }
+            } else if (engine === "bb") {
+              // Bernstein-Bézier triangle KL-shell element (Ludwig/Hühne).
+              // First BB simulation: closed-cylinder axial LBA only. The
+              // driver C++ is compiled (cached under <work>/.bb_build) on
+              // first use from the bb/ sources mounted read-only at /bb (see
+              // the conditional -v below). Dense generalized eigensolve →
+              // moderate-R/t regime (R/t≈20 is the validated acceptance
+              // point: lowest cluster [m0,n8] ~0.90·σ_cl).
+              if (shape === "cylinder" && akind === "lba") {
+                solverScript = "/scripts/bb_cylinder_lba.py";
+                solverPaysAttentionToRefines = false;
+              } else {
+                res.statusCode = 400;
+                res.setHeader("Content-Type", "application/json");
+                res.end(JSON.stringify({
+                  ok: false,
+                  error: `BB engine: no solver wired for (shape=${shape}, analysis.kind=${akind})`,
+                  hint: "The Bernstein-Bézier element today supports only (cylinder, lba). Switch the engine back to NURBS/IGA, or pick cylinder + LBA.",
                 }));
                 return;
               }
@@ -543,6 +565,9 @@ function aerisOutputServer() {
           // cylinder_static.py, cylinder_arclength.py, pinched_cylinder_static.py, hemisphere_static.py take --threads.
           // pinched_cylinder_static.py and hemisphere_static.py also take --work-dir.
           const isCodeAster = solverScript.startsWith("/scripts/code_aster_");
+          // BB engine: needs the bb/ sources mounted (compiled on first use)
+          // and writes ParaView files + run.json into /work like cylinder_lba.
+          const isBB = solverScript === "/scripts/bb_cylinder_lba.py";
           // Code_Aster's solve (MUMPS factorisation + RIGI_GEOM eigensolve) is
           // OpenMP-parallel and genuinely heavy — single-thread crawls on a
           // buckling run. The New-Job form defaults threads=1, which almost
@@ -560,7 +585,9 @@ function aerisOutputServer() {
             scriptArgs.push("--threads", String(effThreads));
           } else {
             scriptArgs.push("--refines", ...refines.map(String));
-            if (solverScript === "/scripts/cylinder_lba.py") {
+            if (solverScript === "/scripts/cylinder_lba.py" || isBB) {
+              // Both write mp.pvd + modes/*.pvd + run.json into the job dir.
+              // (BB ignores --refines — its mesh is set by Nx/Nt/p in model.json.)
               scriptArgs.push("--plot-dir", "/work");
             } else {
               scriptArgs.push("--threads", String(threads));
@@ -584,6 +611,9 @@ function aerisOutputServer() {
             // shared /benchmarks/common/vts.py StructuredGrid parser
             // without copy-pasting it into scripts/.
             "-v", `${benchmarksDir}:/benchmarks:ro`,
+            // BB engine: mount the bb/ tree read-only so bb_cylinder_lba.py
+            // can compile (cached) + run the BB triangle element driver.
+            ...(isBB ? ["-v", `${bbDir}:/bb:ro`] : []),
             "-v", `${workDir}:/work:rw`,
             isCodeAster ? CODE_ASTER_IMAGE : SOLVER_IMAGE,
             "python3", "-u",                  // -u: unbuffered, so phase
