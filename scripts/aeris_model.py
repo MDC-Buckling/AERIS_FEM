@@ -35,6 +35,7 @@ A model.json round-trip looks like:
       "discretization": {
         "gismo":      { "refinement": 5, "degree": 3, "smoothness": 2,
                         "coupling": "gsSmoothInterfaces" },
+        "bb":         { "degree": 5, "Nx": 4, "Nt": 20, "nmodes": 8 },
         "code_aster": { "element_family": "COQUE_3D", "mesh_size": 2.0,
                         "order": 1 }
       }
@@ -264,11 +265,16 @@ DEFAULT_ANALYSIS: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 # The model.json is engine-agnostic: geometry / material / section / load /
 # analysis describe *intent*; the engine decides *how* the intent is
-# discretised and solved. Two engines:
+# discretised and solved. Three engines:
 #   "gismo"      → isogeometric (NURBS patches + Greville h-refinement),
 #                  the validated path; reads `discretization.gismo`.
 #   "code_aster" → classical FEM (GMSH mesh → .med → Code_Aster .comm),
 #                  reads `discretization.code_aster`.
+#   "bb"         → Bernstein-Bézier triangle KL-shell element (Ludwig/Hühne),
+#                  reads `discretization.bb`. Closed-cylinder axial LBA only
+#                  for now (the first BB simulation); dense generalized
+#                  eigensolve, so the moderate-R/t regime (R/t≈20) is the
+#                  validated operating point — see scripts/bb_cylinder_lba.py.
 # Dispatch in aeris-gui/vite.config.js reads solver.engine *before* the
 # (shape, kind, load) matrix, then picks the backend script for that engine.
 DEFAULT_SOLVER: Dict[str, Any] = {
@@ -282,8 +288,25 @@ DEFAULT_SOLVER: Dict[str, Any] = {
 # `discretization.gismo` is kept identical to the legacy top-level `mesh`
 # block — mirrored on load (see from_dict) so the two can't drift — until
 # the IGA solver scripts are migrated off `model.mesh` onto this.
+# Bernstein-Bézier triangle element discretisation. Unlike IGA there is no
+# knot-insertion `refinement` level — the mesh is a structured triangulation
+# of the cylinder, Nx axial × Nt circumferential quads, each split into two
+# BB triangles. `degree` is the Bernstein polynomial order p (Ludwig: p≥5
+# avoids membrane locking). nmodes = how many of the lowest cluster to report.
+# Defaults reproduce the validated acceptance case (R/t=20, lowest [m0,n8] at
+# ~0.90·σ_cl). NOTE: the dense eigensolve makes very fine meshes (high Nt,
+# needed for thin R/t≫50) expensive — the BB engine targets the moderate-R/t
+# regime for this first simulation; sparse scaling is a later lever.
+DEFAULT_BB_DISC: Dict[str, Any] = {
+    "degree": 5,            # Bernstein polynomial order p (≥5: locking-safe)
+    "Nx": 4,                # axial element count
+    "Nt": 20,               # circumferential element count (must resolve n_cr~√(R/t))
+    "nmodes": 8,            # lowest cluster members to report (Koiter circle)
+}
+
 DEFAULT_DISCRETIZATION: Dict[str, Any] = {
     "gismo": dict(DEFAULT_MESH),
+    "bb": dict(DEFAULT_BB_DISC),
     "code_aster": {
         # Shell formulation (Code_Aster modelisation): "DKT" (thin Kirchhoff,
         # the validated default) or "COQUE_3D" (curved/thick, biquadratic).
@@ -416,6 +439,10 @@ class ModelConfig:
             **(d.get("mesh") or {}),
             **(raw_disc.get("gismo") or {}),
         }
+        bb_disc = {
+            **DEFAULT_BB_DISC,
+            **(raw_disc.get("bb") or {}),
+        }
         ca_disc = {
             **DEFAULT_DISCRETIZATION["code_aster"],
             **(raw_disc.get("code_aster") or {}),
@@ -432,7 +459,8 @@ class ModelConfig:
             load=_migrate_load(d.get("load", {})),
             analysis={**DEFAULT_ANALYSIS, **d.get("analysis", {})},
             solver={**DEFAULT_SOLVER, **(d.get("solver") or {})},
-            discretization={"gismo": gismo_disc, "code_aster": ca_disc},
+            discretization={"gismo": gismo_disc, "bb": bb_disc,
+                            "code_aster": ca_disc},
             schemaVersion=SCHEMA_VERSION,
         )
 
