@@ -97,6 +97,11 @@ export default function Viewport3D() {
   // resolution the user enters.
   const engine = useUI((s) => s.model.solver?.engine ?? "gismo");
   const caMeshSize = useUI((s) => s.model.discretization?.code_aster?.mesh_size ?? 2.0);
+  // BB triangle preview density (Nx axial × Nt circumferential, each quad cell
+  // split into two triangles). Drives the live triangulation overlay so the
+  // user sees the actual BB element mesh while tuning Nx/Nt — not the IGA grid.
+  const bbNx = useUI((s) => s.model.discretization?.bb?.Nx ?? 4);
+  const bbNt = useUI((s) => s.model.discretization?.bb?.Nt ?? 20);
   // The actual FE element edges from the last "Generate mesh" — when present
   // (Code_Aster), the cylinder preview draws the real mesh instead of the grid.
   const meshPreviewEdges = useUI((s) => s.meshPreviewEdges);
@@ -946,7 +951,20 @@ export default function Viewport3D() {
     // max=8) so r=5/6 still visibly densify before saturation. Costs
     // ~O(meridians × segmentsAround + rings × segmentsAround) line
     // segments, still trivial for three.js at the cap.
-    if (engine === "code_aster" && meshPreviewEdges && meshPreviewEdges.length) {
+    if (engine === "bb") {
+      // BB triangle element: draw the ACTUAL triangulation the solver uses —
+      // an Nx×Nt grid of quad cells, each split into two BB triangles. So the
+      // user sees triangles (rings + axial lines + per-cell diagonals) live as
+      // they tune Nx/Nt, instead of the IGA tensor density grid. The diagonal
+      // matches the driver's split (i,j)->(i+1,j+1).
+      const triEdges = new THREE.LineSegments(
+        buildCylinderTriEdges(cyl.R, cyl.L, Math.max(2, bbNx), Math.max(3, bbNt)),
+        st.edgeMaterial
+      );
+      triEdges.userData.kind = "edges";
+      triEdges.visible = showEdges;
+      st.meshGroup.add(triEdges);
+    } else if (engine === "code_aster" && meshPreviewEdges && meshPreviewEdges.length) {
       // TRUE FE mesh: draw the actual element edges (triangles for DKT, quads
       // for COQUE_3D) from the generated mesh — not the parametric density
       // grid. Cleared on any discretisation change (mesh goes stale), so the
@@ -1043,7 +1061,7 @@ export default function Viewport3D() {
     cyl.R, cyl.L, cyl.t, partitionsKey,
     segment.R, segment.L, segment.t, segment.phi_deg,
     sphere.R, sphere.t, sphere.opening_angle_deg,
-    meshRefinement, engine, caMeshSize, meshPreviewEdges, loadKind, loadActive, bcsKind, showEdges, setStatus,
+    meshRefinement, engine, caMeshSize, bbNx, bbNt, meshPreviewEdges, loadKind, loadActive, bcsKind, showEdges, setStatus,
   ]);
 
   // -------------------------------------------------------------------
@@ -1198,8 +1216,9 @@ export default function Viewport3D() {
         mesh.userData.kind = "surface";
         st.meshGroup.add(mesh);
 
-        // Patch-grid edge wires (cyan).
-        const edgeGeom = buildGridEdges(p.positions, p.nx, p.ny);
+        // Patch-grid edge wires (cyan). Structured (.vts) → tensor grid;
+        // unstructured (.vtu, e.g. BB triangles) → actual triangle edges.
+        const edgeGeom = buildGridEdges(p.positions, p.nx, p.ny, p.indices);
         const edges = new THREE.LineSegments(edgeGeom, st.edgeMaterial);
         edges.userData.kind = "edges";
         edges.visible = showEdges;
@@ -1620,6 +1639,50 @@ function buildCylinderEdgesAt(R, L, ringZs, meridians, segmentsAround = 96) {
   return geom;
 }
 
+/** Wireframe of the BB triangle mesh on the cylinder: an Nx (axial) × Nt
+ * (circumferential) grid of quad cells, each split into two triangles by the
+ * (i,j)->(i+1,j+1) diagonal — exactly the triangulation the BB driver builds.
+ * Draws Nx+1 circumferential rings (sampled as circles), Nt axial lines
+ * (straight at fixed theta), and Nx*Nt diagonals (helical, sub-sampled to hug
+ * the surface). Lets the pre-processor show the real triangle elements live. */
+function buildCylinderTriEdges(R, L, Nx, Nt) {
+  const pts = [];
+  const node = (i, j) => {
+    const x = (L * i) / Nx;
+    const th = (2 * Math.PI * j) / Nt;
+    return [R * Math.cos(th), R * Math.sin(th), x];
+  };
+  const seg = (a, b) => { pts.push(a[0], a[1], a[2], b[0], b[1], b[2]); };
+  const ringSeg = Math.max(72, Nt * 3);
+  for (let i = 0; i <= Nx; i++) {
+    const x = (L * i) / Nx;
+    for (let k = 0; k < ringSeg; k++) {
+      const a0 = (k / ringSeg) * 2 * Math.PI;
+      const a1 = ((k + 1) / ringSeg) * 2 * Math.PI;
+      pts.push(R * Math.cos(a0), R * Math.sin(a0), x);
+      pts.push(R * Math.cos(a1), R * Math.sin(a1), x);
+    }
+  }
+  for (let j = 0; j < Nt; j++) seg(node(0, j), node(Nx, j));
+  const dsub = 5;
+  for (let i = 0; i < Nx; i++) {
+    for (let j = 0; j < Nt; j++) {
+      let prev = node(i, j);
+      for (let s = 1; s <= dsub; s++) {
+        const f = s / dsub;
+        const x = (L * (i + f)) / Nx;
+        const th = (2 * Math.PI * (j + f)) / Nt;
+        const cur = [R * Math.cos(th), R * Math.sin(th), x];
+        seg(prev, cur);
+        prev = cur;
+      }
+    }
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+  return geom;
+}
+
 /** Sparse edge overlay for the procedural cylinder: top + bottom rims +
  * `meridians` axial lines + `axialRings` intermediate rings. Kept for
  * any caller that wants the legacy uniform-spacing layout. */
@@ -2017,15 +2080,38 @@ function updateMaxArrow(st, warpScale, visible) {
 }
 
 /** Build a line-segment geometry tracing the (nx × ny) structured grid edges. */
-function buildGridEdges(positions, nx, ny) {
-  // Unstructured patches (Code_Aster FEM .vtu) carry no (nx, ny) grid — there
-  // is no tensor-product wireframe to draw, so return an empty edge geometry
-  // (the solid surface still renders from the explicit triangle indices).
+function buildGridEdges(positions, nx, ny, indices) {
+  // Unstructured patches (BB triangle .vtu, Code_Aster FEM .vtu) carry no
+  // (nx, ny) tensor grid — so draw the actual element edges from the triangle
+  // index buffer (each triangle's 3 edges, deduped by sorted vertex pair). For
+  // the BB engine this is what makes the triangular discretisation visible when
+  // the user toggles "Edges". Falls back to an empty geometry if no indices.
   if (!nx || !ny) {
-    const empty = new THREE.BufferGeometry();
-    empty.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    empty.setIndex(new THREE.Uint32BufferAttribute([], 1));
-    return empty;
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    if (indices && indices.length >= 3) {
+      const nPts = positions.length / 3;
+      const seen = new Set();
+      const idx = [];
+      const addEdge = (u, v) => {
+        const lo = u < v ? u : v;
+        const hi = u < v ? v : u;
+        const key = lo * nPts + hi;
+        if (seen.has(key)) return;
+        seen.add(key);
+        idx.push(lo, hi);
+      };
+      for (let c = 0; c + 2 < indices.length; c += 3) {
+        const a = indices[c], b = indices[c + 1], d = indices[c + 2];
+        addEdge(a, b);
+        addEdge(b, d);
+        addEdge(d, a);
+      }
+      geom.setIndex(new THREE.Uint32BufferAttribute(idx, 1));
+    } else {
+      geom.setIndex(new THREE.Uint32BufferAttribute([], 1));
+    }
+    return geom;
   }
   const idx = [];
   // horizontal segments (per row)
