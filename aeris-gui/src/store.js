@@ -243,7 +243,11 @@ export const useUI = create((set) => ({
     //                    paths (where force-control would jump).
     // LSA / LBA ignore controlMode (LBA is eigenvalue-only; LSA is single
     // direct K·u=F).
-    load: { kind: "axial", magnitude: 1.0, controlMode: "force", nodes: [] },
+    // load.kind/magnitude drive beginner mode; load.sets drives expert mode:
+    //   [{ id, name, region, type:"force"|"pressure", frame,
+    //      force:{f1,f2,f3}, moment:{m1,m2,m3}, pressure }]
+    // (force/moment = per-node nodal components; pressure = uniform on region).
+    load: { kind: "axial", magnitude: 1.0, controlMode: "force", nodes: [], sets: [] },
     analysis: {
       kind: "lba",
       nmodes: 5,
@@ -625,6 +629,42 @@ export const useUI = create((set) => ({
     set((s) => {
       const sets = (s.model.bcs.sets ?? []).filter((b) => b.id !== id);
       const nextModel = { ...s.model, bcs: { ...s.model.bcs, sets } };
+      return { model: nextModel, sectionStatus: computeModelReadiness(nextModel) };
+    }),
+
+  /** Expert-mode LOAD set CRUD (model.load.sets). A set binds a region to a
+   * force/moment (per-node components f1..f3 / m1..m3) or a uniform pressure. */
+  addLoadSet: () =>
+    set((s) => {
+      const n = (s.model.load.sets ?? []).length + 1;
+      const set_ = {
+        id: `ld-${Date.now()}`,
+        name: `Load-${n}`,
+        region: "top",
+        type: "force",
+        frame: "global",
+        force: { f1: 0, f2: 0, f3: 0 },
+        moment: { m1: 0, m2: 0, m3: 0 },
+        pressure: 0,
+      };
+      const nextModel = {
+        ...s.model,
+        load: { ...s.model.load, sets: [...(s.model.load.sets ?? []), set_] },
+      };
+      return { model: nextModel, sectionStatus: computeModelReadiness(nextModel) };
+    }),
+  updateLoadSet: (id, patch) =>
+    set((s) => {
+      const sets = (s.model.load.sets ?? []).map((l) =>
+        l.id === id ? { ...l, ...patch } : l
+      );
+      const nextModel = { ...s.model, load: { ...s.model.load, sets } };
+      return { model: nextModel, sectionStatus: computeModelReadiness(nextModel) };
+    }),
+  removeLoadSet: (id) =>
+    set((s) => {
+      const sets = (s.model.load.sets ?? []).filter((l) => l.id !== id);
+      const nextModel = { ...s.model, load: { ...s.model.load, sets } };
       return { model: nextModel, sectionStatus: computeModelReadiness(nextModel) };
     }),
 

@@ -166,52 +166,57 @@ function BcSetCard({ set, onChange, onRemove }) {
         </button>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 12px" }}>
-        {DOFS.map(([comp, label, hint]) => {
-          const constrained = dofs[comp] != null;
-          return (
-            <label
-              key={comp}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                fontSize: 10.5,
-                color: constrained ? "var(--accent)" : "var(--text-muted)",
-                cursor: "pointer",
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={constrained}
-                onChange={() => toggle(comp)}
-                style={{ accentColor: "var(--accent)" }}
-              />
-              <span style={{ flex: "0 0 30px", fontWeight: 600 }}>{label}</span>
-              <input
-                type="number"
-                step="any"
-                disabled={!constrained}
-                value={constrained ? dofs[comp] : ""}
-                placeholder={constrained ? "" : "free"}
-                onChange={(e) => setValue(comp, e.target.value)}
-                title={hint}
-                style={{
-                  width: 56,
-                  background: constrained
-                    ? "var(--input-bg, rgba(0,0,0,0.25))"
-                    : "transparent",
-                  border: "1px solid var(--line-soft)",
-                  borderRadius: 3,
-                  color: "var(--text-secondary)",
-                  fontFamily: MONO,
-                  fontSize: 10.5,
-                  padding: "2px 4px",
-                }}
-              />
-            </label>
-          );
-        })}
+      {/* Two columns: translations (U1-3) left, rotations (UR1-3) right. */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }}>
+        {[DOFS.slice(0, 3), DOFS.slice(3)].map((col, ci) => (
+          <div key={ci} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {col.map(([comp, label, hint]) => {
+              const constrained = dofs[comp] != null;
+              return (
+                <label
+                  key={comp}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: 10.5,
+                    color: constrained ? "var(--accent)" : "var(--text-muted)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={constrained}
+                    onChange={() => toggle(comp)}
+                    style={{ accentColor: "var(--accent)" }}
+                  />
+                  <span style={{ flex: "0 0 34px", fontWeight: 600 }}>{label}</span>
+                  <input
+                    type="number"
+                    step="any"
+                    disabled={!constrained}
+                    value={constrained ? dofs[comp] : ""}
+                    placeholder={constrained ? "" : "free"}
+                    onChange={(e) => setValue(comp, e.target.value)}
+                    title={hint}
+                    style={{
+                      width: 56,
+                      background: constrained
+                        ? "var(--input-bg, rgba(0,0,0,0.25))"
+                        : "transparent",
+                      border: "1px solid var(--line-soft)",
+                      borderRadius: 3,
+                      color: "var(--text-secondary)",
+                      fontFamily: MONO,
+                      fontSize: 10.5,
+                      padding: "2px 4px",
+                    }}
+                  />
+                </label>
+              );
+            })}
+          </div>
+        ))}
       </div>
     </div>
   );

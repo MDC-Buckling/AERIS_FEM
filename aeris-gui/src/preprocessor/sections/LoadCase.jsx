@@ -3,6 +3,12 @@ import NumberField from "../../components/ui/NumberField.jsx";
 import ToggleGroup from "../../components/ui/ToggleGroup.jsx";
 import { MONO } from "../../constants.js";
 import { useUI } from "../../store.js";
+import ExpertLoadEditor from "./ExpertLoadEditor.jsx";
+
+const MODE_OPTIONS = [
+  ["beginner", "Beginner"],
+  ["expert", "Expert"],
+];
 
 /** Functional inspector for BOUNDARY CONDITIONS & LOADS > Load Case.
  *
@@ -100,6 +106,8 @@ export default function LoadCase() {
   const engine = useUI((s) => s.model.solver?.engine ?? "gismo");
   const shape = useUI((s) => s.model.geometry.shape);
   const pickingMode = useUI((s) => s.pickingMode);
+  const uiMode = useUI((s) => s.model.uiMode) ?? "beginner";
+  const setUiMode = useUI((s) => s.setUiMode);
   const setKind = useUI((s) => s.setLoadKind);
   const setMagnitude = useUI((s) => s.setLoadMagnitude);
   const setControlMode = useUI((s) => s.setLoadControlMode);
@@ -129,6 +137,18 @@ export default function LoadCase() {
 
   return (
     <>
+      {/* Beginner ↔ Expert mode (shared with the BCs panel via model.uiMode). */}
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ color: "var(--text-secondary)", fontSize: 10.5, fontFamily: MONO, marginBottom: 4 }}>
+          Mode
+        </div>
+        <ToggleGroup options={MODE_OPTIONS} value={uiMode} onChange={setUiMode} fullWidth />
+      </div>
+
+      {uiMode === "expert" ? (
+        <ExpertLoadEditor />
+      ) : (
+      <>
       <div style={{ marginBottom: 9 }}>
         <div
           style={{
@@ -483,6 +503,8 @@ export default function LoadCase() {
           </>
         )}
       </div>
+      </>
+      )}
     </>
   );
 }

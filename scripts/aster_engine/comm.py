@@ -151,6 +151,11 @@ def _comm_cylinder(model: "ModelConfig", manifest: Dict[str, Any]) -> str:  # no
     load = model.load
     kind = load.get("kind")
     mag = float(load.get("magnitude", 1.0))
+    # Expert mode: BC + load both come from the per-region sets (Abaqus-style).
+    # Requires bcs.sets (a static solve needs constraints); load.sets optional.
+    if (getattr(model, "uiMode", "beginner") == "expert") and model.bcs.get("sets"):
+        return _preamble("shell", family, E, nu, thickness, ["bottom", "top"],
+                         cara_vector=(0.0, 0.0, 1.0)) + _static_tail(_expert_char(model))
     bottom_clamp = "_F(GROUP_NO='bottom', DX=0.0, DY=0.0, DZ=0.0, DRX=0.0, DRY=0.0, DRZ=0.0)"
     if kind == "axial":
         n_top = int(manifest.get("top_node_count", 0))
@@ -319,6 +324,40 @@ def _expert_ddl_impo(model: "ModelConfig") -> str:  # noqa: F821
             "switch to beginner mode."
         )
     return "\n".join(blocks)
+
+
+# Expert-mode load component → Code_Aster FORCE_NODALE keyword (per-node).
+_EXPERT_FORCE_MAP = {"f1": "FX", "f2": "FY", "f3": "FZ",
+                     "m1": "MX", "m2": "MY", "m3": "MZ"}
+
+
+def _expert_char(model: "ModelConfig") -> str:  # noqa: F821
+    """Full AFFE_CHAR_MECA (named CHAR, what _static_tail expects) for the
+    STATIC path in expert mode: DDL_IMPO from bcs.sets + FORCE_NODALE/PRES_REP
+    from load.sets. Force/moment components are PER NODE (f1→FX … m3→MZ on the
+    region's GROUP_NO); pressure is uniform on the region's GROUP_MA. Zero
+    components are omitted."""
+    ddl = _expert_ddl_impo(model)
+    forces, pres = [], []
+    for s in (model.load.get("sets") or []):
+        region = s.get("region")
+        if not region:
+            continue
+        if s.get("type") == "pressure":
+            pres.append(f"_F(GROUP_MA='{region}', PRES={float(s.get('pressure') or 0):.10g})")
+        else:
+            comps = {**(s.get("force") or {}), **(s.get("moment") or {})}
+            terms = [f"{_EXPERT_FORCE_MAP[k]}={float(v):.10g}"
+                     for k, v in comps.items()
+                     if k in _EXPERT_FORCE_MAP and v]
+            if terms:
+                forces.append(f"_F(GROUP_NO='{region}', {', '.join(terms)})")
+    lines = [f"    DDL_IMPO=(\n{ddl}\n    ),"]
+    if forces:
+        lines.append("    FORCE_NODALE=(" + ", ".join(forces) + ",),")
+    if pres:
+        lines.append("    PRES_REP=(" + ", ".join(pres) + ",),")
+    return "CHAR = AFFE_CHAR_MECA(\n    MODELE=MODE,\n" + "\n".join(lines) + "\n)"
 
 
 def build_comm_buckling(model: "ModelConfig", manifest: Dict[str, Any],  # noqa: F821
