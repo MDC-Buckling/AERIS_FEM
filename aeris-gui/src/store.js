@@ -668,6 +668,34 @@ export const useUI = create((set) => ({
       return { model: nextModel, sectionStatus: computeModelReadiness(nextModel) };
     }),
 
+  /** 3D node-picking for expert sets. pickTarget = {kind:"bc"|"load", id} marks
+   * which set the viewport's click-picker appends coordinates to (null = off).
+   * A picked set's region becomes "picked" with a pickedNodes:[{x,y,z}] list. */
+  pickTarget: null,
+  setPickTarget: (target) => set({ pickTarget: target }),
+  addPickedNode: (coord) =>
+    set((s) => {
+      const t = s.pickTarget;
+      if (!t) return {};
+      const key = t.kind === "bc" ? "bcs" : "load";
+      const sets = (s.model[key].sets ?? []).map((x) =>
+        x.id === t.id
+          ? { ...x, region: "picked", pickedNodes: [...(x.pickedNodes ?? []), coord] }
+          : x
+      );
+      const nextModel = { ...s.model, [key]: { ...s.model[key], sets } };
+      return { model: nextModel, sectionStatus: computeModelReadiness(nextModel) };
+    }),
+  clearPickedNodes: (kind, id) =>
+    set((s) => {
+      const key = kind === "bc" ? "bcs" : "load";
+      const sets = (s.model[key].sets ?? []).map((x) =>
+        x.id === id ? { ...x, pickedNodes: [] } : x
+      );
+      const nextModel = { ...s.model, [key]: { ...s.model[key], sets } };
+      return { model: nextModel, sectionStatus: computeModelReadiness(nextModel) };
+    }),
+
   /** Set the load-case preset (model.load.kind). "axial" and "bending" are
    * wired end-to-end as of Session 3.6; "torsion" / "extpress" / "intpress"
    * / "combined" are disabled in the GUI until the solver-side branches

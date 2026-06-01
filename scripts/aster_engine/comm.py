@@ -154,8 +154,10 @@ def _comm_cylinder(model: "ModelConfig", manifest: Dict[str, Any]) -> str:  # no
     # Expert mode: BC + load both come from the per-region sets (Abaqus-style).
     # Requires bcs.sets (a static solve needs constraints); load.sets optional.
     if (getattr(model, "uiMode", "beginner") == "expert") and model.bcs.get("sets"):
-        return _preamble("shell", family, E, nu, thickness, ["bottom", "top"],
-                         cara_vector=(0.0, 0.0, 1.0)) + _static_tail(_expert_char(model))
+        picked_defi, gmap = _expert_picked_groups(model)
+        pre = _preamble("shell", family, E, nu, thickness, ["bottom", "top"],
+                        cara_vector=(0.0, 0.0, 1.0))
+        return pre + picked_defi + _static_tail(_expert_char(model, gmap))
     bottom_clamp = "_F(GROUP_NO='bottom', DX=0.0, DY=0.0, DZ=0.0, DRX=0.0, DRY=0.0, DRZ=0.0)"
     if kind == "axial":
         n_top = int(manifest.get("top_node_count", 0))
@@ -300,44 +302,91 @@ _BUCKLING_BC = {
 # Expert-mode component → Code_Aster nodal DOF (global Cartesian frame).
 _EXPERT_DOF_MAP = {"u1": "DX", "u2": "DY", "u3": "DZ",
                    "ur1": "DRX", "ur2": "DRY", "ur3": "DRZ"}
-
-
-def _expert_ddl_impo(model: "ModelConfig") -> str:  # noqa: F821
-    """Build DDL_IMPO _F blocks from expert bcs.sets (Abaqus-style per-region
-    component constraints). Each set binds a named region (→ GROUP_NO) to its
-    constrained components — dof null = free (omitted), a number = prescribed
-    value (0 = clamped) — in the GLOBAL Cartesian frame (u1→DX … ur3→DRZ; the
-    cylindrical-frame option is a later phase). Returns the 8-space-indented
-    block spliced into DDL_IMPO=( ... )."""
-    blocks = []
-    for s in model.bcs.get("sets", []) or []:
-        region = s.get("region")
-        dofs = s.get("dofs", {}) or {}
-        terms = [f"{_EXPERT_DOF_MAP[c]}={float(v):.10g}"
-                 for c, v in dofs.items()
-                 if c in _EXPERT_DOF_MAP and v is not None]
-        if region and terms:
-            blocks.append(f"        _F(GROUP_NO='{region}', {', '.join(terms)}),")
-    if not blocks:
-        raise SystemExit(
-            "expert BC: no set with a constrained component — add a BC set or "
-            "switch to beginner mode."
-        )
-    return "\n".join(blocks)
-
-
 # Expert-mode load component → Code_Aster FORCE_NODALE keyword (per-node).
 _EXPERT_FORCE_MAP = {"f1": "FX", "f2": "FY", "f3": "FZ",
                      "m1": "MX", "m2": "MY", "m3": "MZ"}
 
 
-def _expert_char(model: "ModelConfig") -> str:  # noqa: F821
+def _expert_picked_groups(model: "ModelConfig"):  # noqa: F821
+    """For every expert set with region='picked', create one ENV_SPHERE node
+    group per clicked coordinate (the 3D-picked nodes). Returns
+    (defi_group_cmd, {set_id: (group_name, ...)}). The sphere radius is ~0.6·h
+    so it captures the single nearest mesh node. defi_group_cmd is spliced in
+    after the preamble (modifies MAIL via reuse=)."""
+    try:
+        h = float((model.disc("code_aster") or {}).get("mesh_size", 2.0))
+    except Exception:
+        h = 2.0
+    radius = max(h * 0.6, 1e-6)
+    blocks, gmap = [], {}
+
+    def collect(sets):
+        for s in sets or []:
+            if s.get("region") != "picked":
+                continue
+            names = []
+            for i, p in enumerate(s.get("pickedNodes") or []):
+                nm = f"P_{str(s.get('id', 'set')).replace('-', '_')}_{i}"
+                blocks.append(
+                    f"    _F(NOM='{nm}', OPTION='ENV_SPHERE', "
+                    f"POINT=({float(p['x']):.6g}, {float(p['y']):.6g}, {float(p['z']):.6g}), "
+                    f"RAYON={radius:.6g}, PRECISION={radius:.6g})"
+                )
+                names.append(nm)
+            gmap[s.get("id")] = tuple(names)
+
+    collect(model.bcs.get("sets"))
+    collect(model.load.get("sets"))
+    if not blocks:
+        return "", {}
+    cmd = ("\n# Picked-node groups — one ENV_SPHERE per clicked coordinate.\n"
+           "MAIL = DEFI_GROUP(reuse=MAIL, MAILLAGE=MAIL, CREA_GROUP_NO=(\n"
+           + ",\n".join(blocks) + ",\n))\n")
+    return cmd, gmap
+
+
+def _region_group_no(region, set_id, gmap):
+    """GROUP_NO clause value for a set's region: a quoted named group ('top'),
+    or — for region='picked' — the tuple of that set's ENV_SPHERE groups. None
+    if the region resolves to nothing (e.g. picked but no nodes clicked yet)."""
+    if region == "picked":
+        names = (gmap or {}).get(set_id, ())
+        if not names:
+            return None
+        return "(" + ", ".join(f"'{n}'" for n in names) + ",)"
+    return f"'{region}'" if region else None
+
+
+def _expert_ddl_impo(model: "ModelConfig", gmap=None) -> str:  # noqa: F821
+    """Build DDL_IMPO _F blocks from expert bcs.sets (Abaqus-style per-region
+    component constraints). Each set binds a region (named GROUP_NO, or a
+    'picked' set's ENV_SPHERE groups) to its constrained components — dof null =
+    free (omitted), a number = prescribed value (0 = clamped) — in the GLOBAL
+    Cartesian frame (u1→DX … ur3→DRZ). Returns the 8-space-indented block."""
+    blocks = []
+    for s in model.bcs.get("sets", []) or []:
+        dofs = s.get("dofs", {}) or {}
+        terms = [f"{_EXPERT_DOF_MAP[c]}={float(v):.10g}"
+                 for c, v in dofs.items()
+                 if c in _EXPERT_DOF_MAP and v is not None]
+        gno = _region_group_no(s.get("region"), s.get("id"), gmap)
+        if gno and terms:
+            blocks.append(f"        _F(GROUP_NO={gno}, {', '.join(terms)}),")
+    if not blocks:
+        raise SystemExit(
+            "expert BC: no set with a constrained component (or picked set has "
+            "no clicked nodes) — add a BC set or switch to beginner mode."
+        )
+    return "\n".join(blocks)
+
+
+def _expert_char(model: "ModelConfig", gmap=None) -> str:  # noqa: F821
     """Full AFFE_CHAR_MECA (named CHAR, what _static_tail expects) for the
     STATIC path in expert mode: DDL_IMPO from bcs.sets + FORCE_NODALE/PRES_REP
     from load.sets. Force/moment components are PER NODE (f1→FX … m3→MZ on the
     region's GROUP_NO); pressure is uniform on the region's GROUP_MA. Zero
     components are omitted."""
-    ddl = _expert_ddl_impo(model)
+    ddl = _expert_ddl_impo(model, gmap)
     forces, pres = [], []
     for s in (model.load.get("sets") or []):
         region = s.get("region")
@@ -350,8 +399,9 @@ def _expert_char(model: "ModelConfig") -> str:  # noqa: F821
             terms = [f"{_EXPERT_FORCE_MAP[k]}={float(v):.10g}"
                      for k, v in comps.items()
                      if k in _EXPERT_FORCE_MAP and v]
-            if terms:
-                forces.append(f"_F(GROUP_NO='{region}', {', '.join(terms)})")
+            gno = _region_group_no(region, s.get("id"), gmap)
+            if gno and terms:
+                forces.append(f"_F(GROUP_NO={gno}, {', '.join(terms)})")
     lines = [f"    DDL_IMPO=(\n{ddl}\n    ),"]
     if forces:
         lines.append("    FORCE_NODALE=(" + ", ".join(forces) + ",),")
@@ -400,10 +450,13 @@ def build_comm_buckling(model: "ModelConfig", manifest: Dict[str, Any],  # noqa:
     # bcs.kind may still carry an IGA-vocabulary value (e.g. 'clamped_neumann')
     # if the user came from the NURBS engine — those have no FEM meaning, so map
     # them to the classical SS-SS case. See _BUCKLING_BC for the DOF each sets.
+    picked_defi = ""
     if (model.uiMode or "beginner") == "expert" and (model.bcs.get("sets")):
-        # Expert mode: per-region component constraints from bcs.sets.
+        # Expert mode: per-region component constraints from bcs.sets (incl.
+        # 3D-picked node groups via ENV_SPHERE).
+        picked_defi, gmap = _expert_picked_groups(model)
         bc_doc = "EXPERT per-region component constraints (bcs.sets)"
-        bc_ddl = _expert_ddl_impo(model)
+        bc_ddl = _expert_ddl_impo(model, gmap)
     else:
         bc_kind = (model.bcs or {}).get("kind", "ss_both")
         if bc_kind not in _BUCKLING_BC:
@@ -411,7 +464,7 @@ def build_comm_buckling(model: "ModelConfig", manifest: Dict[str, Any],  # noqa:
         bc = _BUCKLING_BC[bc_kind]
         bc_doc = f"preset '{bc_kind}': {bc['doc']}"
         bc_ddl = bc["ddl"]
-    return pre + f"""
+    return pre + picked_defi + f"""
 # Boundary condition — {bc_doc}
 CHBC = AFFE_CHAR_MECA(
     MODELE=MODE,

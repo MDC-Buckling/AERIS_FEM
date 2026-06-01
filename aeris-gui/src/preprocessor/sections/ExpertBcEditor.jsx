@@ -1,6 +1,7 @@
 import React from "react";
 import { MONO } from "../../constants.js";
 import { useUI } from "../../store.js";
+import PickControls from "./PickControls.jsx";
 
 /** Expert-mode boundary conditions — Abaqus-style. Each "BC set" binds a
  * geometry region to a 6-component constraint (U1/U2/U3 translations + UR1/
@@ -23,6 +24,7 @@ const DOFS = [
 const REGIONS = [
   ["bottom", "Bottom edge (z = 0)"],
   ["top", "Top edge (z = L)"],
+  ["picked", "Picked nodes (3D)"],
 ];
 
 export default function ExpertBcEditor() {
@@ -165,6 +167,8 @@ function BcSetCard({ set, onChange, onRemove }) {
           ✕
         </button>
       </div>
+
+      {set.region === "picked" && <PickControls kind="bc" set={set} />}
 
       {/* Two columns: translations (U1-3) left, rotations (UR1-3) right. */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }}>

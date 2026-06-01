@@ -1,6 +1,7 @@
 import React from "react";
 import { MONO } from "../../constants.js";
 import { useUI } from "../../store.js";
+import PickControls from "./PickControls.jsx";
 
 /** Expert-mode loads — Abaqus-style. Each "load set" binds a geometry region
  * to either a force/moment (per-node components F1/F2/F3 + M1/M2/M3 on a rim
@@ -23,6 +24,7 @@ const MOMENT_COMPS = [
 const FORCE_REGIONS = [
   ["top", "Top edge (z = L)"],
   ["bottom", "Bottom edge (z = 0)"],
+  ["picked", "Picked nodes (3D)"],
 ];
 
 export default function ExpertLoadEditor() {
@@ -118,6 +120,8 @@ function LoadSetCard({ set, onChange, onRemove }) {
           </select>
         )}
       </div>
+
+      {!isPressure && set.region === "picked" && <PickControls kind="load" set={set} />}
 
       {isPressure ? (
         <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10.5, color: "var(--accent)" }}>

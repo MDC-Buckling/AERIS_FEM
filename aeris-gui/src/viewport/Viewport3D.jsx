@@ -105,6 +105,9 @@ export default function Viewport3D() {
   const loadKind = useUI((s) => s.model.load.kind);
   const loadNodes = useUI((s) => s.model.load.nodes);
   const pickingMode = useUI((s) => s.pickingMode);
+  const pickTarget = useUI((s) => s.pickTarget);
+  const bcSets = useUI((s) => s.model.bcs?.sets);
+  const loadSets = useUI((s) => s.model.load?.sets);
   // bcs.kind drives the diaphragm-vs-free edge colouring on the
   // cylinder_segment preview. We skip the indicator for non-segment
   // shapes (closed cylinder BC topology is shown via the load-arrow
@@ -365,10 +368,12 @@ export default function Viewport3D() {
 
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
-    const { addLoadNode } = useUI.getState();
+    // Picking is active for the legacy point-load picker (pickingMode) OR when
+    // an expert set is the active pick target (pickTarget).
+    const active = pickingMode || !!pickTarget;
 
     const onPointerDown = (e) => {
-      if (!pickingMode) return;
+      if (!active) return;
       const rect = st.renderer.domElement.getBoundingClientRect();
       mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -378,16 +383,19 @@ export default function Viewport3D() {
         (c) => c.userData.kind === "surface"
       );
       const intersects = raycaster.intersectObjects(surfaceChildren);
-
-      if (intersects.length > 0) {
-        const hit = intersects[0];
-        const pos = hit.point;
-        // Default force: no force set, user must edit manually
+      if (intersects.length === 0) return;
+      const pos = intersects[0].point;
+      const { addPickedNode, addLoadNode, pickTarget: tgt } = useUI.getState();
+      if (tgt) {
+        // Expert set: append the surface-hit coordinate (the .comm snaps it to
+        // the nearest mesh node via ENV_SPHERE).
+        addPickedNode({ x: pos.x, y: pos.y, z: pos.z });
+      } else {
         addLoadNode({ x: pos.x, y: pos.y, z: pos.z, fx: 0, fy: 0, fz: 0 });
       }
     };
 
-    if (pickingMode) {
+    if (active) {
       st.controls.enabled = false;
       st.renderer.domElement.addEventListener("pointerdown", onPointerDown);
     } else {
@@ -399,7 +407,7 @@ export default function Viewport3D() {
       st.renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       st.controls.enabled = true;
     };
-  }, [pickingMode, mode]);
+  }, [pickingMode, pickTarget, mode]);
 
   // Node marker visualization (magenta spheres + force arrows at picked positions).
   useEffect(() => {
@@ -448,6 +456,39 @@ export default function Viewport3D() {
       }
     }
   }, [loadNodes, mode, cyl.R, cyl.L]);
+
+  // Picked-node markers (cyan) for expert BC/Load sets with region="picked".
+  // The active pick target's nodes glow brighter so the user sees which set
+  // they're clicking into.
+  useEffect(() => {
+    const st = stateRef.current;
+    if (!st.scene || !st.meshGroup || mode !== "pre") return;
+    const old = st.meshGroup.children.filter((c) => c.userData.kind === "picked-marker");
+    old.forEach((m) => {
+      m.geometry?.dispose();
+      m.material?.dispose();
+      st.meshGroup.remove(m);
+    });
+    const r = Math.max(cyl.R, cyl.L) * 0.016;
+    const geom = new THREE.SphereGeometry(r, 14, 14);
+    const collect = (sets, kind) =>
+      (sets ?? [])
+        .filter((s) => s.region === "picked" && (s.pickedNodes?.length))
+        .forEach((s) => {
+          const isTarget = pickTarget && pickTarget.kind === kind && pickTarget.id === s.id;
+          const mat = new THREE.MeshBasicMaterial({
+            color: isTarget ? 0x22d3ee : 0x0e7490,
+          });
+          for (const p of s.pickedNodes) {
+            const m = new THREE.Mesh(geom, mat);
+            m.position.set(p.x, p.y, p.z);
+            m.userData.kind = "picked-marker";
+            st.meshGroup.add(m);
+          }
+        });
+    collect(bcSets, "bc");
+    collect(loadSets, "load");
+  }, [bcSets, loadSets, pickTarget, mode, cyl.R, cyl.L]);
 
   // Push warp / theme / edge changes to the live uniforms without rebuilding.
   useEffect(() => {
