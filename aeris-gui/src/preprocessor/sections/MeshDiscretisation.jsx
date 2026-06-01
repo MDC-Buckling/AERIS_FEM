@@ -76,13 +76,19 @@ const TECHNIQUE_OPTIONS = [
   ["structured", "Structured"],
 ];
 
+// Stable empty default so the Zustand selector below never returns a fresh
+// object (which would make useSyncExternalStore loop — "getSnapshot should be
+// cached" → Maximum update depth). Models saved before the discretization
+// schema simply have no code_aster block; we default to this shared ref.
+const CA_EMPTY = {};
+
 export default function MeshDiscretisation() {
   const mesh = useUI((s) => s.model.mesh);
   const cyl = useUI((s) => s.model.geometry.cylinder);
   const setField = useUI((s) => s.setMeshField);
   const engine = useUI((s) => s.model.solver?.engine ?? "gismo");
   const setEngine = useUI((s) => s.setSolverEngine);
-  const ca = useUI((s) => s.model.discretization?.code_aster ?? {});
+  const ca = useUI((s) => s.model.discretization?.code_aster) ?? CA_EMPTY;
   const setCa = useUI((s) => s.setCaDiscField);
 
   const r = Number(mesh.refinement);
