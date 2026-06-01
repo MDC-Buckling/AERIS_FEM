@@ -31,14 +31,19 @@ using aeris::quad_triangle;
 typedef gsSparseMatrix<real_t> SpMat; typedef gsEigen::Triplet<real_t> Trip;
 static const double PI=3.14159265358979323846;
 static const double R=1.0,L=1.0,E=1.0e6,nu=0.3;
+// CLOSED-FORM metric-weighted KL constitutive (verified == gismo eval3D to 1e-16 in
+// test_bb_material_closedform across axis/sheared/curved). No gismo machinery per call
+// -> ~100x assembly speedup. A = membrane (Et/(1-nu^2)), D = (t^2/12) A; metric-weighted
+// via the contravariant metric of (a1,a2). Voigt [11,22,12], factor 2 on shear strain.
 static void eval3D_ABD(const V3<double>&a1,const V3<double>&a2,double thick,gsMatrix<real_t>&A,gsMatrix<real_t>&D){
-    gsMultiPatch<real_t> mp;mp.addPatch(gsNurbsCreator<real_t>::BSplineSquare(1));mp.embed(3);
-    gsMatrix<real_t>&C=mp.patch(0).coefs();for(index_t r=0;r<C.rows();++r){double xi=C(r,0),eta=C(r,1);for(int i=0;i<3;++i)C(r,i)=xi*a1[i]+eta*a2[i];}
-    gsFunctionExpr<real_t> t(std::to_string(thick),3),Ef(std::to_string(E),3),nf(std::to_string(nu),3);
-    std::vector<gsFunctionSet<real_t>*> pr{&Ef,&nf};gsOptionList o;o.addInt("Material","",0);o.addSwitch("Compressibility","",false);o.addInt("Implementation","",1);
-    auto mat=getMaterialMatrix<3,real_t>(mp,t,pr,o);gsExprAssembler<> ea(1,1);gsExprEvaluator<> ev(ea);gsVector<real_t> pt(2);pt<<0.5,0.5;
-    gsMaterialMatrixIntegrate<real_t,MaterialOutput::MatrixA> mmA(mat.get(),&mp);gsMaterialMatrixIntegrate<real_t,MaterialOutput::MatrixD> mmD(mat.get(),&mp);
-    A=ev.eval(ea.getCoeff(mmA),pt);A.resize(3,3);D=ev.eval(ea.getCoeff(mmD),pt);D.resize(3,3);}
+    double a11=dot3(a1,a1),a22=dot3(a2,a2),a12=dot3(a1,a2),det=a11*a22-a12*a12;
+    double c11=a22/det,c22=a11/det,c12=-a12/det,k0=E*thick/(1-nu*nu),h=(1-nu)/2.0;
+    A.resize(3,3); D.resize(3,3);
+    A(0,0)=k0*c11*c11; A(1,1)=k0*c22*c22;
+    A(0,1)=A(1,0)=k0*(nu*c11*c22+(1-nu)*c12*c12);
+    A(0,2)=A(2,0)=k0*c11*c12; A(1,2)=A(2,1)=k0*c22*c12;
+    A(2,2)=k0*(nu*c12*c12+h*(c11*c22+c12*c12));
+    double f=thick*thick/12.0; for(int i=0;i<3;++i)for(int j=0;j<3;++j)D(i,j)=f*A(i,j);}
 static V3<double> cyl(double x,double th){ return {R*std::cos(th),R*std::sin(th),x}; }
 static V3<double> radial(double th){ return {std::cos(th),std::sin(th),0.0}; }
 struct Mode{ double sig; int m,n; };
@@ -92,8 +97,11 @@ static std::vector<Mode> run_lba(int Nx,int Nt,double thick,int p,int nmodes,int
     if(firstEnd>=0)pin(firstEnd,2);
     std::vector<int> fcl;int rank;auto Cs=nullsp(A3,nd,fcl,rank);int nF=fcl.size();out_nF=nF;
     auto tA0=std::chrono::steady_clock::now();
+    auto NOW=[](){return std::chrono::steady_clock::now();};
+    auto SEC=[](auto a,auto b){return std::chrono::duration<double>(b-a).count();};
     // SPARSE C (nd x nF)
     SpMat C(nd,nF);{std::vector<Trip> tc;for(int row=0;row<nd;++row)for(int f=0;f<nF;++f)if(Cs[row][f]!=0)tc.emplace_back(row,f,Cs[row][f]);C.setFromTriplets(tc.begin(),tc.end());}  // Cs is already (nd x nF)
+    auto tC=NOW();
     // SPARSE K_e, K_geom (uniform axial N_xx=1)
     std::vector<Trip> tF,tG; V3<double> tax{0,0,1};
     for(int k=0;k<nT;++k){const Tri&T=tris[k];
@@ -107,8 +115,12 @@ static std::vector<Mode> run_lba(int Nx,int Nt,double thick,int p,int nmodes,int
                     tF.emplace_back(ga,gb,q.w*Jac*v); if(i==j)tG.emplace_back(ga,gb,q.w*Jac*g[a]*g[b]);}}
         }}
     SpMat Kf(nd,nd),Kg(nd,nd);Kf.setFromTriplets(tF.begin(),tF.end());Kg.setFromTriplets(tG.begin(),tG.end());
+    auto tK=NOW();
     SpMat Ke=(C.transpose()*Kf*C); Ke.makeCompressed(); SpMat Kge=(C.transpose()*Kg*C); Kge.makeCompressed();
-    t_asm=std::chrono::duration<double>(std::chrono::steady_clock::now()-tA0).count();
+    auto tT=NOW();
+    t_asm=SEC(tA0,tT);
+    fprintf(stderr,"   [asm subphases] Cbuild=%.1f  Kassemble=%.1f  tripleProduct(C^T K C)=%.1f  | nnz(C)=%ld nnz(Kf)=%ld nnz(Ke)=%ld\n",
+            SEC(tA0,tC),SEC(tC,tK),SEC(tK,tT),(long)C.nonZeros(),(long)Kf.nonZeros(),(long)Ke.nonZeros());
     // SPARSE Spectra Buckling: K_e x = lambda K_geom x ; smallest positive lambda = N_cr
     double sigma_cl=E*thick/(R*std::sqrt(3.0*(1-nu*nu)));double shift=0.8*sigma_cl*thick;   // BELOW the expected lowest (~0.9 sigma_cl) so shift-invert catches the true lowest cluster
     int nev=std::min(14,nF-1), ncv=std::min(3*nev,nF);
