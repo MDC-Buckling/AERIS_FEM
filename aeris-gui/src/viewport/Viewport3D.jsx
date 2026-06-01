@@ -103,11 +103,13 @@ export default function Viewport3D() {
   // is "auto" today, so once that becomes editable we'll need to also
   // subscribe to .neumann_traction_axial.
   const loadKind = useUI((s) => s.model.load.kind);
+  const loadActive = useUI((s) => s.model.load?.active);
   const loadNodes = useUI((s) => s.model.load.nodes);
   const pickingMode = useUI((s) => s.pickingMode);
   const pickTarget = useUI((s) => s.pickTarget);
   const bcSets = useUI((s) => s.model.bcs?.sets);
   const loadSets = useUI((s) => s.model.load?.sets);
+  const uiMode = useUI((s) => s.model.uiMode);
   // bcs.kind drives the diaphragm-vs-free edge colouring on the
   // cylinder_segment preview. We skip the indicator for non-segment
   // shapes (closed cylinder BC topology is shown via the load-arrow
@@ -371,13 +373,21 @@ export default function Viewport3D() {
     // Picking is active for the legacy point-load picker (pickingMode) OR when
     // an expert set is the active pick target (pickTarget).
     const active = pickingMode || !!pickTarget;
+    if (!active) return;
 
-    const onPointerDown = (e) => {
-      if (!active) return;
+    // Orbit stays ENABLED while picking: we distinguish a click (pick) from a
+    // drag (orbit) by the pointer travel between down and up. A near-stationary
+    // press = pick; anything past the threshold was a camera rotation/pan and
+    // is ignored. This removes the old "camera locked during pick" annoyance —
+    // rotate freely, click to pick. (View buttons give quick reorientation.)
+    let downX = 0, downY = 0;
+    const DRAG_PX = 5;
+    const onPointerDown = (e) => { downX = e.clientX; downY = e.clientY; };
+    const onPointerUp = (e) => {
+      if (Math.hypot(e.clientX - downX, e.clientY - downY) > DRAG_PX) return;
       const rect = st.renderer.domElement.getBoundingClientRect();
       mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-
       raycaster.setFromCamera(mouse, st.camera);
       const surfaceChildren = st.meshGroup.children.filter(
         (c) => c.userData.kind === "surface"
@@ -395,17 +405,12 @@ export default function Viewport3D() {
       }
     };
 
-    if (active) {
-      st.controls.enabled = false;
-      st.renderer.domElement.addEventListener("pointerdown", onPointerDown);
-    } else {
-      st.controls.enabled = true;
-      st.renderer.domElement.removeEventListener("pointerdown", onPointerDown);
-    }
-
+    const el = st.renderer.domElement;
+    el.addEventListener("pointerdown", onPointerDown);
+    el.addEventListener("pointerup", onPointerUp);
     return () => {
-      st.renderer.domElement.removeEventListener("pointerdown", onPointerDown);
-      st.controls.enabled = true;
+      el.removeEventListener("pointerdown", onPointerDown);
+      el.removeEventListener("pointerup", onPointerUp);
     };
   }, [pickingMode, pickTarget, mode]);
 
@@ -489,6 +494,100 @@ export default function Viewport3D() {
     collect(bcSets, "bc");
     collect(loadSets, "load");
   }, [bcSets, loadSets, pickTarget, mode, cyl.R, cyl.L]);
+
+  // BC / Load region highlights on the closed cylinder — coloured rim rings so
+  // the user sees at a glance WHICH rims carry a constraint (orange = BC) or a
+  // load (green), confirming the model's BCs are active. Expert sets drive the
+  // bottom/top rim highlight; picked nodes are already shown as markers above.
+  useEffect(() => {
+    const st = stateRef.current;
+    if (!st.scene || !st.meshGroup || mode !== "pre" || geometryShape !== "cylinder") return;
+    const old = st.meshGroup.children.filter((c) => c.userData.kind === "bc-highlight");
+    old.forEach((m) => {
+      m.geometry?.dispose();
+      m.material?.dispose();
+      st.meshGroup.remove(m);
+    });
+
+    const tube = Math.max(cyl.R, cyl.L) * 0.012;
+    const ring = (z, ringR, color) => {
+      const g = new THREE.TorusGeometry(ringR, tube, 10, 80);
+      const m = new THREE.Mesh(
+        g,
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9 })
+      );
+      m.position.set(0, 0, z); // TorusGeometry lies in XY → rim ring around z-axis
+      m.userData.kind = "bc-highlight";
+      st.meshGroup.add(m);
+    };
+
+    // Which rims carry a BC (orange ring). Loads are drawn as GREEN ARROWS in
+    // a separate effect (direction matters — the ring couldn't show sign).
+    const bcRims = new Set();
+    if ((uiMode ?? "beginner") === "expert") {
+      for (const s of bcSets ?? []) {
+        if (s.region === "bottom") bcRims.add(0);
+        else if (s.region === "top") bcRims.add(cyl.L);
+      }
+    }
+    bcRims.forEach((z) => ring(z, cyl.R, 0xff7849));        // BC = orange, on the surface
+  }, [bcSets, uiMode, mode, geometryShape, cyl.R, cyl.L]);
+
+  // Expert LOAD arrows (green) — show the force DIRECTION (sign) of each expert
+  // force set, so +F vs −F is visible. Rim regions get a ring of arrows; picked
+  // sets get one arrow per node. (Moment-only sets + pressure: viz TODO.)
+  useEffect(() => {
+    const st = stateRef.current;
+    if (!st.meshGroup || mode !== "pre" || geometryShape !== "cylinder") return;
+    const old = st.meshGroup.children.filter((c) => c.userData.kind === "load-arrow");
+    old.forEach((m) => {
+      m.line?.geometry?.dispose();
+      m.cone?.geometry?.dispose();
+      st.meshGroup.remove(m);
+    });
+    if ((uiMode ?? "beginner") !== "expert") return;
+
+    const R = cyl.R, L = cyl.L;
+    const len = Math.max(R, L) * 0.18;
+    const GREEN = 0x4ade80;   // force = single-head green arrow
+    const PURPLE = 0xc084fc;  // moment = double-head purple arrow (vector ‖ axis)
+    const addArrow = (origin, dirVec, color, doubleHead) => {
+      const d = dirVec.clone().normalize();
+      const a = new THREE.ArrowHelper(d, origin, len, color, len * 0.3, len * 0.18);
+      a.userData.kind = "load-arrow";
+      st.meshGroup.add(a);
+      if (doubleHead) {
+        // second cone short of the tip → the classic moment double-arrowhead.
+        const b = new THREE.ArrowHelper(d, origin, len * 0.78, color, len * 0.3, len * 0.18);
+        b.userData.kind = "load-arrow";
+        st.meshGroup.add(b);
+      }
+    };
+    const positionsFor = (s) => {
+      if (s.region === "picked") {
+        return (s.pickedNodes ?? []).map((p) => new THREE.Vector3(p.x, p.y, p.z));
+      }
+      const z = s.region === "top" ? L : 0;
+      const N = 16, out = [];
+      for (let i = 0; i < N; i++) {
+        const th = (i / N) * 2 * Math.PI;
+        out.push(new THREE.Vector3(R * Math.cos(th), R * Math.sin(th), z));
+      }
+      return out;
+    };
+    for (const s of loadSets ?? []) {
+      if (s.type === "pressure") continue;
+      const f = s.force ?? {}, m = s.moment ?? {};
+      const fvec = new THREE.Vector3(f.f1 || 0, f.f2 || 0, f.f3 || 0);
+      const mvec = new THREE.Vector3(m.m1 || 0, m.m2 || 0, m.m3 || 0);
+      const hasF = fvec.length() > 1e-12, hasM = mvec.length() > 1e-12;
+      if (!hasF && !hasM) continue;
+      for (const origin of positionsFor(s)) {
+        if (hasF) addArrow(origin, fvec, GREEN, false);
+        if (hasM) addArrow(origin, mvec, PURPLE, true);
+      }
+    }
+  }, [loadSets, uiMode, mode, geometryShape, cyl.R, cyl.L]);
 
   // Push warp / theme / edge changes to the live uniforms without rebuilding.
   useEffect(() => {
@@ -581,16 +680,23 @@ export default function Viewport3D() {
       fitCameraToBox(st, st.resultBBox.center, st.resultBBox.diag, viewPreset);
       return;
     }
-    // Pre-mode (or no result yet): snap to the geometry bounding box so the
-    // procedural preview stays in frame across user-edited R/L.
-    const presets = viewPresets(activeR, activeL);
-    const p = presets[viewPreset];
-    if (!p) return;
-    st.camera.position.set(...p.pos);
-    st.camera.up.set(...p.up);
-    st.controls.target.set(...p.target);
-    st.controls.update();
-  }, [viewPreset, activeR, activeL, mode]);
+    // Pre-mode (or no result yet): frame the geometry bounding box. Built from
+    // the active shape's R/L so all 7 Abaqus views (front/back/top/…/iso) work
+    // here too — this is the viewport the user picks nodes in.
+    let center, diag;
+    if (geometryShape === "cylinder_segment") {
+      center = new THREE.Vector3(activeL / 2, 0, activeR * 0.5);
+      diag = Math.hypot(activeL, 2 * activeR);
+    } else if (geometryShape === "sphere") {
+      center = new THREE.Vector3(0, 0, 0);
+      diag = 2 * activeR;
+    } else {
+      // closed cylinder: axis Z, z∈[0,L], radius R
+      center = new THREE.Vector3(0, 0, activeL / 2);
+      diag = Math.hypot(2 * activeR, activeL);
+    }
+    fitCameraToBox(st, center, diag, viewPreset);
+  }, [viewPreset, activeR, activeL, mode, geometryShape]);
 
   // -------------------------------------------------------------------
   // Pre-mode: procedural cylinder driven LIVE by the model dimensions.
@@ -817,16 +923,20 @@ export default function Viewport3D() {
       st.meshGroup.add(seams);
     }
 
-    // Load indicators — arrows on the top edge that visualise the load
-    // case currently selected in the BCs+LOADS inspector.
-    const loadGroup = buildLoadArrows(loadKind, cyl.R, cyl.L);
+    // Load indicators — arrows on the top edge that visualise the load case.
+    // Hidden only when the load is toggled inactive (load.active === false).
+    // The default model ships with NO load (active:false), so nothing is shown
+    // until the user activates a load — no spurious default-load arrows.
+    const loadGroup = loadActive === false ? null : buildLoadArrows(loadKind, cyl.R, cyl.L);
     if (loadGroup) {
       loadGroup.userData.kind = "load";
       st.meshGroup.add(loadGroup);
     }
 
     // Point load arrows for the pinched-cylinder benchmark.
-    const pointLoadGroup = buildPointLoadArrows(loadKind, cyl.R, cyl.L, loadNodes);
+    const pointLoadGroup = loadActive === false
+      ? null
+      : buildPointLoadArrows(loadKind, cyl.R, cyl.L, loadNodes);
     if (pointLoadGroup) {
       pointLoadGroup.userData.kind = "load";
       st.meshGroup.add(pointLoadGroup);
@@ -850,7 +960,7 @@ export default function Viewport3D() {
     cyl.R, cyl.L, cyl.t, partitionsKey,
     segment.R, segment.L, segment.t, segment.phi_deg,
     sphere.R, sphere.t, sphere.opening_angle_deg,
-    meshRefinement, engine, caMeshSize, meshPreviewEdges, loadKind, bcsKind, showEdges, setStatus,
+    meshRefinement, engine, caMeshSize, meshPreviewEdges, loadKind, loadActive, bcsKind, showEdges, setStatus,
   ]);
 
   // -------------------------------------------------------------------
@@ -1753,15 +1863,28 @@ function fitCameraToBox(st, center, diag, viewPreset = "oblique") {
   const fov = (st.camera.fov * Math.PI) / 180;
   const margin = 1.35;
   const dist = Math.max((d * 0.5 * margin) / Math.tan(fov / 2), d * 0.5 + 0.01);
-  const DIRS = {
-    oblique: new THREE.Vector3(1, -1, 0.35).normalize(),
-    side: new THREE.Vector3(0, -1, 0),
-    end: new THREE.Vector3(0, 0, 1),
+  // Each view = direction from target to camera + an up vector. The cylinder
+  // axis is Z (vertical), so axis-side views (front/back/left/right) keep up=Z;
+  // axial views (top/bottom) look down Z so up=Y. oblique/side/end kept as
+  // aliases for the legacy 3-button group.
+  const Z_UP = [0, 0, 1], Y_UP = [0, 1, 0];
+  const VIEWS = {
+    iso:     { dir: [1, -1, 0.7], up: Z_UP },
+    oblique: { dir: [1, -1, 0.35], up: Z_UP },
+    front:   { dir: [0, -1, 0], up: Z_UP },
+    back:    { dir: [0, 1, 0], up: Z_UP },
+    right:   { dir: [1, 0, 0], up: Z_UP },
+    left:    { dir: [-1, 0, 0], up: Z_UP },
+    top:     { dir: [0, 0, 1], up: Y_UP },
+    bottom:  { dir: [0, 0, -1], up: Y_UP },
+    side:    { dir: [0, -1, 0], up: Z_UP },
+    end:     { dir: [0, 0, 1], up: Y_UP },
   };
-  const dir = DIRS[viewPreset] || DIRS.oblique;
+  const v = VIEWS[viewPreset] || VIEWS.oblique;
+  const dir = new THREE.Vector3(...v.dir).normalize();
   st.controls.target.copy(c);
   st.camera.position.copy(c).addScaledVector(dir, dist);
-  st.camera.up.set(...(viewPreset === "end" ? [0, 1, 0] : [0, 0, 1]));
+  st.camera.up.set(...v.up);
   st.camera.near = Math.max(dist - d, d * 0.001, 0.001);
   st.camera.far = dist + d * 4;
   st.camera.updateProjectionMatrix();

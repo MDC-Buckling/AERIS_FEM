@@ -11,6 +11,7 @@ import BenchmarkHubPanel from "./benchmarks/BenchmarkHubPanel.jsx";
 import StatusLine from "./components/StatusLine.jsx";
 import CommandPalette from "./components/CommandPalette.jsx";
 import ModelsPanel from "./components/ModelsPanel.jsx";
+import ViewToolbar from "./components/ViewToolbar.jsx";
 
 export default function App() {
   const theme = useUI((s) => s.theme);
@@ -208,6 +209,7 @@ export default function App() {
             <span className="hud-corner hud-bl" />
             <span className="hud-corner hud-br" />
             <Viewport3D />
+            <ViewToolbar />
             {mode === "post" && <ViewportLegend />}
 
             {/* Small mode badge in the corner so the viewport always says
