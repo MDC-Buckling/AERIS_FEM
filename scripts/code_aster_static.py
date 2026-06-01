@@ -142,14 +142,15 @@ def _extract_qoi(mesh, qoi_spec: dict) -> dict:
     }
 
 
-def _write_result_files(mesh, work_dir: Path) -> str | None:
+def _write_result_files(mesh, work_dir: Path, stem: str = "result") -> str | None:
     """Convert the Code_Aster result into a viewport-renderable .vtu (+ a .pvd
     wrapper so the GUI's existing .pvd→mesh machinery resolves it). Writes only
     the triangle SHELL cells (the 1D/0D BC groups are dropped so they don't add
     stray faces) and the displacement as a 3-component "SolutionField" — the
     exact field name the frontend parsers look for. Best-effort: on any failure
     we log and return None (the QoI verdict still stands, only the 3D view is
-    skipped). Returns the .pvd filename on success."""
+    skipped). Returns the .pvd filename on success. `stem` names the output pair
+    (`<stem>.vtu` + `<stem>.pvd`) so the buckling path can emit one per mode."""
     import meshio
     import numpy as np
     try:
@@ -177,16 +178,16 @@ def _write_result_files(mesh, work_dir: Path) -> str | None:
             cells=[("triangle", np.vstack(tri_blocks))],
             point_data={"SolutionField": disp},
         )
-        meshio.write(str(work_dir / "result.vtu"), out, binary=False)
-        (work_dir / "result.pvd").write_text(
+        meshio.write(str(work_dir / f"{stem}.vtu"), out, binary=False)
+        (work_dir / f"{stem}.pvd").write_text(
             '<?xml version="1.0"?>\n'
             '<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">\n'
             '  <Collection>\n'
-            '    <DataSet timestep="0" group="" part="0" file="result.vtu"/>\n'
+            f'    <DataSet timestep="0" group="" part="0" file="{stem}.vtu"/>\n'
             '  </Collection>\n'
             '</VTKFile>\n'
         )
-        return "result.pvd"
+        return f"{stem}.pvd"
     except Exception as exc:  # best-effort — never fail the run over rendering
         sys.stderr.write(f"[code_aster_static] result .vtu export failed: {exc}\n")
         return None

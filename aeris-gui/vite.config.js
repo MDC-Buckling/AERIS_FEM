@@ -542,12 +542,21 @@ function aerisOutputServer() {
           // cylinder_static.py, cylinder_arclength.py, pinched_cylinder_static.py, hemisphere_static.py take --threads.
           // pinched_cylinder_static.py and hemisphere_static.py also take --work-dir.
           const isCodeAster = solverScript.startsWith("/scripts/code_aster_");
+          // Code_Aster's solve (MUMPS factorisation + RIGI_GEOM eigensolve) is
+          // OpenMP-parallel and genuinely heavy — single-thread crawls on a
+          // buckling run. The New-Job form defaults threads=1, which almost
+          // nobody changes, so floor Code_Aster at a generous default. An
+          // explicit higher slider value still wins; we never go below it.
+          const CODE_ASTER_MIN_THREADS = 8;
+          const effThreads = isCodeAster
+            ? Math.max(threads, CODE_ASTER_MIN_THREADS)
+            : threads;
           const scriptArgs = ["--model", "/work/model.json"];
           if (isCodeAster) {
             // Code_Aster meshes from element-size, not IGA refinement — its
             // scripts take neither --refines nor --plot-dir, only --threads
             // (buckling reads nmodes from model.json).
-            scriptArgs.push("--threads", String(threads));
+            scriptArgs.push("--threads", String(effThreads));
           } else {
             scriptArgs.push("--refines", ...refines.map(String));
             if (solverScript === "/scripts/cylinder_lba.py") {
@@ -568,7 +577,7 @@ function aerisOutputServer() {
           const args = [
             "run", "--rm",
             "--name", containerName,
-            "-e", `OMP_NUM_THREADS=${threads}`,
+            "-e", `OMP_NUM_THREADS=${effThreads}`,
             "-v", `${scriptsDir}:/scripts:ro`,
             // benchmarks/ mounted so scordelis_static.py can import the
             // shared /benchmarks/common/vts.py StructuredGrid parser
@@ -586,7 +595,7 @@ function aerisOutputServer() {
             runId,
             jobId,
             containerName,
-            threads,
+            threads: effThreads,
             status: "queued",
             phase: "queued",
             queuedAt,

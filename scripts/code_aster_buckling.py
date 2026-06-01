@@ -30,9 +30,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aeris_model import ModelConfig                       # noqa: E402
 from meshing.gmsh_shells import build_shell_mesh          # noqa: E402
 from aster_engine.comm import build_comm_buckling, build_export  # noqa: E402
-# Reuse the launcher + phase marker from the static wrapper (importing the
-# module does not run its main — that's __main__-guarded).
-from code_aster_static import _phase, _run_aster          # noqa: E402
+# Reuse the launcher + phase marker + MED→.vtu machinery from the static
+# wrapper (importing the module does not run its main — that's __main__-guarded).
+from code_aster_static import (                            # noqa: E402
+    _phase, _run_aster, _write_result_files, _patch_meshio_med,
+)
 
 
 def _classical_sigma_cr(E: float, nu: float, R: float, t: float) -> float:
@@ -102,7 +104,14 @@ def main(argv: list[str] | None = None) -> int:
                             nmodes=nmodes, f_ref=F_ref)
     )
     export_path = work_dir / "study.export"
-    export_path.write_text(build_export(str(work_dir)))
+    # Buckling (eigensolve + RIGI_GEOM) needs far more JEVEUX than the static
+    # paths — the 2048 MB default OOMs on a real cylinder mesh ("MEMOIRE JEVEUX
+    # MINIMALE REQUISE > limit" → abort, no fort.80). This is a cap, not a
+    # reservation: Code_Aster allocates only what it needs (~2.5 GB at h=2.5);
+    # 16 GB gives headroom for finer meshes / more modes on a 64 GB host.
+    export_path.write_text(
+        build_export(str(work_dir), memory_mb=16384, n_mode_files=nmodes)
+    )
 
     _phase("solving")
     _run_aster(export_path, work_dir, threads=args.threads)
@@ -117,6 +126,39 @@ def main(argv: list[str] | None = None) -> int:
     F_cr = lam1 * F_ref
     sigma_cr = F_cr / area
     ratio = sigma_cr / sigma_cl
+
+    # Convert each per-mode MED (written by the .comm's IMPR_RESU loop) into a
+    # viewport-renderable .vtu (+.pvd) and assemble the modes[] list the
+    # post-processor's results tree + viewport drive off. Without this the LBA
+    # produces only numbers and the post-processor has nothing to select.
+    # mode_k.med holds the k-th computed ordre's DEPL, so it pairs with the
+    # k-th raw critical factor (lambdas[k-1], NOT positive[k-1]).
+    _phase("modes")
+    import meshio                                          # noqa: E402
+    _patch_meshio_med()
+    modes: list[dict] = []
+    for k in range(1, nmodes + 1):
+        med_k = work_dir / f"mode_{k}.med"
+        if not med_k.exists():
+            break
+        try:
+            mesh_k = meshio.read(str(med_k))
+            pvd = _write_result_files(mesh_k, work_dir, stem=f"mode{k}")
+        except Exception as exc:                           # best-effort per mode
+            print(f"  mode {k}: shape export failed ({exc}); skipping",
+                  file=sys.stderr)
+            continue
+        if not pvd:
+            continue
+        lam_k = lambdas[k - 1] if k - 1 < len(lambdas) else None
+        modes.append({
+            "id": f"mode{k}",
+            "pvd": pvd,
+            "label": f"Buckling mode {k}",
+            "lambda": lam_k,
+            "sigmaComputed": (lam_k * sigma_cl) if lam_k is not None else None,
+        })
+    print(f"  wrote {len(modes)} mode shape(s) → mode*.vtu")
 
     _phase("verdict")
     print()
@@ -153,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
         "classicalStress": sigma_cl,
         "stressRatio": ratio,
         "files": {"mess": "study.mess"},
-        "modes": [],
+        "modes": modes,
         "verdict": {
             "lambda1": lam1,
             "criticalStress": sigma_cr,
@@ -166,7 +208,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nSidecar manifest written: {work_dir}/run.json")
 
     if not args.keep_files:
-        for f in ("study.comm", "study.export", "charcrit.json"):
+        stale = ["study.comm", "study.export", "charcrit.json"]
+        # Per-mode MEDs are intermediates — the .vtu/.pvd are what the viewport
+        # loads, so drop the (large) MEDs once converted.
+        stale += [f"mode_{k}.med" for k in range(1, nmodes + 1)]
+        for f in stale:
             try:
                 (work_dir / f).unlink()
             except OSError:

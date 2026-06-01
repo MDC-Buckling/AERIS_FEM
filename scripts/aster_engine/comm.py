@@ -355,20 +355,42 @@ import json as _json
 with open('{work_dir}/charcrit.json', 'w') as _f:
     _json.dump([float(v) for v in _vals], _f)
 
+# Write each buckling mode's DEPL field to its OWN MED file (units {UNITE_RESU_OUT}+k,
+# declared in the .export) so the Python wrapper turns them into per-mode .vtu the
+# viewport renders — without this the post-processor has nothing to select. One
+# file per mode keeps the meshio read single-field/single-step (no multi-ordre
+# ambiguity). Cap at the requested count; never ask for more ordres than found.
+_nwrite = min(len(_vals), {nmodes})
+for _k in range(1, _nwrite + 1):
+    IMPR_RESU(
+        FORMAT='MED', UNITE={UNITE_RESU_OUT} + _k,
+        RESU=_F(RESULTAT=FLAMB, NOM_CHAM='DEPL', NUME_ORDRE=_k),
+    )
+
 FIN()
 """
 
 
 def build_export(work_dir: str = "/work",
                  time_limit_s: int = 900,
-                 memory_mb: int = 2048) -> str:
+                 memory_mb: int = 2048,
+                 n_mode_files: int = 0) -> str:
     """The as_run/run_aster launcher file. Maps the study's logical units to
     the files on the /work volume the wrapper wrote.
 
     F-line columns: <kind> <path> <D|R> <unit>
       D = data (input, read by the study), R = result (written by the study).
     'comm' unit 1, 'mmed' the input MED mesh, 'med' the result MED, 'mess'
-    the message log."""
+    the message log.
+
+    `n_mode_files` (buckling only): declare extra MED result units
+    UNITE_RESU_OUT+1 .. +N for the per-mode shape files the buckling .comm
+    writes via its IMPR_RESU loop. They are R (output) units, so it's harmless
+    if a study writes fewer than declared."""
+    mode_lines = "".join(
+        f"F med {work_dir}/mode_{k}.med R {UNITE_RESU_OUT + k}\n"
+        for k in range(1, int(n_mode_files) + 1)
+    )
     return f"""P actions make_etude
 P version stable
 P mode batch
@@ -378,4 +400,4 @@ F comm {work_dir}/study.comm D 1
 F mmed {work_dir}/mesh.med D {UNITE_MESH_IN}
 F med {work_dir}/result.med R {UNITE_RESU_OUT}
 F mess {work_dir}/study.mess R {UNITE_MESS}
-"""
+""" + mode_lines
