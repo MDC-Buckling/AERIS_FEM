@@ -140,12 +140,38 @@ export default function LoadCase() {
         >
           Load type
         </div>
-        <ToggleGroup
-          options={loadOptions(engine, shape)}
+        {/* Dropdown, not a segmented control: 8 load options overflow the
+            inspector width as buttons (External Pressure etc. got clipped).
+            Disabled options stay listed but greyed/unselectable. */}
+        <select
           value={load.kind}
-          onChange={setKind}
-          fullWidth
-        />
+          onChange={(e) => setKind(e.target.value)}
+          style={{
+            width: "100%",
+            padding: "6px 8px",
+            fontSize: 11,
+            fontFamily: MONO,
+            fontWeight: 700,
+            letterSpacing: 0.04,
+            color: "var(--accent)",
+            background: "var(--control-active-bg)",
+            border: "1px solid var(--control-border)",
+            borderRadius: 5,
+            cursor: "pointer",
+            outline: "none",
+          }}
+        >
+          {loadOptions(engine, shape).map(([val, label, meta]) => (
+            <option
+              key={val}
+              value={val}
+              disabled={!!meta?.disabled}
+              title={meta?.title}
+            >
+              {label}{meta?.disabled ? "  —  (n/a here)" : ""}
+            </option>
+          ))}
+        </select>
       </div>
 
       {/* GNA-only: pick force vs displacement control. For force control
