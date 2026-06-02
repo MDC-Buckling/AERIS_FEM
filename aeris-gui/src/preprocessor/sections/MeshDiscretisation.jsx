@@ -329,7 +329,11 @@ function BbPanel({ bb, setBb, cyl }) {
   // validated R/t=20 case uses Nt=20 against n_cr≈4.5 (≈4.4 elems/wave).
   const NtMin = Math.ceil(2.2 * nCr);
   const underResolved = nCr > 0 && Nt < NtMin;
-  const tooThin = RoverT > 60;   // dense BB gets expensive past here
+  // Accuracy limit (NOT speed — the sparse solver is fast): BB's polynomial
+  // geom_C¹ can't represent the circle exactly, so it UNDER-estimates σ_cr at
+  // thin shells. Cross-checked vs the exact-geometry NURBS engine at R/t=330:
+  // BB gave 0.78–0.94·σ_cl (wrong, too-long mode) vs NURBS 1.00·σ_cl (−0.01%).
+  const tooThin = RoverT > 60;
 
   const nTri = 2 * Nx * Nt;
   const cpPerTri = ((p + 1) * (p + 2)) / 2;
@@ -449,7 +453,7 @@ function BbPanel({ bb, setBb, cyl }) {
           {underResolved
             ? `⚠ Nt = ${Nt} is coarse for n_cr ≈ ${nCr.toFixed(1)} — raise Nt ≳ ${NtMin} so the circumferential wave is resolved (else the cluster reads too stiff).`
             : tooThin
-              ? `⚠ R/t = ${RoverT.toFixed(0)} is thin — the dense BB eigensolve grows O(nd³); the validated regime is R/t ≈ 20. Expect long runs / coarse resolution here.`
+              ? `⚠ R/t = ${RoverT.toFixed(0)} is thin — BB's polynomial geometry UNDER-estimates σ_cr here (cross-checked vs NURBS at R/t=330: BB 0.78–0.94 vs exact 1.00·σ_cl). Validated at R/t≈20; for thin shells use the NURBS / IGA engine (exact circle).`
               : "Closed-cylinder axial LBA: uniform axial prestress (by construction), SS hinged ends, dense generalized eigensolve. Validated at R/t≈20 → lowest cluster [m0,n8] ≈ 0.90·σ_cl (the classical Koiter short-wave mode)."}
         </div>
       </div>
