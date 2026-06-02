@@ -38,6 +38,7 @@
 #include <vector>
 #include <cmath>
 #include <map>
+#include <climits>
 #include <string>
 #include <cstring>
 #include <cstdio>
@@ -123,6 +124,50 @@ static void write_pvd(const std::string&path,const std::string&fileRel){
     f<<"  </Collection>\n</VTKFile>\n";
 }
 
+// SPARSE incomplete-Gauss null-space, ROW-BASED + min-degree fill control. Same
+// null-space as the dense Gauss (genuine: A*Cs=0, correct dim) but each basis
+// function stays LOCAL -> nnz(Cs) ~ O(n) MESH-INDEPENDENT (~10/col), vs the dense
+// free-pivot's global spread (947/col at R/t=20, growing). Verified == dense in
+// test_bb_c1_sparse_local. Returns Cs[f] = sparse column f (col->val map).
+typedef std::map<int,double> SRow;
+static std::vector<SRow> sparse_nullsp(const std::vector<SRow>& Ain,
+        int ncols, std::vector<int>&fcl, int&rank){
+    int m=Ain.size(); std::vector<SRow> Rm(m);
+    for(int r=0;r<m;++r) for(auto&kv:Ain[r]) if(std::fabs(kv.second)>1e-14) Rm[r][kv.first]=kv.second;
+    const double TOL=1e-9;
+    std::vector<int> pivrow, pivcol; std::vector<char> usedRow(m,0), pivotedCol(ncols,0);
+    std::vector<int> colCnt(ncols,0); std::vector<std::vector<int>> colRows(ncols);
+    for(int r=0;r<m;++r) for(auto&kv:Rm[r]){ colCnt[kv.first]++; colRows[kv.first].push_back(r); }
+    int remaining=m;
+    while(remaining>0){
+        int br=-1; size_t blen=SIZE_MAX;
+        for(int r=0;r<m;++r){ if(usedRow[r])continue; if(Rm[r].empty()){usedRow[r]=1;--remaining;continue;}
+            if(Rm[r].size()<blen){blen=Rm[r].size();br=r;} }
+        if(br<0) break;
+        int pc=-1; int bestdeg=INT_MAX;
+        for(auto&kv:Rm[br]) if(!pivotedCol[kv.first] && std::fabs(kv.second)>TOL && colCnt[kv.first]<bestdeg){bestdeg=colCnt[kv.first];pc=kv.first;}
+        if(pc<0){ usedRow[br]=1; --remaining; continue; }
+        double pv=Rm[br][pc]; for(auto&kv:Rm[br]) kv.second/=pv;
+        usedRow[br]=1; --remaining; pivotedCol[pc]=1; pivrow.push_back(br); pivcol.push_back(pc);
+        for(auto&kv:Rm[br]) colCnt[kv.first]--;
+        std::vector<int> rows=colRows[pc];
+        for(int r:rows){ if(r==br) continue; auto it=Rm[r].find(pc); if(it==Rm[r].end()) continue;
+            double f=it->second; if(f==0) continue; bool live=!usedRow[r];
+            for(auto&kv:Rm[br]){ int c=kv.first; double add=-f*kv.second; auto jt=Rm[r].find(c);
+                if(jt==Rm[r].end()){ if(std::fabs(add)>1e-14){ Rm[r][c]=add; colRows[c].push_back(r); if(live)colCnt[c]++; } }
+                else { jt->second+=add; if(std::fabs(jt->second)<1e-14){ Rm[r].erase(jt); if(live)colCnt[c]--; } } }
+        }
+    }
+    rank=pivrow.size();
+    fcl.clear(); for(int c=0;c<ncols;++c) if(!pivotedCol[c]) fcl.push_back(c);
+    int nFs=fcl.size(); std::vector<int> colToFree(ncols,-1); for(int f=0;f<nFs;++f) colToFree[fcl[f]]=f;
+    std::vector<SRow> Cs(nFs); for(int f=0;f<nFs;++f) Cs[f][fcl[f]]=1.0;
+    for(int i=0;i<rank;++i){ int pr=pivrow[i], pcl=pivcol[i];
+        for(auto&kv:Rm[pr]){ int c=kv.first; if(c==pcl) continue; int f=colToFree[c];
+            if(f>=0 && std::fabs(kv.second)>1e-14) Cs[f][pcl]=-kv.second; } }
+    return Cs;
+}
+
 static std::vector<Mode> run_lba(int Nx,int Nt,double thick,int p,int nmodes,
                                  int&out_nd,int&out_nF,double&out_kemin,
                                  const std::string&outdir){
@@ -150,10 +195,10 @@ static std::vector<Mode> run_lba(int Nx,int Nt,double thick,int p,int nmodes,
     struct EdgeRef{int tri,e,g0,g1;};
     std::map<std::pair<int,int>,std::vector<EdgeRef>> em;
     for(int k=0;k<nT;++k)for(int e=0;e<3;++e){int g0=gmap[k][vc[e]],g1=gmap[k][vc[(e+1)%3]];std::pair<int,int> key=std::minmax(g0,g1);em[key].push_back({k,e,g0,g1});}
-    auto buildAsc=[&](){ std::vector<std::vector<double>> Asc;
+    auto buildAsc=[&](){ std::vector<SRow> Asc;       // sparse rows: each touches only ~2·nK CPs
         for(auto&kv:em){ if(kv.second.size()!=2)continue; const EdgeRef&M=kv.second[0],&S=kv.second[1];
             int gA=kv.first.first,gB=kv.first.second;
-            for(int mm=0;mm<p;++mm){ double s=(mm+1.0)/(p+1.0); std::vector<double> row(nCP,0.0);
+            for(int mm=0;mm<p;++mm){ double s=(mm+1.0)/(p+1.0); SRow row;
                 for(int side=0;side<2;++side){ const EdgeRef&ER=(side==0?M:S); const Tri&T=tris[ER.tri]; double sign=(side==0?+1.0:-1.0);
                     std::array<double,2> Ae,Be; if(ER.g0==gA){Ae=T.pv[ER.e];Be=T.pv[(ER.e+1)%3];}else{Ae=T.pv[(ER.e+1)%3];Be=T.pv[ER.e];}
                     std::array<double,2> Pp={(1-s)*Ae[0]+s*Be[0],(1-s)*Ae[1]+s*Be[1]};
@@ -166,31 +211,28 @@ static std::vector<Mode> run_lba(int Nx,int Nt,double thick,int p,int nmodes,
                     double a11=dot3(G.a1,G.a1),a12=dot3(G.a1,G.a2),a22=dot3(G.a2,G.a2),det=a11*a22-a12*a12;
                     double r1=dot3(AN,G.a1),r2=dot3(AN,G.a2); double v1=(a22*r1-a12*r2)/det,v2=(-a12*r1+a11*r2)/det;
                     for(int k=0;k<nK;++k) row[gmap[ER.tri][k]] += sign*(v1*d.N1[k]+v2*d.N2[k]);
-                } Asc.push_back(row);
+                } Asc.push_back(std::move(row));
             } } return Asc; };
-    auto nullsp=[&](const std::vector<std::vector<double>>& Ain,int ncols,std::vector<int>&fcl,int&rank)->std::vector<std::vector<double>>{
-        std::vector<std::vector<double>> Rm=Ain;int m=Rm.size();std::vector<int> piv;const double TOL=1e-9;int rr=0;
-        for(int c=0;c<ncols&&rr<m;++c){int pr=-1;double best=TOL;for(int r=rr;r<m;++r)if(std::fabs(Rm[r][c])>best){best=std::fabs(Rm[r][c]);pr=r;}if(pr<0)continue;std::swap(Rm[rr],Rm[pr]);double pv=Rm[rr][c];for(int j=0;j<ncols;++j)Rm[rr][j]/=pv;for(int r=0;r<m;++r)if(r!=rr){double f=Rm[r][c];if(f!=0)for(int j=0;j<ncols;++j)Rm[r][j]-=f*Rm[rr][j];}piv.push_back(c);++rr;}
-        rank=piv.size();std::vector<char> ip(ncols,0);for(int c:piv)ip[c]=1;fcl.clear();for(int c=0;c<ncols;++c)if(!ip[c])fcl.push_back(c);int nFs=fcl.size();
-        std::vector<std::vector<double>> Cs(ncols,std::vector<double>(nFs,0.0));for(int f=0;f<nFs;++f){Cs[fcl[f]][f]=1;for(int i=0;i<rank;++i)Cs[piv[i]][f]=-Rm[i][fcl[f]];} return Cs;};
     // pass1: scalar C1 -> geom_C1
-    std::vector<int> fcl0;int rank0; auto C0=nullsp(buildAsc(),nCP,fcl0,rank0); int nFs0=fcl0.size();
-    std::vector<V3<double>> geomC1(nCP);
-    for(int cp=0;cp<nCP;++cp)for(int c=0;c<3;++c){double s=0;for(int f=0;f<nFs0;++f)s+=C0[cp][f]*gpos[fcl0[f]][c];geomC1[cp][c]=s;}
+    std::vector<int> fcl0;int rank0; auto C0=sparse_nullsp(buildAsc(),nCP,fcl0,rank0); int nFs0=fcl0.size();
+    std::vector<V3<double>> geomC1(nCP,V3<double>{0,0,0});
+    for(int f=0;f<nFs0;++f){ const V3<double>&P=gpos[fcl0[f]]; for(auto&kv:C0[f]){ int cp=kv.first; double v=kv.second; geomC1[cp][0]+=v*P[0];geomC1[cp][1]+=v*P[1];geomC1[cp][2]+=v*P[2]; } }
     for(int k=0;k<nT;++k)for(int a=0;a<nK;++a)tris[k].X[a]=geomC1[gmap[k][a]];
     // pass2: joint 3-DOF constraint = scalar C1 (x3 comps) + SS-end BC
     auto Asc=buildAsc(); int nd=3*nCP; out_nd=nd;
-    std::vector<std::vector<double>> A3;
-    for(auto&row:Asc) for(int i=0;i<3;++i){ std::vector<double> r3(nd,0.0); for(int cp=0;cp<nCP;++cp) if(row[cp]!=0) r3[3*cp+i]=row[cp]; A3.push_back(r3); }
-    auto pin=[&](int cp,int comp){ std::vector<double> r3(nd,0.0); r3[3*cp+comp]=1.0; A3.push_back(r3); };
+    std::vector<SRow> A3;                          // sparse: scalar C1 row -> 3 component rows + pins
+    for(auto&row:Asc) for(int i=0;i<3;++i){ SRow r3; for(auto&kv:row) r3[3*kv.first+i]=kv.second; A3.push_back(std::move(r3)); }
+    auto pin=[&](int cp,int comp){ SRow r3; r3[3*cp+comp]=1.0; A3.push_back(std::move(r3)); };
     int firstEnd=-1;
     for(int cp=0;cp<nCP;++cp){ double z=geomC1[cp][2];
         if(std::fabs(z)<1e-7||std::fabs(z-L)<1e-7){ pin(cp,0); pin(cp,1); if(firstEnd<0)firstEnd=cp; } }  // SS: x,y pinned at both ends
     if(firstEnd>=0) pin(firstEnd,2);   // kill axial rigid translation
-    std::vector<int> fcl;int rank; auto Cs=nullsp(A3,nd,fcl,rank); int nF=fcl.size(); out_nF=nF;
+    std::vector<int> fcl;int rank; auto Cs=sparse_nullsp(A3,nd,fcl,rank); int nF=fcl.size(); out_nF=nF;
     std::vector<Mode> out;     // result modes (declared early so a Spectra-fail can return it)
-    // SPARSE C (nd × nF) from the null-space vectors Cs.
-    SpMat C(nd,nF); { std::vector<Trip> tc; for(int row=0;row<nd;++row)for(int f=0;f<nF;++f) if(Cs[row][f]!=0) tc.emplace_back(row,f,Cs[row][f]); C.setFromTriplets(tc.begin(),tc.end()); }
+    // SPARSE C (nd × nF) directly from the sparse null-space columns Cs[f].
+    SpMat C(nd,nF); { std::vector<Trip> tc; for(int f=0;f<nF;++f) for(auto&kv:Cs[f]) tc.emplace_back(kv.first,f,kv.second); C.setFromTriplets(tc.begin(),tc.end()); }
+    fprintf(stderr,"  [C density] nnz(C)=%ld avg %.1f/col  (nd=%d nF=%d) [sparse min-degree]\n",
+            (long)C.nonZeros(),(double)C.nonZeros()/std::max(nF,1),nd,nF);
     // SPARSE K_e, K_geom (uniform axial N_xx=1) — same per-quad math, emitted as triplets.
     std::vector<Trip> tF,tG; V3<double> tax{0,0,1};
     for(int k=0;k<nT;++k){ const Tri&T=tris[k];
