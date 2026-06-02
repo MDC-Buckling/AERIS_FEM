@@ -339,6 +339,24 @@ function BbPanel({ bb, setBb, cyl }) {
   const cpPerTri = ((p + 1) * (p + 2)) / 2;
   const ndApprox = 3 * Nx * Nt * p * p;   // empirical ≈ (R/t=20: ~6.3k actual)
 
+  // Geometry-driven mesh suggestion — operationalises the cylinder buckling
+  // meshing rule (element length ℓ≈0.5√(Rt), i.e. finer for thinner shells),
+  // p=5-adjusted and CAPPED to the sparse-solver budget. Grounded in the two
+  // validated/measured cases (both fit Nt≈4·n_cr; axial wants ~2.5 half-waves
+  // of length π√(Rt) → Nx≈0.8·L/√(Rt)). When the ideal mesh exceeds the solver
+  // budget (thin shells need huge meshes) it scales down + flags under-resolution.
+  const sqrtRt = cyl.R > 0 && cyl.t > 0 ? Math.sqrt(cyl.R * cyl.t) : 0;
+  const NtIdeal = nCr > 0 ? Math.round(4 * nCr) : Nt;
+  const NxIdeal = sqrtRt > 0 ? Math.max(2, Math.round((0.8 * cyl.L) / sqrtRt)) : Nx;
+  const ND_CAP = 80000;
+  const ndIdeal = 3 * NxIdeal * NtIdeal * p * p;
+  const meshCapped = ndIdeal > ND_CAP;
+  const meshScale = meshCapped ? Math.sqrt(ND_CAP / ndIdeal) : 1;
+  const NxSug = Math.max(2, Math.round(NxIdeal * meshScale));
+  const NtSug = Math.max(4, Math.round(NtIdeal * meshScale));
+  const ndSug = 3 * NxSug * NtSug * p * p;
+  const atSuggested = Nx === NxSug && Nt === NtSug;
+
   return (
     <>
       <div
@@ -385,11 +403,11 @@ function BbPanel({ bb, setBb, cyl }) {
         value={Nx}
         onChange={(v) => setBb("Nx", v)}
         min={2}
-        max={16}
+        max={64}
         step={1}
         precision={0}
         showRange
-        hint="along the cylinder length (each quad cell → 2 BB triangles). ~4 is enough for L/R≈1; scale up roughly with L/R for long cylinders."
+        hint="along the cylinder length (each quad cell → 2 BB triangles). Axial half-wave ≈ π√(Rt) → Nx ≈ 0.8·L/√(Rt). Use the geometry suggestion below."
       />
 
       <NumberField
@@ -399,11 +417,11 @@ function BbPanel({ bb, setBb, cyl }) {
         value={Nt}
         onChange={(v) => setBb("Nt", v)}
         min={4}
-        max={48}
+        max={128}
         step={1}
         precision={0}
         showRange
-        hint="the key knob: must resolve the short n_cr≈√(R/t) wave → Nt ≳ 2.2·n_cr. The box below warns when it's too coarse."
+        hint="the key knob: resolves the short n_cr≈√(R/t) wave AND the curved geometry → Nt ≈ 4·n_cr (validated). Use the geometry suggestion below."
       />
 
       <NumberField
@@ -419,6 +437,56 @@ function BbPanel({ bb, setBb, cyl }) {
         showRange
         hint="the closed-cylinder spectrum is densely near-degenerate at σ_cl (Koiter circle) — read the cluster, not bare λ_min"
       />
+
+      {sqrtRt > 0 && (
+        <div
+          style={{
+            marginTop: 8,
+            padding: "9px 11px",
+            background: "var(--accent-soft-bg, rgba(0,180,210,0.07))",
+            border: "1px solid var(--accent)",
+            borderRadius: 5,
+            fontFamily: MONO,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+            <span style={{ color: "var(--text-secondary)", fontSize: 10, fontWeight: 700 }}>
+              ⟂ Suggested mesh (from R, t, L)
+            </span>
+            <button
+              type="button"
+              onClick={() => { setBb("Nx", NxSug); setBb("Nt", NtSug); }}
+              disabled={atSuggested}
+              style={{
+                fontFamily: MONO, fontSize: 10, padding: "2px 9px", borderRadius: 4,
+                border: "1px solid var(--accent)", cursor: atSuggested ? "default" : "pointer",
+                background: atSuggested ? "transparent" : "var(--accent-soft-bg, rgba(0,180,210,0.14))",
+                color: atSuggested ? "var(--text-muted)" : "var(--accent)",
+              }}
+            >
+              {atSuggested ? "✓ applied" : "Apply"}
+            </button>
+          </div>
+          <div style={{ marginTop: 4, fontSize: 12, color: "var(--accent)", fontWeight: 700, textShadow: "var(--shadow-accent)" }}>
+            Nx = {NxSug} · Nt = {NtSug}{" "}
+            <span style={{ color: "var(--text-muted)", fontWeight: 400, fontSize: 9.5 }}>
+              (≈ {ndSug.toLocaleString()} DOF)
+            </span>
+          </div>
+          <div
+            style={{
+              marginTop: 4,
+              fontSize: 9.5,
+              color: meshCapped ? "var(--warning)" : "var(--text-muted)",
+              lineHeight: 1.45,
+            }}
+          >
+            {meshCapped
+              ? `⚠ ideal mesh (Nx≈${NxIdeal}, Nt≈${NtIdeal}, ~${(ndIdeal / 1000).toFixed(0)}k DOF) exceeds the solver budget — scaled down. Under-resolved at R/t=${RoverT.toFixed(0)} → σ_cr under-estimated; for thin shells the NURBS engine is exact (fewer DOF, exact circle).`
+              : `resolves the buckling half-wavelength π√(Rt) + the curved geometry (Nt≈4·n_cr, Nx≈0.8·L/√(Rt)). Fits the sparse solver.`}
+          </div>
+        </div>
+      )}
 
       <div
         style={{
