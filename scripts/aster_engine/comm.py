@@ -318,6 +318,93 @@ FIN()
 """
 
 
+def build_comm_gnia(model: "ModelConfig", manifest: Dict[str, Any],  # noqa: F821
+                    work_dir: str = "/work", w: float = None,
+                    dmax: float = 0.25, n1: int = 10, n2: int = 50) -> str:
+    """GNIA (imperfect post-buckling / knockdown) of the closed cylinder via the
+    'dimple' imperfection — the Abaqus-style recipe: in phase [0,1] a single
+    rim-of-shell node is pushed radially inward by w (held thereafter); in phase
+    [1,2] the top is shortened axially under displacement control while GROT_GDEP
+    tracks the large-rotation response. The reaction force peaks at the imperfect
+    buckling load (knockdown), then snaps — Newton diverges past the limit point,
+    which is caught so the converged steps (incl. the peak) are kept and the
+    load-deflection curve is dumped to gnia_curve.json.
+
+    Requires a FINE mesh (h ≲ 1): the buckle wavelength ~√(R·t) must be
+    resolvable, else the mesh is too stiff to buckle (no limit point). `w` is the
+    radial dimple amplitude (default = t, i.e. w/t = 1); `dmax` the max imposed
+    axial shortening."""
+    cyl = model.geometry["cylinder"]
+    R, L, t = float(cyl["R"]), float(cyl["L"]), float(cyl["t"])
+    E, nu = _mat(model)
+    if w is None:
+        w = t
+    # Dimple node: nearest node to (R, 0, L/2) — mid-height at θ=0, where the
+    # outward radial direction is +X, so the radial push is just a -DX.
+    try:
+        h = float((model.disc("code_aster") or {}).get("mesh_size", 1.0))
+    except Exception:
+        h = 1.0
+    rad = max(h * 1.2, 1e-3)
+    pre = _preamble("shell", "DKTG", E, nu, t, ["bottom", "top"],
+                    cara_vector=(0.0, 0.0, 1.0))
+    return pre + f"""
+# Dimple node (single node nearest mid-height θ=0) for the held imperfection.
+MAIL = DEFI_GROUP(reuse=MAIL, MAILLAGE=MAIL,
+    CREA_GROUP_NO=_F(NOM='DIMPLE', OPTION='ENV_SPHERE',
+                     POINT=({R:.10g}, 0.0, {L / 2:.10g}),
+                     RAYON={rad:.10g}, PRECISION={rad:.10g}))
+
+CHB = AFFE_CHAR_MECA(MODELE=MODE, DDL_IMPO=(
+    _F(GROUP_NO='bottom', DX=0.0, DY=0.0, DZ=0.0),
+    _F(GROUP_NO='top', DX=0.0, DY=0.0)))
+CHDIMP = AFFE_CHAR_MECA(MODELE=MODE, DDL_IMPO=_F(GROUP_NO='DIMPLE', DX=-{w:.10g}))
+CHAX = AFFE_CHAR_MECA(MODELE=MODE, DDL_IMPO=_F(GROUP_NO='top', DZ=-{dmax:.10g}))
+
+# Phase [0,1]: dimple ramps in + holds.  Phase [1,2]: axial shortening ramps in.
+FDIM = DEFI_FONCTION(NOM_PARA='INST', VALE=(0.0, 0.0, 1.0, 1.0, 2.0, 1.0),
+                     PROL_DROITE='CONSTANT', PROL_GAUCHE='CONSTANT')
+FAXI = DEFI_FONCTION(NOM_PARA='INST', VALE=(0.0, 0.0, 1.0, 0.0, 2.0, 1.0),
+                     PROL_DROITE='CONSTANT', PROL_GAUCHE='CONSTANT')
+LI = DEFI_LIST_REEL(DEBUT=0.0, INTERVALLE=(
+    _F(JUSQU_A=1.0, NOMBRE={int(n1)}), _F(JUSQU_A=2.0, NOMBRE={int(n2)})))
+DL = DEFI_LIST_INST(METHODE='AUTO', DEFI_LIST=_F(LIST_INST=LI),
+    ECHEC=_F(EVENEMENT='ERREUR', ACTION='DECOUPE',
+             SUBD_METHODE='MANUEL', SUBD_PAS=4, SUBD_NIVEAU=5))
+
+# Past the limit point the response snaps → Newton diverges; expected. Catch it
+# so the converged steps (incl. the peak = imperfect buckling load) are kept.
+try:
+    EV = STAT_NON_LINE(MODELE=MODE, CHAM_MATER=CHMAT, CARA_ELEM=CARA,
+        EXCIT=(_F(CHARGE=CHB),
+               _F(CHARGE=CHDIMP, FONC_MULT=FDIM),
+               _F(CHARGE=CHAX, FONC_MULT=FAXI)),
+        COMPORTEMENT=_F(RELATION='ELAS', DEFORMATION='GROT_GDEP'),
+        INCREMENT=_F(LIST_INST=DL),
+        NEWTON=_F(MATRICE='TANGENTE', REAC_ITER=1),
+        CONVERGENCE=_F(RESI_GLOB_RELA=1.0E-3, ITER_GLOB_MAXI=50))
+    print('AERIS-GNIA: full ramp completed (no limit point reached in range)')
+except Exception as _e:
+    print('AERIS-GNIA: limit point reached (snap):', _e)
+
+# Reaction at the clamped bottom per step = the axial load on the path.
+EV = CALC_CHAMP(reuse=EV, RESULTAT=EV, FORCE='REAC_NODA')
+TBR = POST_RELEVE_T(ACTION=_F(OPERATION='EXTRACTION', INTITULE='R',
+    RESULTAT=EV, NOM_CHAM='REAC_NODA', GROUP_NO='bottom',
+    RESULTANTE=('DX', 'DY', 'DZ'), TOUT_ORDRE='OUI'))
+import json as _json
+_v = TBR.EXTR_TABLE().values()
+_d = dict(inst=[float(x) for x in _v.get('INST', [])],
+          reacDZ=[float(x) for x in _v.get('DZ', [])], dmax={dmax:.10g})
+with open('{work_dir}/gnia_curve.json', 'w') as _f:
+    _json.dump(_d, _f)
+print('AERIS-GNIA: steps', len(_d['reacDZ']),
+      'peak |reac|', max((abs(x) for x in _d['reacDZ']), default=None))
+
+FIN()
+"""
+
+
 # Buckling BC presets in Code_Aster DKTG nodal DOF (translations DX/DY/DZ +
 # rotations DRX/DRY/DRZ). For a z-axis cylinder, DX=DY=0 at a rim pins the
 # radial (w) and circumferential (v) translation. The loaded top ALWAYS leaves

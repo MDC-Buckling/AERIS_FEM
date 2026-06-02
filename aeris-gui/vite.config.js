@@ -441,13 +441,20 @@ function aerisOutputServer() {
                 // target the IGA cylinder_lba path validates).
                 solverScript = "/scripts/code_aster_buckling.py";
                 solverPaysAttentionToRefines = false;
+              } else if (shape === "cylinder" && akind === "gnia") {
+                // Imperfect post-buckling / knockdown: STAT_NON_LINE with a held
+                // 'dimple' imperfection + displacement-controlled axial
+                // compression → reaction peak = imperfect buckling load. Needs a
+                // FINE mesh (h≲1) to develop the buckle.
+                solverScript = "/scripts/code_aster_gnia.py";
+                solverPaysAttentionToRefines = false;
               } else {
                 res.statusCode = 400;
                 res.setHeader("Content-Type", "application/json");
                 res.end(JSON.stringify({
                   ok: false,
                   error: `Code_Aster engine: no solver wired for (shape=${shape}, analysis.kind=${akind})`,
-                  hint: "Code_Aster today supports (cylinder_segment | cylinder, static) and (cylinder, lba). Switch the engine back to NURBS/IGA, or pick one of those.",
+                  hint: "Code_Aster today supports (cylinder_segment | cylinder, static), (cylinder, gna) [expert], (cylinder, lba), (cylinder, gnia). Switch the engine back to NURBS/IGA, or pick one of those.",
                 }));
                 return;
               }
